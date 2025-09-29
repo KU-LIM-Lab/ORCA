@@ -2,30 +2,6 @@ from utils.llm import call_llm
 from prompts.table_explorer_prompts import usecase_parser as parser, usecase_prompt as prompt
 from langchain_core.language_models.chat_models import BaseChatModel
 
-def get_related_graph(graph: dict, table_name: str) -> dict:
-    related = {}
-    # outbound
-    for to_table in graph["edges"].get(table_name, []):
-        key = f"{table_name}→{to_table}"
-        edge_data = graph.get("edge_reasons", {}).get(key, [])
-        reasons = [d.get("reason", "No reason found") for d in edge_data]
-        related[to_table] = "\n".join(reasons) if reasons else "No reason found"
-    # inbound
-    for from_table, to_tables in graph["edges"].items():
-        if table_name in to_tables:
-            key = f"{from_table}→{table_name}"
-            edge_data = graph.get("edge_reasons", {}).get(key, [])
-            reasons = [d.get("reason", "No reason found") for d in edge_data]
-            related[from_table] = "\n".join(reasons) if reasons else "No reason found"
-    return related
-
-def related_tables(db_id: str, table_name: str) -> str:
-    # update_table_relations(db_id)
-    graph_raw= redis_client.get(f"{db_id}:table_relations")
-    graph = json.loads(graph_raw)
-    related = get_related_graph(graph, table_name)
-    return related
-
 def recommend_analysis(table_name: str, db_id: str, table_description: str, llm: BaseChatModel) -> str:
     table_name = table_name
     db_id = db_id

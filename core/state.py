@@ -1,0 +1,337 @@
+# core/state.py
+from typing import TypedDict, Optional, Any, Dict, List, Union
+from datetime import datetime
+from enum import Enum
+
+class ExecutionStatus(Enum):
+    """Execution status for different phases"""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+    INTERRUPTED = "interrupted"
+
+class HITLType(Enum):
+    """Human-in-the-loop interaction types"""
+    APPROVAL = "approval"
+    EDIT = "edit"
+    FEEDBACK_LOOPBACK = "feedback_loopback"
+    ABORT = "abort"
+
+class PipelinePhase(Enum):
+    """Pipeline phases for the full causal analysis workflow"""
+    # Pre-processing phases
+    DB_CONNECTION = "db_connection"
+    METADATA_CREATION = "metadata_creation"
+    
+    # Main analysis phases
+    DATA_EXPLORATION = "data_exploration"
+    CAUSAL_DISCOVERY = "causal_discovery"
+    CAUSAL_INFERENCE = "causal_inference"
+    
+    # Post-processing phases
+    REPORT_GENERATION = "report_generation"
+
+class AgentState(TypedDict, total=False):
+    """Global state shared across all agents in the ORCA system"""
+    
+    # === Core Execution State ===
+    initial_query: str
+    execution_status: ExecutionStatus
+    current_phase: PipelinePhase
+    current_substep: str
+    completed_phases: List[PipelinePhase]
+    completed_substeps: List[str]
+    error_log: List[Dict[str, Any]]
+    
+    # === HITL State ===
+    hitl_required: bool
+    hitl_type: Optional[HITLType]
+    hitl_context: Dict[str, Any]  # Context for HITL interaction
+    user_decision: Optional[str]  # User's decision (approve/edit/feedback/abort)
+    user_edits: Dict[str, Any]  # User-provided edits
+    user_feedback: Optional[str]  # User feedback for loopback
+    
+    # === User Interaction ===
+    user_constraints: Dict[str, Any]  # User-provided constraints for causal discovery
+    user_preferences: Dict[str, Any]  # User preferences for analysis
+    
+    # === Database Connection Phase Outputs ===
+    db_id: str  # Database identifier
+    database_connection: Optional[Dict[str, Any]]
+    connection_status: str  # "connected", "failed", "pending"
+    
+    # === Metadata Creation Phase Outputs (utils.data_prep 기반) ===
+    schema_info: Dict[str, Any]  # extract_schema() result
+    table_metadata: Dict[str, Any]  # generate_metadata() result
+    table_relations: Dict[str, Any]  # update_table_relations() result
+    metadata_creation_status: str  # "completed", "failed", "pending"
+    
+    # === Data Exploration Phase Outputs ===
+    # A.1 Table Selection
+    candidate_tables: List[str]
+    selected_tables: List[str]
+    
+    # A.2 Table Retrieval (via text2sql)
+    sql_query: str
+    df_raw: Optional[Any]  # pandas DataFrame
+    df_preprocessed: Optional[Any]  # pandas DataFrame
+    variable_info: Dict[str, Any]
+    
+    # Data Exploration Phase Status
+    data_exploration_status: str  # "completed", "failed", "pending"
+    
+    # === Causal Discovery Phase Outputs ===
+    # 1. Assumption-method compatibility matrix
+    data_assumptions: Dict[str, bool]  # Validated data assumptions
+    assumption_method_scores: Dict[str, Dict[str, float]]  # Assumption-method compatibility matrix
+    
+    # 2. Algorithm scores
+    algorithm_scores: Dict[str, float]  # Algorithm scores
+    selected_algorithms: List[str]  # Selected algorithms
+    
+    # 3. Algorithm execution
+    algorithm_results: Dict[str, Any]  # Algorithm execution results
+    candidate_graphs: List[Dict[str, Any]]  # Generated candidate graphs
+    
+    # 4. Intermediate scores
+    intermediate_scores: Dict[str, Dict[str, float]]  # Intermediate scores
+    
+    # 5. Final graph decision
+    selected_graph: Dict[str, Any]  # Final selected causal graph
+    graph_selection_reasoning: str  # Graph selection reasoning
+    
+    # Causal Discovery Phase Status
+    causal_discovery_status: str  # "completed", "failed", "pending"
+    
+    # === Causal Inference Phase Outputs ===
+    # C.1 Select Configuration
+    treatment_variable: str
+    outcome_variable: str
+    confounders: List[str]
+    instrumental_variables: List[str]
+    
+    # C.2 Effect Estimation
+    inference_method: str
+    causal_estimates: Dict[str, Any]
+    confidence_intervals: Dict[str, List[float]]
+    
+    # C.3 Interpretation
+    interpretation_results: Dict[str, Any]
+    sensitivity_analysis: Dict[str, Any]
+    
+    # Causal Inference Phase Status
+    causal_inference_status: str  # "completed", "failed", "pending"
+    
+    # === Final Outputs ===
+    final_report: Dict[str, Any]
+    recommendations: List[str]
+    
+    # === System State ===
+    session_id: str
+    timestamp: datetime
+    agent_execution_log: List[Dict[str, Any]]
+    performance_metrics: Dict[str, Any]
+    interrupt_points: List[Dict[str, Any]]
+
+class DataExplorerState(TypedDict, total=False):
+    """State specific to Data Explorer Agent"""
+    database_url: str
+    schema_info: Dict[str, Any]
+    target_tables: List[str]
+    data_sample: Dict[str, Any]
+    preprocessing_steps: List[Dict[str, Any]]
+    data_summary: Dict[str, Any]
+
+class CausalDiscoveryState(TypedDict, total=False):
+    """State specific to Causal Discovery Agent"""
+    data_assumptions: Dict[str, bool]  # Validated data assumptions
+    algorithm_configs: Dict[str, Dict[str, Any]]  # Algorithm configurations
+    bootstrap_results: List[Dict[str, Any]]  # Bootstrap sampling results
+    graph_ensemble: List[Dict[str, Any]]  # Ensemble of discovered graphs
+    edge_frequencies: Dict[str, float]  # Edge occurrence frequencies
+    graph_metrics: Dict[str, float]  # Graph quality metrics
+
+class CausalInferenceState(TypedDict, total=False):
+    """State specific to Causal Inference Agent"""
+    treatment_variable: str
+    outcome_variable: str
+    confounders: List[str]
+    instrumental_variables: List[str]
+    estimation_method: str
+    identification_strategy: str
+    results_summary: Dict[str, Any]
+
+class OrchestratorState(TypedDict, total=False):
+    """State specific to Orchestrator Agent"""
+    execution_plan: List[Dict[str, Any]]
+    agent_status: Dict[str, ExecutionStatus]
+    resource_usage: Dict[str, Any]
+    error_recovery_actions: List[Dict[str, Any]]
+
+def create_initial_state(query: str, db_id: str = "daa", session_id: str = None) -> AgentState:
+    """Create initial state for a new analysis session"""
+    if session_id is None:
+        session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    
+    return AgentState(
+        initial_query=query,
+        execution_status=ExecutionStatus.PENDING,
+        current_phase=PipelinePhase.DB_CONNECTION,
+        current_substep="",
+        completed_phases=[],
+        completed_substeps=[],
+        error_log=[],
+        hitl_required=False,
+        hitl_type=None,
+        hitl_context={},
+        user_decision=None,
+        user_edits={},
+        user_feedback=None,
+        user_constraints={},
+        user_preferences={},
+        db_id=db_id,
+        database_connection=None,
+        connection_status="pending",
+        schema_info={},
+        table_metadata={},
+        table_relations={},
+        metadata_creation_status="pending",
+        candidate_tables=[],
+        selected_tables=[],
+        sql_query="",
+        df_raw=None,
+        df_preprocessed=None,
+        variable_info={},
+        data_exploration_status="pending",
+        data_assumptions={},
+        assumption_method_scores={},
+        algorithm_scores={},
+        selected_algorithms=[],
+        algorithm_results={},
+        candidate_graphs=[],
+        intermediate_scores={},
+        selected_graph={},
+        graph_selection_reasoning="",
+        causal_discovery_status="pending",
+        treatment_variable="",
+        outcome_variable="",
+        confounders=[],
+        instrumental_variables=[],
+        inference_method="",
+        causal_estimates={},
+        confidence_intervals={},
+        interpretation_results={},
+        sensitivity_analysis={},
+        causal_inference_status="pending",
+        final_report={},
+        recommendations=[],
+        session_id=session_id,
+        timestamp=datetime.now(),
+        agent_execution_log=[],
+        performance_metrics={},
+        interrupt_points=[]
+    )
+
+def validate_state(state: AgentState) -> bool:
+    """Validate state structure and required fields"""
+    required_fields = ["initial_query", "session_id", "execution_status", "current_phase"]
+    
+    for field in required_fields:
+        if field not in state:
+            return False
+    
+    # Validate execution status
+    if not isinstance(state["execution_status"], ExecutionStatus):
+        return False
+    
+    # Validate current phase
+    if not isinstance(state["current_phase"], PipelinePhase):
+        return False
+    
+    return True
+
+def get_agent_specific_state(state: AgentState, agent_type: str) -> Dict[str, Any]:
+    """Extract agent-specific state from global state"""
+    agent_states = {
+        "data_explorer": ["db_id", "schema_info", "table_metadata", "candidate_tables", 
+                         "selected_tables", "sql_query", "df_raw", "df_preprocessed"],
+        "causal_discovery": ["data_assumptions", "assumption_method_scores", "algorithm_scores", 
+                            "selected_algorithms", "algorithm_results", "candidate_graphs",
+                            "intermediate_scores", "selected_graph"],
+        "causal_inference": ["treatment_variable", "outcome_variable", "confounders",
+                            "inference_method", "causal_estimates", "confidence_intervals",
+                            "interpretation_results", "sensitivity_analysis"],
+        "orchestrator": ["current_phase", "completed_phases", "agent_execution_log"]
+    }
+    
+    if agent_type not in agent_states:
+        return {}
+    
+    return {key: state.get(key) for key in agent_states[agent_type] if key in state}
+
+def get_phase_status(state: AgentState, phase: PipelinePhase) -> str:
+    """Get the status of a specific phase"""
+    phase_status_map = {
+        PipelinePhase.DB_CONNECTION: state.get("connection_status", "pending"),
+        PipelinePhase.METADATA_CREATION: state.get("metadata_creation_status", "pending"),
+        PipelinePhase.DATA_EXPLORATION: state.get("data_exploration_status", "pending"),
+        PipelinePhase.CAUSAL_DISCOVERY: state.get("causal_discovery_status", "pending"),
+        PipelinePhase.CAUSAL_INFERENCE: state.get("causal_inference_status", "pending"),
+        PipelinePhase.REPORT_GENERATION: state.get("final_report", {}).get("status", "pending")
+    }
+    
+    return phase_status_map.get(phase, "pending")
+
+def is_phase_completed(state: AgentState, phase: PipelinePhase) -> bool:
+    """Check if a phase is completed"""
+    return phase in state.get("completed_phases", [])
+
+def is_substep_completed(state: AgentState, substep: str) -> bool:
+    """Check if a substep is completed"""
+    return substep in state.get("completed_substeps", [])
+
+def add_interrupt_point(state: AgentState, phase: PipelinePhase, substep: str, 
+                       hitl_type: HITLType, context: Dict[str, Any]) -> AgentState:
+    """Add an interrupt point to the state"""
+    interrupt_point = {
+        "phase": phase.value,
+        "substep": substep,
+        "hitl_type": hitl_type.value,
+        "context": context,
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    if "interrupt_points" not in state:
+        state["interrupt_points"] = []
+    
+    state["interrupt_points"].append(interrupt_point)
+    state["hitl_required"] = True
+    state["hitl_type"] = hitl_type
+    state["hitl_context"] = context
+    state["execution_status"] = ExecutionStatus.INTERRUPTED
+    
+    return state
+
+def resolve_interrupt(state: AgentState, user_decision: str, user_edits: Dict[str, Any] = None, 
+                     user_feedback: str = None) -> AgentState:
+    """Resolve an interrupt point with user input"""
+    state["user_decision"] = user_decision
+    state["hitl_required"] = False
+    state["hitl_type"] = None
+    state["hitl_context"] = {}
+    
+    if user_edits:
+        state["user_edits"] = user_edits
+    
+    if user_feedback:
+        state["user_feedback"] = user_feedback
+    
+    # Update execution status based on decision
+    if user_decision == "abort":
+        state["execution_status"] = ExecutionStatus.FAILED
+    else:
+        state["execution_status"] = ExecutionStatus.RUNNING
+    
+    return state
