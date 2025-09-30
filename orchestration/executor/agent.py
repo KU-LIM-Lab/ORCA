@@ -1,11 +1,12 @@
 # orchestration/executor/agent.py
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 from core.base import OrchestratorAgent, AgentResult
-from core.state import AgentState, ExecutionStatus, HITLType, add_interrupt_point, resolve_interrupt
+from core.state import AgentState, ExecutionStatus
 from monitoring.metrics.collector import MetricsCollector
 import asyncio
 import time
 from datetime import datetime
+from langgraph.types import interrupt
 
 class ExecutorAgent(OrchestratorAgent):
     """Executor agent responsible for executing plans and managing agent execution"""
@@ -19,8 +20,31 @@ class ExecutorAgent(OrchestratorAgent):
         self.execution_log = []
         self.results = {}
         
+        # Initialize system agents
+        self._initialize_system_agents()
+    
+    def _initialize_system_agents(self):
+        """Initialize and register system agents"""
+        try:
+            from utils.system_agents import create_system_agents
+            
+            # Create system agents
+            db_agent, metadata_agent = create_system_agents(
+                db_id="reef_db", 
+                db_type="postgresql"
+            )
+            
+            # Keep system agents locally (they are not BaseAgent instances)
+            self.system_agents: Dict[str, Any] = {
+                "system_database": db_agent,
+                "system_metadata": metadata_agent,
+            }
+            
+        except Exception as e:
+            print(f"Warning: Could not initialize system agents: {e}")
+        
     def execute_plan(self, state: AgentState) -> AgentResult:
-        """Execute the complete plan with HITL support"""
+        """Execute the plan. HITL is handled inside via interrupt gate."""
         plan = state.get("execution_plan", [])
         if not plan:
             return AgentResult(
@@ -34,28 +58,19 @@ class ExecutorAgent(OrchestratorAgent):
             self.current_step = 0
             self.execution_log = []
             self.results = {}
+            max_rerun = self.config.get("max_rerun_per_substep", 1) if self.config else 1
             
             # Execute each step in the plan
             for step in plan:
-                # Check if HITL is required for this step
-                if step.get("hitl_required", False):
-                    # Create interrupt point
-                    hitl_context = self._create_hitl_context(step, state)
-                    state = add_interrupt_point(
-                        state, 
-                        step["phase"], 
-                        step["substep"], 
-                        step.get("hitl_type", HITLType.APPROVAL),
-                        hitl_context
-                    )
-                    
-                    # Return state for HITL interaction
+                # Check dependencies
+                if not self._check_dependencies(step, state):
                     return AgentResult(
-                        success=True,
-                        data=state,
-                        metadata={"hitl_required": True, "step": step}
+                        success=False,
+                        error=f"Dependencies not met for {step['substep']}",
+                        metadata={"executor": self.name}
                     )
-                
+
+                # Execute substep
                 result = self._execute_step(step, state)
                 self.execution_log.append({
                     "phase": step["phase"].value,
@@ -69,20 +84,56 @@ class ExecutorAgent(OrchestratorAgent):
                     return AgentResult(
                         success=False,
                         error=f"Step {step['substep']} failed: {result.error}",
-                        metadata={
-                            "failed_step": step["substep"],
-                            "execution_log": self.execution_log
-                        }
+                        metadata={"execution_log": self.execution_log}
                     )
                 
-                # Update state with step results
+                # Merge results
                 state.update(result.data or {})
-                self.results[step["substep"]] = result.data
-                
-                # Mark substep as completed
-                if "completed_substeps" not in state:
-                    state["completed_substeps"] = []
-                state["completed_substeps"].append(step["substep"])
+                self.results[step["substep"]] = result.data or {}
+
+                # If no HITL, mark complete
+                if not step.get("hitl_required", False):
+                    state.setdefault("completed_substeps", []).append(step["substep"])
+                    continue
+
+                # HITL gate
+                decision, edits, feedback = self._hitl_gate(step, state, self.results[step["substep"]])
+
+                if decision == "abort":
+                    return AgentResult(
+                        success=False,
+                        error="Aborted by user",
+                        metadata={"substep": step["substep"], "execution_log": self.execution_log}
+                    )
+
+                if decision == "edit":
+                    self._apply_edits(state, edits)
+
+                if decision == "rerun":
+                    rerun_ok = False
+                    for _ in range(max_rerun):
+                        re = self._rerun_step(step, state, feedback)
+                        self.execution_log.append({
+                            "phase": step["phase"].value,
+                            "substep": f"{step['substep']}_rerun",
+                            "timestamp": datetime.now().isoformat(),
+                            "success": re.success,
+                            "duration": re.execution_time
+                        })
+                        if re.success:
+                            state.update(re.data or {})
+                            self.results[step["substep"]] = re.data or {}
+                            rerun_ok = True
+                            break
+                    if not rerun_ok:
+                        return AgentResult(
+                            success=False,
+                            error=f"Rerun failed at {step['substep']}",
+                            metadata={"execution_log": self.execution_log}
+                        )
+
+                # After approve/edit success
+                state.setdefault("completed_substeps", []).append(step["substep"])
             
             return AgentResult(
                 success=True,
@@ -124,7 +175,11 @@ class ExecutorAgent(OrchestratorAgent):
                 )
             
             # Get the agent
-            agent = self.sub_agents.get(agent_name)
+            agent = None
+            if step.get("is_system_component", False):
+                agent = getattr(self, "system_agents", {}).get(agent_name)
+            else:
+                agent = self.sub_agents.get(agent_name)
             if not agent:
                 return AgentResult(
                     success=False,
@@ -132,15 +187,31 @@ class ExecutorAgent(OrchestratorAgent):
                     metadata={"substep": substep, "agent": agent_name}
                 )
             
-            # Prepare step context
-            step_context = {
-                "substep": substep,
-                "action": action,
-                "description": step.get("description", ""),
-                "timeout": timeout,
-                "previous_results": self.results
-            }
-            
+            # Handle system components explicitly (allow pre-initialized state to skip)
+            if step.get("is_system_component", False):
+                if substep == "connect_database":
+                    # Skip if already connected (pre-initialized outside the graph)
+                    if state.get("database_connection"):
+                        return AgentResult(success=True, data={})
+                    ok = getattr(agent, "connect", lambda: False)()
+                    if not ok:
+                        return AgentResult(success=False, error="Database connection failed")
+                    conn = getattr(agent, "get_connection", lambda: None)()
+                    return AgentResult(success=True, data={"database_connection": conn})
+                elif substep == "create_metadata":
+                    # Skip if metadata already present (pre-initialized outside the graph)
+                    if state.get("schema_info") and state.get("table_metadata"):
+                        return AgentResult(success=True, data={})
+                    ok = getattr(agent, "initialize", lambda: False)()
+                    if not ok:
+                        return AgentResult(success=False, error="Metadata initialization failed")
+                    data = {
+                        "schema_info": getattr(agent, "get_schema_info", lambda: {})(),
+                        "table_metadata": getattr(agent, "get_table_metadata", lambda: {})(),
+                        "table_relations": getattr(agent, "get_table_relations", lambda: {})(),
+                    }
+                    return AgentResult(success=True, data=data)
+
             # Execute the agent with timeout
             start_time = time.time()
             
@@ -198,14 +269,63 @@ class ExecutorAgent(OrchestratorAgent):
         ))
     
     def _check_dependencies(self, step: Dict[str, Any], state: AgentState) -> bool:
-        """Check if step dependencies are met"""
-        dependencies = step.get("dependencies", [])
-        
-        for dep in dependencies:
-            if dep not in state.get("completed_substeps", []):
+        """Check if step requirements are met by verifying state values are present/non-empty."""
+        def _is_present(value: Any) -> bool:
+            if value is None:
                 return False
-        
+            if isinstance(value, (list, dict, set, tuple)):
+                return len(value) > 0
+            if isinstance(value, str):
+                return value.strip() != ""
+            return True
+
+        for key in step.get("required_state_keys", []):
+            if not _is_present(state.get(key)):
+                return False
         return True
+
+    def _hitl_gate(self, step: Dict[str, Any], state: AgentState, result_data: Dict[str, Any]) -> Tuple[str, Dict[str, Any], str]:
+        """HITL interrupt: returns (decision, edits, feedback)."""
+        payload = {
+            "question": "Choose: approve / edit / rerun / abort",
+            "phase": step["phase"].value,
+            "substep": step["substep"],
+            "agent": step["agent"],
+            "action": step["action"],
+            "description": step.get("description", ""),
+            "step_result_keys": list((result_data or {}).keys())[:50],
+            "choices": ["approve", "edit", "rerun", "abort"]
+        }
+        decision_payload = interrupt(payload)
+        d = decision_payload.get("decision", "approve")
+        edits = decision_payload.get("edits", {}) if d == "edit" else {}
+        feedback = decision_payload.get("feedback", "") if d == "rerun" else ""
+        return d, edits, feedback
+
+    def _apply_edits(self, state: AgentState, edits: Dict[str, Any]) -> None:
+        """Apply only safe, whitelisted edits to state."""
+        allowed = {
+            "selected_tables",
+            "sql_query",
+            "selected_algorithms",
+            "selected_graph",
+            "treatment_variable",
+            "outcome_variable",
+            "confounders",
+            "instrumental_variables",
+            "filters",
+            "time_window",
+            "target_columns",
+        }
+        for k, v in (edits or {}).items():
+            if k in allowed:
+                state[k] = v
+
+    def _rerun_step(self, step: Dict[str, Any], state: AgentState, feedback: str) -> AgentResult:
+        """Re-run the same substep; store feedback for agent consumption."""
+        if feedback:
+            state["user_feedback"] = feedback
+        return self._execute_step(step, state)
 
     def _create_hitl_context(self, step: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
         """Create context for HITL interaction"""
@@ -218,15 +338,6 @@ class ExecutorAgent(OrchestratorAgent):
             "current_state": state,
             "timestamp": datetime.now().isoformat()
         }
-
-    def handle_hitl_response(self, state: AgentState, user_decision: str, 
-                           user_edits: Dict[str, Any] = None, user_feedback: str = None) -> AgentState:
-        """Handle HITL response and continue execution"""
-        # Resolve the interrupt
-        state = resolve_interrupt(state, user_decision, user_edits, user_feedback)
-        
-        # Continue execution
-        return self.execute_plan(state)
     
     def pause_execution(self) -> Dict[str, Any]:
         """Pause current execution"""

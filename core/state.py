@@ -12,13 +12,6 @@ class ExecutionStatus(Enum):
     SKIPPED = "skipped"
     INTERRUPTED = "interrupted"
 
-class HITLType(Enum):
-    """Human-in-the-loop interaction types"""
-    APPROVAL = "approval"
-    EDIT = "edit"
-    FEEDBACK_LOOPBACK = "feedback_loopback"
-    ABORT = "abort"
-
 class PipelinePhase(Enum):
     """Pipeline phases for the full causal analysis workflow"""
     # Pre-processing phases
@@ -46,12 +39,8 @@ class AgentState(TypedDict, total=False):
     error_log: List[Dict[str, Any]]
     
     # === HITL State ===
-    hitl_required: bool
-    hitl_type: Optional[HITLType]
-    hitl_context: Dict[str, Any]  # Context for HITL interaction
-    user_decision: Optional[str]  # User's decision (approve/edit/feedback/abort)
-    user_edits: Dict[str, Any]  # User-provided edits
-    user_feedback: Optional[str]  # User feedback for loopback
+    user_edits: Dict[str, Any]
+    user_feedback: Optional[str]
     
     # === User Interaction ===
     user_constraints: Dict[str, Any]  # User-provided constraints for causal discovery
@@ -133,7 +122,6 @@ class AgentState(TypedDict, total=False):
     timestamp: datetime
     agent_execution_log: List[Dict[str, Any]]
     performance_metrics: Dict[str, Any]
-    interrupt_points: List[Dict[str, Any]]
 
 class DataExplorerState(TypedDict, total=False):
     """State specific to Data Explorer Agent"""
@@ -183,10 +171,6 @@ def create_initial_state(query: str, db_id: str = "daa", session_id: str = None)
         completed_phases=[],
         completed_substeps=[],
         error_log=[],
-        hitl_required=False,
-        hitl_type=None,
-        hitl_context={},
-        user_decision=None,
         user_edits={},
         user_feedback=None,
         user_constraints={},
@@ -230,8 +214,7 @@ def create_initial_state(query: str, db_id: str = "daa", session_id: str = None)
         session_id=session_id,
         timestamp=datetime.now(),
         agent_execution_log=[],
-        performance_metrics={},
-        interrupt_points=[]
+        performance_metrics={}
     )
 
 def validate_state(state: AgentState) -> bool:
@@ -253,7 +236,10 @@ def validate_state(state: AgentState) -> bool:
     return True
 
 def get_agent_specific_state(state: AgentState, agent_type: str) -> Dict[str, Any]:
-    """Extract agent-specific state from global state"""
+    """
+    Extract agent-specific state from global state
+    agent 내부 수정에 맞추어 변경 필요
+    """
     agent_states = {
         "data_explorer": ["db_id", "schema_info", "table_metadata", "candidate_tables", 
                          "selected_tables", "sql_query", "df_raw", "df_preprocessed"],
@@ -292,46 +278,3 @@ def is_substep_completed(state: AgentState, substep: str) -> bool:
     """Check if a substep is completed"""
     return substep in state.get("completed_substeps", [])
 
-def add_interrupt_point(state: AgentState, phase: PipelinePhase, substep: str, 
-                       hitl_type: HITLType, context: Dict[str, Any]) -> AgentState:
-    """Add an interrupt point to the state"""
-    interrupt_point = {
-        "phase": phase.value,
-        "substep": substep,
-        "hitl_type": hitl_type.value,
-        "context": context,
-        "timestamp": datetime.now().isoformat()
-    }
-    
-    if "interrupt_points" not in state:
-        state["interrupt_points"] = []
-    
-    state["interrupt_points"].append(interrupt_point)
-    state["hitl_required"] = True
-    state["hitl_type"] = hitl_type
-    state["hitl_context"] = context
-    state["execution_status"] = ExecutionStatus.INTERRUPTED
-    
-    return state
-
-def resolve_interrupt(state: AgentState, user_decision: str, user_edits: Dict[str, Any] = None, 
-                     user_feedback: str = None) -> AgentState:
-    """Resolve an interrupt point with user input"""
-    state["user_decision"] = user_decision
-    state["hitl_required"] = False
-    state["hitl_type"] = None
-    state["hitl_context"] = {}
-    
-    if user_edits:
-        state["user_edits"] = user_edits
-    
-    if user_feedback:
-        state["user_feedback"] = user_feedback
-    
-    # Update execution status based on decision
-    if user_decision == "abort":
-        state["execution_status"] = ExecutionStatus.FAILED
-    else:
-        state["execution_status"] = ExecutionStatus.RUNNING
-    
-    return state

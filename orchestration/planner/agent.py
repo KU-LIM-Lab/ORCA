@@ -2,6 +2,7 @@
 from typing import Dict, Any, List, Optional
 from core.base import OrchestratorAgent
 from core.state import AgentState
+from langgraph.types import interrupt
 from monitoring.metrics.collector import MetricsCollector
 
 class PlannerAgent(OrchestratorAgent):
@@ -18,14 +19,6 @@ class PlannerAgent(OrchestratorAgent):
             "causal_inference",
             "report_generation"
         ]
-        
-        # Step dependencies (what needs to be completed before each step)
-        self.step_dependencies = {
-            "data_exploration": [],
-            "causal_discovery": ["data_exploration"],
-            "causal_inference": ["causal_discovery"],
-            "report_generation": ["causal_inference"]
-        }
         
         # Step configurations
         self.step_configs = {
@@ -60,33 +53,27 @@ class PlannerAgent(OrchestratorAgent):
         }
     
     def create_execution_plan(self, goal: str, context: AgentState) -> List[Dict[str, Any]]:
-        """Create execution plan - defaults to full pipeline with state-based skipping"""
-        # Get the full pipeline plan
-        full_plan = self.get_full_pipeline_plan()
+        """Create execution plan based on state and user-selected mode (no query analysis)"""
+        analysis_mode = context.get("analysis_mode")  # 'full_pipeline' | 'data_exploration'
         
-        # Determine entry point based on current state
-        entry_point = self.determine_entry_point(context)
+        # If mode not selected, ask user via HITL (handled in step())
+        if not analysis_mode:
+            return []
         
-        # Filter plan to start from entry point
-        filtered_plan = []
-        start_adding = False
+        if analysis_mode == "full_pipeline":
+            # Return the unfiltered full pipeline (system + all phases)
+            return self.get_full_pipeline_plan()
         
-        for step in full_plan:
-            if step["phase"] == entry_point:
-                start_adding = True
-            
-            if start_adding:
-                # Check if step is already completed
-                if self._is_step_completed(step, context):
-                    continue
-                    
-                # Check if dependencies are met
-                if not self._are_dependencies_met(step, context):
-                    continue
-                    
-                filtered_plan.append(step)
+        if analysis_mode == "data_exploration":
+            # Minimal plan: system steps + exploration
+            plan = []
+            for step in self.get_full_pipeline_plan():
+                if step.get("is_system_component", False) or step["phase"].value == "data_exploration":
+                    plan.append(step)
+            return plan
         
-        return filtered_plan
+        # Fallback: no plan
+        return []
     
     def _is_step_completed(self, step: Dict[str, Any], current_state: AgentState) -> bool:
         """Check if a step is already completed based on current state"""
@@ -107,19 +94,65 @@ class PlannerAgent(OrchestratorAgent):
         """Check if step dependencies are met"""
         dependencies = step.get("dependencies", [])
         
+        # System components don't have dependencies
+        if step.get("is_system_component", False):
+            return True
+        
+        # For data exploration steps, allow them to be planned initially
+        if step["phase"].value == "data_exploration":
+            # Data exploration steps can be planned initially
+            # They will be executed after system components complete
+            return True
+        
+        # For other steps, check explicit dependencies
         for dep in dependencies:
-            # Check if dependency substep is completed
             if dep not in current_state.get("completed_substeps", []):
                 return False
         return True
     
     
     def step(self, state: AgentState) -> AgentState:
-        """Execute planning step"""
-        query = state.get("initial_query", "")
+        """Execute planning step with HITL for prerequisites and mode selection."""
+        # If analysis_mode already provided, skip HITL prompts
+        if not state.get("analysis_mode"):
+            # a) Check required ground-truth inputs at the very first planning step
+            has_gt_df = state.get("ground_truth_dataframe_path") or state.get("ground_truth_dataframe")
+            has_gt_graph = state.get("ground_truth_causal_graph_path") or state.get("ground_truth_causal_graph")
+            
+            if not (has_gt_df and has_gt_graph):
+                payload = {
+                    "question": "Provide ground-truth inputs or skip",
+                    "required_fields": [
+                        {
+                            "key": "ground_truth_dataframe_path",
+                            "desc": "CSV/Parquet path or set allow_start_without_ground_truth=True"
+                        },
+                        {
+                            "key": "ground_truth_causal_graph_path",
+                            "desc": "Graph JSON path (e.g., DoWhy graph) or skip"
+                        }
+                    ],
+                    "examples": {
+                        "ground_truth_dataframe_path": "/path/to/data.csv",
+                        "ground_truth_causal_graph_path": "/path/to/graph.json"
+                    }
+                }
+                decision = interrupt(payload)
+                for k, v in (decision or {}).items():
+                    state[k] = v
+
+            # b) Ask user to choose mode if not specified
+            if not state.get("analysis_mode"):
+                decision = interrupt({
+                    "question": "Select analysis mode",
+                    "options": ["full_pipeline", "data_exploration"],
+                    "edit_hint": "Set analysis_mode to 'full_pipeline' or 'data_exploration'"
+                })
+                if isinstance(decision, dict) and "analysis_mode" in decision:
+                    state["analysis_mode"] = decision["analysis_mode"]
         
-        # Create execution plan
-        plan = self.create_execution_plan(query, state)
+        # c) Build plan according to the chosen mode (no query analysis)
+        plan = self.create_execution_plan(state.get("initial_query", ""), state)
         
         # Update state with new plan
         state["execution_plan"] = plan

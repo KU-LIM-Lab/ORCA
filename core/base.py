@@ -7,7 +7,7 @@ from datetime import datetime
 import asyncio
 import json
 from monitoring.metrics.collector import MetricsCollector, track_execution_time, track_memory_usage, record_metric, MetricType
-from core.state import AgentState, PipelinePhase, HITLType, ExecutionStatus
+from core.state import AgentState, PipelinePhase, ExecutionStatus
 
 class AgentType(Enum):
     """Agent type definitions"""
@@ -289,9 +289,8 @@ class OrchestratorAgent(BaseAgent):
                 "agent": "system_database",  # System component, not agent
                 "action": "connect",
                 "description": "Connect to database using utils.system_agents.DatabaseAgent",
-                "dependencies": [],
+                "required_state_keys": [],
                 "timeout": 30,
-                "hitl_required": False,
                 "is_system_component": True
             },
             {
@@ -300,9 +299,8 @@ class OrchestratorAgent(BaseAgent):
                 "agent": "system_metadata",  # System component, not agent
                 "action": "create_metadata",
                 "description": "Create database metadata using utils.system_agents.MetadataAgent",
-                "dependencies": ["connect_database"],
+                "required_state_keys": ["database_connection"],
                 "timeout": 60,
-                "hitl_required": False,
                 "is_system_component": True
             },
             
@@ -313,10 +311,9 @@ class OrchestratorAgent(BaseAgent):
                 "agent": "data_explorer",
                 "action": "select_tables",
                 "description": "Select relevant tables for analysis",
-                "dependencies": ["create_metadata"],
+                "required_state_keys": ["schema_info", "table_metadata"],
                 "timeout": 120,
-                "hitl_required": True,
-                "hitl_type": HITLType.APPROVAL
+                "hitl_required": True
             },
             {
                 "phase": PipelinePhase.DATA_EXPLORATION,
@@ -324,10 +321,9 @@ class OrchestratorAgent(BaseAgent):
                 "agent": "data_explorer",
                 "action": "retrieve_data",
                 "description": "Retrieve data via text2sql",
-                "dependencies": ["table_selection"],
+                "required_state_keys": ["selected_tables"],
                 "timeout": 180,
-                "hitl_required": True,
-                "hitl_type": HITLType.APPROVAL
+                "hitl_required": True
             },
             
             # Causal Discovery Phase
@@ -337,10 +333,9 @@ class OrchestratorAgent(BaseAgent):
                 "agent": "causal_discovery",
                 "action": "create_assumption_method_matrix",
                 "description": "Create assumption-method compatibility matrix",
-                "dependencies": ["table_retrieval"],
+                "required_state_keys": ["df_preprocessed"],
                 "timeout": 300,
-                "hitl_required": True,
-                "hitl_type": HITLType.APPROVAL
+                "hitl_required": True
             },
             {
                 "phase": PipelinePhase.CAUSAL_DISCOVERY,
@@ -348,10 +343,9 @@ class OrchestratorAgent(BaseAgent):
                 "agent": "causal_discovery",
                 "action": "score_algorithms",
                 "description": "Score algorithms based on assumption-method matrix",
-                "dependencies": ["assumption_method_matrix"],
+                "required_state_keys": ["assumption_method_matrix"],
                 "timeout": 60,
-                "hitl_required": True,
-                "hitl_type": HITLType.EDIT
+                "hitl_required": True
             },
             {
                 "phase": PipelinePhase.CAUSAL_DISCOVERY,
@@ -359,7 +353,7 @@ class OrchestratorAgent(BaseAgent):
                 "agent": "causal_discovery",
                 "action": "run_algorithms",
                 "description": "Run selected algorithms in parallel",
-                "dependencies": ["algorithm_scoring"],
+                "required_state_keys": ["selected_algorithms"],
                 "timeout": 600,
                 "hitl_required": False
             },
@@ -369,7 +363,7 @@ class OrchestratorAgent(BaseAgent):
                 "agent": "causal_discovery",
                 "action": "calculate_intermediate_scores",
                 "description": "Calculate intermediate scores for each algorithm",
-                "dependencies": ["run_algorithms"],
+                "required_state_keys": ["algorithm_results"],
                 "timeout": 120,
                 "hitl_required": False
             },
@@ -379,10 +373,9 @@ class OrchestratorAgent(BaseAgent):
                 "agent": "causal_discovery",
                 "action": "select_final_graph",
                 "description": "Select final causal graph based on scores",
-                "dependencies": ["intermediate_scoring"],
+                "required_state_keys": ["intermediate_scores"],
                 "timeout": 180,
-                "hitl_required": True,
-                "hitl_type": HITLType.EDIT
+                "hitl_required": True
             },
             
             # Causal Inference Phase
@@ -392,10 +385,9 @@ class OrchestratorAgent(BaseAgent):
                 "agent": "causal_inference",
                 "action": "select_config",
                 "description": "Select inference configuration",
-                "dependencies": ["final_graph_selection"],
+                "required_state_keys": ["selected_graph", "df_preprocessed"],
                 "timeout": 120,
-                "hitl_required": True,
-                "hitl_type": HITLType.EDIT
+                "hitl_required": True
             },
             {
                 "phase": PipelinePhase.CAUSAL_INFERENCE,
@@ -403,7 +395,7 @@ class OrchestratorAgent(BaseAgent):
                 "agent": "causal_inference",
                 "action": "estimate_effects",
                 "description": "Estimate causal effects",
-                "dependencies": ["select_configuration"],
+                "required_state_keys": ["treatment_variable", "outcome_variable", "selected_graph"],
                 "timeout": 300,
                 "hitl_required": False
             },
@@ -413,10 +405,10 @@ class OrchestratorAgent(BaseAgent):
                 "agent": "causal_inference",
                 "action": "interpret_results",
                 "description": "Interpret and validate results",
-                "dependencies": ["effect_estimation"],
+                "required_state_keys": ["causal_estimates"],
                 "timeout": 180,
                 "hitl_required": True,
-                "hitl_type": HITLType.APPROVAL
+                "hitl_required": True
             },
             
             # Report Generation
@@ -426,10 +418,9 @@ class OrchestratorAgent(BaseAgent):
                 "agent": "report_generator",
                 "action": "generate_report",
                 "description": "Generate final analysis report",
-                "dependencies": ["interpretation"],
+                "required_state_keys": ["interpretation_results"],
                 "timeout": 240,
-                "hitl_required": True,
-                "hitl_type": HITLType.APPROVAL
+                "hitl_required": True
             }
         ]
 
