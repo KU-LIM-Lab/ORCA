@@ -6,6 +6,11 @@ module.exports = async function () {
   console.log("Updating average_rating in products...");
 
   await client.query(`
+    ALTER TABLE products
+    ADD COLUMN IF NOT EXISTS average_rating numeric(3,2) DEFAULT 0.00 NOT NULL
+  `);
+
+  await client.query(`
     UPDATE products
     SET average_rating = sub.avg_rating
     FROM (
