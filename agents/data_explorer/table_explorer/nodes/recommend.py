@@ -1,11 +1,12 @@
 from utils.llm import call_llm
 from prompts.table_explorer_prompts import usecase_parser as parser, usecase_prompt as prompt
 from langchain_core.language_models.chat_models import BaseChatModel
+from .related import related_tables
 
 def recommend_analysis(table_name: str, db_id: str, table_description: str, llm: BaseChatModel) -> str:
     table_name = table_name
     db_id = db_id
-    related = related_tables(db_id, table_name)
+    related = related_tables(table_name, db_id)
 
     recommendation = call_llm(
         prompt=prompt,

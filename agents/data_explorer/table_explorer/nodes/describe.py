@@ -1,6 +1,6 @@
 import json
-from prompts.describe_table_prompts import column_description_prompt as prompt, column_description_parser as parser, TableAnalysis
-from data_prep.metadata import generate_table_markdown, update_metadata
+from prompts.table_explorer_prompts import column_description_prompt as prompt, column_description_parser as parser, TableAnalysis
+from utils.data_prep.metadata import generate_table_markdown, update_metadata
 from utils.llm import call_llm
 from langchain_core.language_models.chat_models import BaseChatModel
 from utils.redis_client import redis_client
