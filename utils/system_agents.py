@@ -210,7 +210,7 @@ class MetadataAgent:
     def _extract_schema(self) -> Dict[str, Any]:
         """Extract database schema information."""
         try:
-            return extract_schema(self.database_agent.database, self.database_agent.db_id)
+            return extract_schema(self.database_agent.db_id)
         except Exception as e:
             logger.error(f"Schema extraction failed: {str(e)}")
             return {"tables": {}, "error": str(e)}
@@ -218,7 +218,10 @@ class MetadataAgent:
     def _generate_table_metadata(self) -> Dict[str, Any]:
         """Generate comprehensive table metadata."""
         try:
-            return generate_metadata(self.database_agent.database, self.database_agent.db_id)
+            metadata = {}
+            for table_name, table_schema in self.schema_info.get("tables", {}).items():
+                metadata[table_name] = generate_metadata(table_name, table_schema)
+            return metadata
         except Exception as e:
             logger.error(f"Table metadata generation failed: {str(e)}")
             return {"error": str(e)}
@@ -226,7 +229,7 @@ class MetadataAgent:
     def _update_table_relations(self) -> Dict[str, Any]:
         """Update table relationship information."""
         try:
-            return update_relations(self.database_agent.database, self.database_agent.db_id)
+            return update_table_relations(self.database_agent.db_id)
         except Exception as e:
             logger.error(f"Table relations update failed: {str(e)}")
             return {"error": str(e)}
