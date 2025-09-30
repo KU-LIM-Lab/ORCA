@@ -1,26 +1,26 @@
 llm:
   provider: "openai" # or "ollama"
-  model: "gpt-4o-mini" # "llama3.1:latest"    
+  model: "gpt-4o-mini" # "llama3.1:latest"
   temperature: 0.3
 
-prompt_column_desc_system : "column_desc_system"
+prompt_column_desc_system: "column_desc_system"
 prompt_column_desc_human: "column_desc_human"
 routing_prompt: "routing_prompt"
 
-database: # DB 경로 수정 
+database: # DB 경로 수정
   type: postgresql # DB 종류 선택
-  postgresql: 
+  postgresql:
     host: localhost
     port: 5432
-    dbname: daa
+    dbname: reef_db
     user: postgres
-    password: ${POSTGRES_PASSWORD}
+    password: ${PGPASSWORD}
   sqlite:
-    sqlite_path: data/bird_db.sqlite 
+    sqlite_path: data/bird_db.sqlite
 
 redis:
   host: localhost
   port: 6379
-  db: 0 # 수정
-  password: ${REDIS_PASSWORD}
+  db: 0
+  password:
   decode_responses: true

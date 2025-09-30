@@ -12,8 +12,8 @@ import logging
 from datetime import datetime
 
 from .database import Database
-from .data_prep.metadata import generate_metadata, extract_schema, update_table_relations
-from .data_prep.related_tables import update_table_relations as update_relations
+from .data_prep.metadata import generate_metadata, extract_schema
+from .data_prep.related_tables import update_table_relations
 
 logger = logging.getLogger(__name__)
 

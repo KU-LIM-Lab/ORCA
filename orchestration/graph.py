@@ -52,10 +52,8 @@ class OrchestrationGraph:
         # Add edges
         graph.add_edge("planner", "executor")
         
-        # Add HITL interrupts
-        graph.add_interrupt_after("planner", "hitl_handler")
-        graph.add_interrupt_before("executor", "hitl_handler")
-        graph.add_interrupt_after("executor", "hitl_handler")
+        # HITL interrupts will be handled within nodes for now
+        # TODO: Implement proper interrupt handling for LangGraph 0.3.x
         
         # Add conditional edges
         graph.add_conditional_edges(

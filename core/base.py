@@ -257,8 +257,8 @@ class BaseAgent(ABC):
 class OrchestratorAgent(BaseAgent):
     """Orchestrator agent (Supervisor)"""
     
-    def __init__(self, name: str, config: Optional[Dict[str, Any]] = None):
-        super().__init__(name, AgentType.ORCHESTRATOR, config)
+    def __init__(self, name: str, config: Optional[Dict[str, Any]] = None, metrics_collector: Optional[MetricsCollector] = None):
+        super().__init__(name, AgentType.ORCHESTRATOR, config, metrics_collector)
         self.sub_agents: Dict[str, BaseAgent] = {}
         self.execution_plan: List[Dict[str, Any]] = []
         

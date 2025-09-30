@@ -127,16 +127,16 @@ class UnifiedMonitor:
             json.dump(data, f, indent=2)
 
 # Global unified monitor
-_unified_monitor: Optional[UnifiedMonitor] = None
+_unified_monitor: Optional['UnifiedMonitor'] = None
 
-def get_unified_monitor(session_id: str = "default") -> UnifiedMonitor:
+def get_unified_monitor(session_id: str = "default") -> 'UnifiedMonitor':
     """Get or create global unified monitor"""
     global _unified_monitor
     if _unified_monitor is None or _unified_monitor.session_id != session_id:
         _unified_monitor = UnifiedMonitor(session_id)
     return _unified_monitor
 
-def set_unified_monitor(monitor: UnifiedMonitor):
+def set_unified_monitor(monitor: 'UnifiedMonitor'):
     """Set global unified monitor"""
     global _unified_monitor
     _unified_monitor = monitor
