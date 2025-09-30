@@ -274,13 +274,13 @@ ALTER TABLE public.user_coupons OWNER TO postgres;
 
 CREATE TABLE public.users (
     user_id uuid NOT NULL,
-    username character varying(50),
+    username character varying(255),
     password character varying(255) NOT NULL,
-    name character varying(50),
-    email character varying(100),
-    phone character varying(50),
+    name character varying(255),
+    email character varying(255),
+    phone character varying(255),
     birth date,
-    gender character(1),
+    gender character(10),
     address character varying(255),
     is_active boolean DEFAULT true NOT NULL,
     created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
