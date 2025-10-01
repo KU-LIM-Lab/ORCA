@@ -1,6 +1,6 @@
 import re
 from utils.llm import call_llm
-from ORCA.prompts.text2sql_generator_prompts import decompose_template
+from prompts.text2sql_generator_prompts import decompose_template
 
 from langchain_core.language_models.chat_models import BaseChatModel
 

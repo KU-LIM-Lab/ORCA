@@ -1,6 +1,6 @@
 import json, re
 from typing import Dict, Any, List
-from ORCA.prompts.text2sql_generator_prompts import selector_template
+from prompts.text2sql_generator_prompts import selector_template
 from utils.redis_client import redis_client
 from utils.llm import call_llm
 from langchain_core.language_models.chat_models import BaseChatModel

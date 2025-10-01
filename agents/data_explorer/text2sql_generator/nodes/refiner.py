@@ -1,5 +1,5 @@
 import re
-from ORCA.prompts.text2sql_generator_prompts import refiner_template, refiner_feedback_template
+from prompts.text2sql_generator_prompts import refiner_template, refiner_feedback_template
 from utils.llm import call_llm
 from utils.database import Database
 from langchain_core.language_models.chat_models import BaseChatModel
