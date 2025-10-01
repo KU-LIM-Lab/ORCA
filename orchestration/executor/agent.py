@@ -5,8 +5,11 @@ from core.state import AgentState, ExecutionStatus
 from monitoring.metrics.collector import MetricsCollector
 import asyncio
 import time
+import logging
 from datetime import datetime
 from langgraph.types import interrupt
+
+logger = logging.getLogger(__name__)
 
 class ExecutorAgent(OrchestratorAgent):
     """Executor agent responsible for executing plans and managing agent execution"""
@@ -20,30 +23,7 @@ class ExecutorAgent(OrchestratorAgent):
         self.execution_log = []
         self.results = {}
         
-        # Initialize system agents
-        self._initialize_system_agents()
-    
-    def _initialize_system_agents(self):
-        """Initialize and register system agents"""
-        try:
-            from utils.system_agents import create_system_agents
-            
-            # Create system agents
-            db_agent, metadata_agent = create_system_agents(
-                db_id="reef_db", 
-                db_type="postgresql"
-            )
-            
-            # Keep system agents locally (they are not BaseAgent instances)
-            self.system_agents: Dict[str, Any] = {
-                "system_database": db_agent,
-                "system_metadata": metadata_agent,
-            }
-            
-        except Exception as e:
-            print(f"Warning: Could not initialize system agents: {e}")
-        
-    def execute_plan(self, state: AgentState) -> AgentResult:
+    async def execute_plan(self, state: AgentState) -> AgentResult:
         """Execute the plan. HITL is handled inside via interrupt gate."""
         plan = state.get("execution_plan", [])
         if not plan:
@@ -71,7 +51,7 @@ class ExecutorAgent(OrchestratorAgent):
                     )
 
                 # Execute substep
-                result = self._execute_step(step, state)
+                result = await self._execute_step(step, state)
                 self.execution_log.append({
                     "phase": step["phase"].value,
                     "substep": step["substep"],
@@ -156,7 +136,7 @@ class ExecutorAgent(OrchestratorAgent):
                 }
             )
     
-    def _execute_step(self, step: Dict[str, Any], state: AgentState) -> AgentResult:
+    async def _execute_step(self, step: Dict[str, Any], state: AgentState) -> AgentResult:
         """Execute a single step in the plan"""
         substep = step["substep"]
         agent_name = step["agent"]
@@ -174,43 +154,12 @@ class ExecutorAgent(OrchestratorAgent):
                     metadata={"substep": substep}
                 )
             
-            # Get the agent
-            agent = None
-            if step.get("is_system_component", False):
-                agent = getattr(self, "system_agents", {}).get(agent_name)
-            else:
-                agent = self.sub_agents.get(agent_name)
-            if not agent:
-                return AgentResult(
-                    success=False,
-                    error=f"Agent {agent_name} not found",
-                    metadata={"substep": substep, "agent": agent_name}
-                )
-            
-            # Handle system components explicitly (allow pre-initialized state to skip)
-            if step.get("is_system_component", False):
-                if substep == "connect_database":
-                    # Skip if already connected (pre-initialized outside the graph)
-                    if state.get("database_connection"):
-                        return AgentResult(success=True, data={})
-                    ok = getattr(agent, "connect", lambda: False)()
-                    if not ok:
-                        return AgentResult(success=False, error="Database connection failed")
-                    conn = getattr(agent, "get_connection", lambda: None)()
-                    return AgentResult(success=True, data={"database_connection": conn})
-                elif substep == "create_metadata":
-                    # Skip if metadata already present (pre-initialized outside the graph)
-                    if state.get("schema_info") and state.get("table_metadata"):
-                        return AgentResult(success=True, data={})
-                    ok = getattr(agent, "initialize", lambda: False)()
-                    if not ok:
-                        return AgentResult(success=False, error="Metadata initialization failed")
-                    data = {
-                        "schema_info": getattr(agent, "get_schema_info", lambda: {})(),
-                        "table_metadata": getattr(agent, "get_table_metadata", lambda: {})(),
-                        "table_relations": getattr(agent, "get_table_relations", lambda: {})(),
-                    }
-                    return AgentResult(success=True, data=data)
+            # All remaining steps should be actual agent steps
+            return AgentResult(
+                success=False,
+                error=f"Agent {agent_name} not implemented in current architecture",
+                metadata={"substep": substep, "agent": agent_name}
+            )
 
             # Execute the agent with timeout
             start_time = time.time()
@@ -284,6 +233,7 @@ class ExecutorAgent(OrchestratorAgent):
                 return False
         return True
 
+
     def _hitl_gate(self, step: Dict[str, Any], state: AgentState, result_data: Dict[str, Any]) -> Tuple[str, Dict[str, Any], str]:
         """HITL interrupt: returns (decision, edits, feedback)."""
         payload = {
@@ -325,69 +275,8 @@ class ExecutorAgent(OrchestratorAgent):
         """Re-run the same substep; store feedback for agent consumption."""
         if feedback:
             state["user_feedback"] = feedback
-        return self._execute_step(step, state)
+        return asyncio.run(self._execute_step(step, state))
 
-    def _create_hitl_context(self, step: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
-        """Create context for HITL interaction"""
-        return {
-            "phase": step["phase"].value,
-            "substep": step["substep"],
-            "agent": step["agent"],
-            "action": step["action"],
-            "description": step.get("description", ""),
-            "current_state": state,
-            "timestamp": datetime.now().isoformat()
-        }
-    
-    def pause_execution(self) -> Dict[str, Any]:
-        """Pause current execution"""
-        return {
-            "execution_paused": True,
-            "current_step": self.current_step,
-            "completed_steps": list(self.results.keys()),
-            "execution_log": self.execution_log
-        }
-    
-    def resume_execution(self, state: AgentState) -> AgentResult:
-        """Resume paused execution"""
-        plan = state.get("execution_plan", [])
-        remaining_steps = plan[self.current_step:]
-        
-        if not remaining_steps:
-            return AgentResult(
-                success=True,
-                data={"execution_completed": True, "resumed": True}
-            )
-        
-        # Continue with remaining steps
-        for step in remaining_steps:
-            result = self._execute_step(step, state)
-            self.execution_log.append({
-                "step_id": step["step_id"],
-                "timestamp": datetime.now().isoformat(),
-                "success": result.success,
-                "duration": result.execution_time
-            })
-            
-            if not result.success:
-                return AgentResult(
-                    success=False,
-                    error=f"Resumed execution failed at step {step['step_id']}: {result.error}"
-                )
-            
-            state.update(result.data or {})
-            self.results[step["step_id"]] = result.data
-        
-        return AgentResult(
-            success=True,
-            data={
-                "execution_completed": True,
-                "resumed": True,
-                "execution_log": self.execution_log,
-                "results": self.results
-            }
-        )
-    
     def get_execution_status(self) -> Dict[str, Any]:
         """Get current execution status"""
         return {
@@ -403,7 +292,7 @@ class ExecutorAgent(OrchestratorAgent):
         if state.get("execution_paused"):
             result = self.resume_execution(state)
         else:
-            result = self.execute_plan(state)
+            result = asyncio.run(self.execute_plan(state))
         
         # Update state with execution results
         if result.success:

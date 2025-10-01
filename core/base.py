@@ -48,19 +48,15 @@ class BaseAgent(ABC):
         name: str, 
         agent_type: AgentType,
         config: Optional[Dict[str, Any]] = None,
-        parent_agent: Optional['BaseAgent'] = None,
         metrics_collector: Optional[MetricsCollector] = None
     ):
         self.name = name
         self.agent_type = agent_type
         self.config = config or {}
-        self.parent_agent = parent_agent
-        self.tools: Dict[str, Callable] = {}
         self.memory = None
         self.logger = print
         self.status = AgentStatus.IDLE
         self.execution_history: List[AgentResult] = []
-        self.dependencies: List[str] = []  # List of dependency agents
         self.metrics_collector = metrics_collector
 
     def reset(self, **kwargs) -> None:
@@ -96,23 +92,6 @@ class BaseAgent(ABC):
                 **kwargs
             })
 
-    def add_tool(self, name: str, tool: Callable) -> None:
-        """Add tool"""
-        self.tools[name] = tool
-        self.on_event("tool_added", tool_name=name)
-
-    def get_tool(self, name: str) -> Optional[Callable]:
-        """Get tool"""
-        return self.tools.get(name)
-
-    def execute_tool(self, tool_name: str, *args, **kwargs) -> Any:
-        """Execute tool"""
-        tool = self.get_tool(tool_name)
-        if not tool:
-            raise ValueError(f"Tool '{tool_name}' not found")
-        
-        self.on_event("tool_executed", tool_name=tool_name, args=args, kwargs=kwargs)
-        return tool(*args, **kwargs)
 
     async def execute_async(self, state: AgentState) -> AgentResult:
         """Asynchronous execution (can be overridden)"""
@@ -173,17 +152,65 @@ class BaseAgent(ABC):
         """Execute one agent step: state -> state (asynchronous)"""
         return self.step(state)
 
-    def can_handle(self, state: AgentState) -> bool:
-        """Check if this agent can handle the given state"""
-        try:
-            self.validate_state(state)
-            return True
-        except (TypeError, KeyError):
-            return False
-
     def get_capabilities(self) -> List[str]:
         """Return list of agent capabilities"""
-        return list(self.tools.keys())
+        return []
+
+    def use_tool(self, tool_name: str, *args, **kwargs) -> Any:
+        """
+        Execute a tool by name with monitoring.
+        
+        This provides a simple interface for agents to access tools
+        while maintaining monitoring and error handling.
+        """
+        try:
+            from utils.tools import tool_registry
+            
+            # Record tool usage for monitoring
+            self.on_event("tool_used", tool_name=tool_name, args=args, kwargs=kwargs)
+            
+            # Execute tool
+            result = tool_registry.execute(tool_name, *args, **kwargs)
+            
+            # Record success
+            self.on_event("tool_success", tool_name=tool_name, result_type=type(result).__name__)
+            
+            return result
+            
+        except Exception as e:
+            # Record error
+            self.on_event("tool_error", tool_name=tool_name, error=str(e))
+            raise
+
+    def register_tool(self, tool_name: str, tool_func: Callable, description: str = "") -> None:
+        """
+        Register a custom tool for this agent.
+        
+        Args:
+            tool_name: Name of the tool
+            tool_func: Function to execute
+            description: Description of what the tool does
+        """
+        try:
+            from utils.tools import tool_registry, BaseTool
+            
+            # Create a simple tool wrapper
+            class SimpleTool(BaseTool):
+                def __init__(self, name, func, description):
+                    super().__init__(name, description)
+                    self.func = func
+                
+                def execute(self, *args, **kwargs):
+                    return self.func(*args, **kwargs)
+            
+            tool = SimpleTool(tool_name, tool_func, description)
+            tool_registry.register(tool)
+            
+            self.on_event("tool_registered", tool_name=tool_name)
+            
+        except Exception as e:
+            self.on_event("tool_registration_error", tool_name=tool_name, error=str(e))
+            raise
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize agent state to dictionary"""
@@ -201,72 +228,14 @@ class BaseAgent(ABC):
         # Override in subclasses to define HITL requirements
         return False
 
-    def create_hitl_context(self, state: AgentState, phase: PipelinePhase, substep: str) -> Dict[str, Any]:
-        """Create context for HITL interaction"""
-        return {
-            "phase": phase.value,
-            "substep": substep,
-            "agent": self.name,
-            "current_state": state,
-            "timestamp": datetime.now().isoformat()
-        }
-
-    def handle_hitl_approval(self, state: AgentState, user_decision: str) -> AgentState:
-        """Handle HITL approval decision"""
-        if user_decision == "approve":
-            state["user_decision"] = "approve"
-            state["hitl_required"] = False
-            state["execution_status"] = ExecutionStatus.RUNNING
-        elif user_decision == "abort":
-            state["user_decision"] = "abort"
-            state["hitl_required"] = False
-            state["execution_status"] = ExecutionStatus.FAILED
-        
-        return state
-
-    def handle_hitl_edit(self, state: AgentState, user_edits: Dict[str, Any]) -> AgentState:
-        """Handle HITL edit decision"""
-        state["user_edits"] = user_edits
-        state["hitl_required"] = False
-        state["execution_status"] = ExecutionStatus.RUNNING
-        
-        # Apply user edits to state
-        for key, value in user_edits.items():
-            state[key] = value
-        
-        return state
-
-    def handle_hitl_feedback(self, state: AgentState, user_feedback: str) -> AgentState:
-        """Handle HITL feedback for loopback"""
-        state["user_feedback"] = user_feedback
-        state["hitl_required"] = False
-        state["execution_status"] = ExecutionStatus.RUNNING
-        
-        # Add feedback to history
-        if "feedback_history" not in state:
-            state["feedback_history"] = []
-        
-        state["feedback_history"].append({
-            "timestamp": datetime.now().isoformat(),
-            "agent": self.name,
-            "feedback": user_feedback
-        })
-        
-        return state
 
 class OrchestratorAgent(BaseAgent):
     """Orchestrator agent (Supervisor)"""
     
     def __init__(self, name: str, config: Optional[Dict[str, Any]] = None, metrics_collector: Optional[MetricsCollector] = None):
         super().__init__(name, AgentType.ORCHESTRATOR, config, metrics_collector)
-        self.sub_agents: Dict[str, BaseAgent] = {}
         self.execution_plan: List[Dict[str, Any]] = []
         
-    def add_sub_agent(self, agent: BaseAgent) -> None:
-        """Add sub-agent"""
-        self.sub_agents[agent.name] = agent
-        agent.parent_agent = self
-        self.on_event("sub_agent_added", agent_name=agent.name)
         
     def create_execution_plan(self, goal: str, context: AgentState) -> List[Dict[str, Any]]:
         """Create execution plan (must be overridden)"""
@@ -278,32 +247,9 @@ class OrchestratorAgent(BaseAgent):
         Get the full pipeline plan structure.
         
         This defines the complete pipeline with all phases and sub-steps.
-        Database and metadata agents are system components that are initialized
-        during agent setup, not traditional agents.
+
         """
         return [
-            # Pre-processing phases (System initialization)
-            {
-                "phase": PipelinePhase.DB_CONNECTION,
-                "substep": "connect_database",
-                "agent": "system_database",  # System component, not agent
-                "action": "connect",
-                "description": "Connect to database using utils.system_agents.DatabaseAgent",
-                "required_state_keys": [],
-                "timeout": 30,
-                "is_system_component": True
-            },
-            {
-                "phase": PipelinePhase.METADATA_CREATION,
-                "substep": "create_metadata",
-                "agent": "system_metadata",  # System component, not agent
-                "action": "create_metadata",
-                "description": "Create database metadata using utils.system_agents.MetadataAgent",
-                "required_state_keys": ["database_connection"],
-                "timeout": 60,
-                "is_system_component": True
-            },
-            
             # Data Exploration Phase
             {
                 "phase": PipelinePhase.DATA_EXPLORATION,
@@ -355,7 +301,7 @@ class OrchestratorAgent(BaseAgent):
                 "description": "Run selected algorithms in parallel",
                 "required_state_keys": ["selected_algorithms"],
                 "timeout": 600,
-                "hitl_required": False
+                "hitl_required": True
             },
             {
                 "phase": PipelinePhase.CAUSAL_DISCOVERY,
@@ -365,7 +311,7 @@ class OrchestratorAgent(BaseAgent):
                 "description": "Calculate intermediate scores for each algorithm",
                 "required_state_keys": ["algorithm_results"],
                 "timeout": 120,
-                "hitl_required": False
+                "hitl_required": True
             },
             {
                 "phase": PipelinePhase.CAUSAL_DISCOVERY,
@@ -407,7 +353,6 @@ class OrchestratorAgent(BaseAgent):
                 "description": "Interpret and validate results",
                 "required_state_keys": ["causal_estimates"],
                 "timeout": 180,
-                "hitl_required": True,
                 "hitl_required": True
             },
             
@@ -452,11 +397,36 @@ class OrchestratorAgent(BaseAgent):
 class SpecialistAgent(BaseAgent):
     """Specialist agent (Data Explorer, Causal Discovery, Causal Inference)"""
     
-    def __init__(self, name: str, agent_type: AgentType, config: Optional[Dict[str, Any]] = None):
-        super().__init__(name, agent_type, config)
+    def __init__(self, name: str, agent_type: AgentType, config: Optional[Dict[str, Any]] = None, metrics_collector: Optional[MetricsCollector] = None):
+        super().__init__(name, agent_type, config, metrics_collector)
         self.domain_expertise: List[str] = []
         self.input_schema: Dict[str, Any] = {}
         self.output_schema: Dict[str, Any] = {}
+        self._initialize_tools()
+    
+    def _initialize_tools(self) -> None:
+        """Initialize tools specific to this specialist agent"""
+        try:
+            from utils.tools import tool_registry, DatabaseTool, LLMTool
+            
+            # Register common tools if not already registered
+            if not tool_registry.get("database"):
+                db_tool = DatabaseTool("reef_db", "postgresql")
+                tool_registry.register(db_tool)
+            
+            if not tool_registry.get("llm"):
+                llm_tool = LLMTool()
+                tool_registry.register(llm_tool)
+            
+            # Register specialist-specific tools
+            self._register_specialist_tools()
+            
+        except Exception as e:
+            self.on_event("tool_initialization_error", error=str(e))
+    
+    def _register_specialist_tools(self) -> None:
+        """Register tools specific to this specialist agent (override in subclasses)"""
+        pass
         
     def set_domain_expertise(self, expertise: List[str]) -> None:
         """Set domain expertise"""

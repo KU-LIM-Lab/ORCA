@@ -14,7 +14,6 @@ from typing import Dict, Any, Optional
 from core.state import create_initial_state, AgentState
 from orchestration.graph import OrchestrationGraph, create_orchestration_graph
 from monitoring import get_unified_monitor, set_metrics_collector
-from utils.system_agents import create_system_agents
 from utils.tools import tool_registry, DatabaseTool
 
 # Configure logging
@@ -60,9 +59,9 @@ class ORCAMainAgent:
         self.monitor = get_unified_monitor(f"orca_session_{db_id}")
         self.monitor.start_monitoring()
         
-        # Initialize system agents
-        self.db_agent = None
-        self.metadata_agent = None
+        # Initialize system before creating orchestration graph
+        self.system_initializer = None
+        self._initialize_system()
         
         # Initialize orchestration graph
         self.orchestration_graph = create_orchestration_graph(
@@ -73,35 +72,36 @@ class ORCAMainAgent:
         
         logger.info(f"ORCA Main Agent initialized for database: {db_id}")
     
+    def _initialize_system(self) -> None:
+        """Initialize system components during main agent creation"""
+        try:
+            from utils.system_init import initialize_system
+            
+            logger.info(f"Initializing system for database: {self.db_id}")
+            self.system_initializer = initialize_system(
+                self.db_id, 
+                self.db_type, 
+                self.db_config
+            )
+            logger.info("System initialization completed")
+            
+        except Exception as e:
+            logger.error(f"System initialization failed: {e}")
+            self.system_initializer = None
+    
     async def initialize_system(self) -> bool:
         """
-        Initialize system components (database, metadata, tools).
+        Check if system is already initialized.
         
         Returns:
-            True if initialization successful, False otherwise
+            True if system is ready, False otherwise
         """
-        try:
-            logger.info("Starting system initialization...")
-            
-            with self.monitor.track_execution("orca_main", "system_initialization"):
-                # Step 1: Create system agents
-                self.db_agent, self.metadata_agent = create_system_agents(
-                    self.db_id, self.db_type, self.db_config
-                )
-                
-                # Step 2: Register database tool
-                db_tool = DatabaseTool(self.db_id, self.db_type, self.db_config)
-                tool_registry.register(db_tool)
-                
-                # Step 3: Compile orchestration graph
-                self.orchestration_graph.compile()
-                
-                logger.info("System initialization completed successfully")
-                return True
-                
-        except Exception as e:
-            logger.error(f"System initialization failed: {str(e)}")
-            return False
+        if self.system_initializer and self.system_initializer.is_connected:
+            logger.info("System already initialized")
+            return True
+        
+        logger.error("System not initialized")
+        return False
     
     async def execute_query(self, query: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
@@ -125,9 +125,10 @@ class ORCAMainAgent:
                 
                 # Step 2: Add system components to state
                 initial_state.update({
-                    "db_agent": self.db_agent,
-                    "metadata_agent": self.metadata_agent,
-                    "system_initialized": True
+                    "system_initializer": self.system_initializer,
+                    "system_initialized": True,
+                    "db_id": self.db_id,
+                    "db_type": self.db_type
                 })
                 
                 # Step 3: Execute orchestration graph
@@ -270,9 +271,9 @@ async def main():
     )
     
     try:
-        # Step 1: Initialize system
-        logger.info("=== Step 1: System Initialization ===")
-        if not await orca.initialize_system():
+        # System is already initialized during ORCAMainAgent creation
+        logger.info("=== Step 1: System Status ===")
+        if not orca.system_initializer or not orca.system_initializer.is_connected:
             logger.error("System initialization failed")
             return
         

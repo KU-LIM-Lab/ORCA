@@ -65,10 +65,10 @@ class PlannerAgent(OrchestratorAgent):
             return self.get_full_pipeline_plan()
         
         if analysis_mode == "data_exploration":
-            # Minimal plan: system steps + exploration
+            # Minimal plan: only data exploration steps
             plan = []
             for step in self.get_full_pipeline_plan():
-                if step.get("is_system_component", False) or step["phase"].value == "data_exploration":
+                if step["phase"].value == "data_exploration":
                     plan.append(step)
             return plan
         

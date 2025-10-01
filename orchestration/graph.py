@@ -29,9 +29,6 @@ class OrchestrationGraph:
             metrics_collector=metrics_collector
         )
         
-        # Add executor as sub-agent to planner
-        self.planner.add_sub_agent(self.executor) # Q. executor를 planner의 sub-agent로 추가하는 게 어떤 의미인지
-        
         # Build the graph
         self.graph = self._build_graph()
         self.compiled_graph = None # Q. compiled_graph는 무엇인가?
