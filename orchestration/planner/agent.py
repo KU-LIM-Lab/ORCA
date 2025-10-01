@@ -72,7 +72,6 @@ class PlannerAgent(OrchestratorAgent):
                     plan.append(step)
             return plan
         
-        # Fallback: no plan
         return []
     
     def _is_step_completed(self, step: Dict[str, Any], current_state: AgentState) -> bool:

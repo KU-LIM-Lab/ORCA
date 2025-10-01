@@ -18,6 +18,8 @@ from .data_prep.metadata import generate_metadata, extract_schema
 from .data_prep.related_tables import update_table_relations
 from .redis_client import redis_client
 
+
+
 logger = logging.getLogger(__name__)
 
 class SystemInitializer:
@@ -94,7 +96,7 @@ class SystemInitializer:
             
             # Store in Redis
             redis_key = f"{self.db_id}:metadata"
-            redis_client.set(redis_key, json.dumps(metadata))
+            redis_client.set(redis_key, json.dumps(metadata, indent=2, default=str))
             
             # Store individual table metadata for easy access
             for table_name, table_meta in table_metadata.items():
@@ -102,7 +104,7 @@ class SystemInitializer:
                 redis_client.set(table_key, json.dumps({
                     "schema": schema_info["tables"][table_name],
                     "metadata": table_meta
-                }))
+                }, indent=2, default=str))
             
             logger.info(f"Metadata generated and stored in Redis for {self.db_id}")
             return metadata
