@@ -1,6 +1,6 @@
 from utils.llm import call_llm
 from langchain_core.language_models.chat_models import BaseChatModel
-from ORCA.prompts.text2sql_generator_prompts import review_noresult_template, review_result_template
+from prompts.text2sql_generator_prompts import review_noresult_template, review_result_template
 
 
 def review_node(state, llm: BaseChatModel):
