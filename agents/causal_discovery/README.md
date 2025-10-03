@@ -112,7 +112,9 @@ config = {
 
 - `LiNGAMTool`: DirectLiNGAM 알고리즘
 - `ANMTool`: Additive Noise Model 알고리즘
-- `EqVarLinearTool`: 등분산 선형 알고리즘
+- `PCTool`: PC 알고리즘
+- `GESTool`: GES 알고리즘
+- `CAMTool`: CAM 알고리즘
 
 ### 평가 도구
 
@@ -145,25 +147,33 @@ config = {
         "individual_scores": {...}
     },
     "ANM": {...},
-    "EqVar": {...}
+    "PC": {...},
+    "GES": {...},
+    "CAM": {...}
 }
 ```
 
 ### selected_graph
 
 ```python
+# selected_graph는 최종 후보의 graph 딕셔너리입니다 (edges, variables 포함).
+# metadata는 candidate_graphs의 각 항목에 포함됩니다.
 {
     "edges": [
-        {
-            "from": "variable1",
-            "to": "variable2",
-            "weight": 0.85,
-            "method": "LiNGAM"
-        }
+        {"from": "variable1", "to": "variable2", "weight": 0.85}
     ],
-    "variables": ["var1", "var2", ...],
-    "metadata": {...}
+    "variables": ["var1", "var2", ...]
 }
+```
+
+```
+
+### Optional: keep all algorithms in catalog but restrict selection
+- We preserved the catalog for role mapping but filtered selections to implemented algorithms.
+- When you add `CAM`, `FCI`, or `PNL` later, add their tool wrappers and `_run_*` handlers and include them in `self.IMPLEMENTED_ALGOS`.
+
+- I reviewed the agent and tools, identified misalignments (unsupported algorithms, ANM score interpretation, EqVar references, and README schema), and provided concise edits to fix them.
+- Next, apply the above edits. This will ensure selection only includes runnable methods, ANM scoring matches its statistical interpretation, bootstrap evaluation doesn’t reference missing tools, and the README accurately reflects behavior.
 ```
 
 ## HITL (Human-in-the-Loop) 지원
@@ -193,6 +203,7 @@ config = {
 ```python
 # 간단한 예제
 import pandas as pd
+import numpy as np
 from agents.causal_discovery.agent import CausalDiscoveryAgent
 
 # 샘플 데이터 생성

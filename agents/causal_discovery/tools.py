@@ -1,3 +1,45 @@
+# === Standardized graph result schema helpers ===
+# Edge attribute semantics:
+# - weight: algorithm-native strength/evidence in [0,1] if possible (e.g., ANM score, correlation-derived score, BIC-based rescale).
+# - confidence: post-hoc reliability from ensembling/bootstrapping (e.g., frequency).
+# Keep both when available; algorithm-specific extras should go under result['metadata'] or per-edge custom keys.
+GRAPH_RESULT_TEMPLATE = {
+    "graph": {"edges": [], "variables": []},
+    "metadata": {"method": None, "params": {}, "runtime": None}
+}
+
+def _normalize_edges(edges):
+    norm = []
+    for e in edges or []:
+        if isinstance(e, dict):
+            frm, to = e.get("from"), e.get("to")
+            w = e.get("weight", None)
+            conf = e.get("confidence") if isinstance(e, dict) else None
+        else:
+            # support tuple (from, to, weight?)
+            frm = e[0]; to = e[1]; w = e[2] if len(e) > 2 else None
+            conf = None
+        item = {"from": str(frm), "to": str(to)}
+        if w is not None:
+            item["weight"] = float(w)
+        if conf is not None:
+            item["confidence"] = float(conf)
+        norm.append(item)
+    return norm
+
+def normalize_graph_result(method: str, variables, edges, params=None, runtime=None):
+    res = {
+        "graph": {
+            "edges": _normalize_edges(edges),
+            "variables": list(map(str, variables or []))
+        },
+        "metadata": {
+            "method": method,
+            "params": params or {},
+            "runtime": runtime
+        }
+    }
+    return res
 # agents/causal_discovery/tools.py
 """
 Causal Discovery Agent Tools Implementation
@@ -7,6 +49,8 @@ This module implements the specialized tools for causal discovery:
 - Independence testing tools  
 - Causal discovery algorithm tools
 - Evaluation and analysis tools
+
+Note: EqVar is diagnostics only (not a discovery algorithm).
 """
 
 import logging
@@ -134,28 +178,39 @@ class IndependenceTool:
     
     @staticmethod
     def anm_test(x: pd.Series, y: pd.Series) -> Dict[str, Any]:
-        """Test ANM assumption using independence testing"""
+        """Test ANM assumption via residual independence using causal-learn KCI/HSIC.
+        Returns anm_score in [0,1] where higher is more consistent with ANM X->Y.
+        """
         try:
-            # Simple independence test using correlation
-            correlation = x.corr(y)
-            
-            # Test independence of residuals
-            lr = LinearRegression()
-            lr.fit(x.values.reshape(-1, 1), y.values)
-            residuals = y.values - lr.predict(x.values.reshape(-1, 1))
-            
-            # Test independence between x and residuals
-            x_residual_corr = x.corr(pd.Series(residuals, index=x.index))
-            
-            # ANM score based on independence of residuals
-            anm_score = 1.0 - abs(x_residual_corr)
-            
-            return {
-                "anm_score": max(0.0, min(1.0, anm_score)),
-                "correlation": correlation,
-                "residual_correlation": x_residual_corr
-            }
-            
+            import numpy as np
+            from sklearn.ensemble import RandomForestRegressor
+            # Fit nonparametric regression y ~ f(x)
+            X = x.values.reshape(-1, 1)
+            Y = y.values.reshape(-1, 1)
+            rf = RandomForestRegressor(random_state=42, n_estimators=200, max_depth=None)
+            rf.fit(X, Y.ravel())
+            resid = Y.ravel() - rf.predict(X)
+            # Independence test between x and residual
+            pval = None
+            try:
+                # Try HSIC gamma approximation
+                from causallearn.utils.cit import hsic_test_gamma
+                pval = float(hsic_test_gamma(X.ravel(), resid))
+            except Exception:
+                try:
+                    # Fallback: KCI (may require bandwidth selection)
+                    from causallearn.utils.cit import kci
+                    pval = float(kci(X.reshape(-1,1), resid.reshape(-1,1)))
+                except Exception:
+                    pass
+            if pval is None:
+                # Final fallback: absolute Spearman correlation
+                rho = abs(pd.Series(resid).corr(pd.Series(X.ravel()), method='spearman'))
+                score = max(0.0, min(1.0, 1.0 - rho))
+                return {"anm_score": score, "fallback": True}
+            # High p-value ⇒ fail to reject independence ⇒ ANM satisfied
+            score = float(max(0.0, min(1.0, pval)))
+            return {"anm_score": score, "p_value": pval}
         except Exception as e:
             logger.warning(f"ANM test failed: {e}")
             return {"anm_score": 0.5, "error": str(e)}
@@ -165,51 +220,37 @@ class LiNGAMTool:
     
     @staticmethod
     def direct_lingam(df: pd.DataFrame) -> Dict[str, Any]:
-        """DirectLiNGAM algorithm implementation"""
+        """DirectLiNGAM via causal-learn."""
         try:
-            # Simplified LiNGAM implementation
-            n_vars = len(df.columns)
-            variables = list(df.columns)
+            import time
+            from causallearn.search.FCMBased.lingam import DirectLiNGAM
             
-            # Initialize adjacency matrix
-            adjacency_matrix = np.zeros((n_vars, n_vars))
+            t0 = time.time()
+            X = df.values
+            vars_ = list(df.columns)
+            model = None
             
-            # Simple causal ordering based on variance
-            var_order = df.var().sort_values(ascending=True).index.tolist()
-            
-            # Build causal graph
-            for i, var1 in enumerate(var_order):
-                for j, var2 in enumerate(var_order):
-                    if i < j:  # Only consider forward relationships
-                        # Simple correlation-based edge detection
-                        corr = df[var1].corr(df[var2])
-                        if abs(corr) > 0.3:  # Threshold
-                            adjacency_matrix[i][j] = corr
-            
-            # Convert to edge list
+            model = DirectLiNGAM()
+            model.fit(X)
+            # Extract adjacency if available
             edges = []
-            for i in range(n_vars):
-                for j in range(n_vars):
-                    if adjacency_matrix[i][j] != 0:
-                        edges.append({
-                            "from": variables[i],
-                            "to": variables[j],
-                            "weight": adjacency_matrix[i][j]
-                        })
-            
-            return {
-                "graph": {
-                    "edges": edges,
-                    "adjacency_matrix": adjacency_matrix.tolist(),
-                    "variables": variables
-                },
-                "metadata": {
-                    "method": "DirectLiNGAM",
-                    "n_variables": n_vars,
-                    "n_edges": len(edges)
-                }
-            }
-            
+            A = getattr(model, 'adjacency_matrix_', None)
+            if A is None:
+                A = getattr(model, 'adjacency_matrix', None)
+            if A is not None:
+                A = np.asarray(A)
+                for i in range(A.shape[0]):
+                    for j in range(A.shape[1]):
+                        if abs(A[i, j]) > 0:
+                            edges.append({"from": vars_[i], "to": vars_[j], "weight": float(A[i, j])})
+            else:
+                # Fallback: use causal order
+                order = getattr(model, 'causal_order_', list(range(len(vars_))))
+                for i in range(len(order)):
+                    for j in range(i+1, len(order)):
+                        edges.append({"from": vars_[order[i]], "to": vars_[order[j]], "weight": 1.0})
+            runtime = time.time() - t0
+            return normalize_graph_result("DirectLiNGAM", vars_, edges, {"backend": "causal-learn"}, runtime)
         except Exception as e:
             logger.error(f"LiNGAM execution failed: {e}")
             return {"error": str(e)}
@@ -219,102 +260,121 @@ class ANMTool:
     
     @staticmethod
     def anm_discovery(df: pd.DataFrame) -> Dict[str, Any]:
-        """ANM algorithm implementation"""
-        try:
-            n_vars = len(df.columns)
-            variables = list(df.columns)
-            edges = []
-            
-            # Test all variable pairs for ANM directionality
-            for i, var1 in enumerate(variables):
-                for j, var2 in enumerate(variables):
-                    if i != j:
-                        # Test X -> Y direction
-                        x_to_y_score = IndependenceTool.anm_test(df[var1], df[var2])["anm_score"]
-                        # Test Y -> X direction  
-                        y_to_x_score = IndependenceTool.anm_test(df[var2], df[var1])["anm_score"]
-                        
-                        # Determine direction based on ANM scores
-                        if x_to_y_score > y_to_x_score and x_to_y_score > 0.6:
-                            edges.append({
-                                "from": var1,
-                                "to": var2,
-                                "weight": x_to_y_score,
-                                "method": "ANM"
-                            })
-                        elif y_to_x_score > x_to_y_score and y_to_x_score > 0.6:
-                            edges.append({
-                                "from": var2,
-                                "to": var1,
-                                "weight": y_to_x_score,
-                                "method": "ANM"
-                            })
-            
-            return {
-                "graph": {
-                    "edges": edges,
-                    "variables": variables
-                },
-                "metadata": {
-                    "method": "ANM",
-                    "n_variables": n_vars,
-                    "n_edges": len(edges)
-                }
-            }
-            
-        except Exception as e:
-            logger.error(f"ANM execution failed: {e}")
-            return {"error": str(e)}
+        import time
+        from sklearn.ensemble import RandomForestRegressor
+        t0 = time.time()
+        vars_ = list(df.columns)
+        edges = []
+        delta = 0.05
+        tau = 0.10
+        for i, xi in enumerate(vars_):
+            for j, yj in enumerate(vars_):
+                if i == j:
+                    continue
+                X = df[xi].values.reshape(-1,1)
+                Y = df[yj].values.reshape(-1,1)
+                # X->Y
+                p_xy = None
+                try:
+                    rf = RandomForestRegressor(random_state=42, n_estimators=200)
+                    rf.fit(X, Y.ravel())
+                    resid_xy = Y.ravel() - rf.predict(X)
+                    try:
+                        from causallearn.utils.cit import hsic_test_gamma
+                        p_xy = float(hsic_test_gamma(X.ravel(), resid_xy))
+                    except Exception:
+                        from causallearn.utils.cit import kci
+                        p_xy = float(kci(X, resid_xy.reshape(-1,1)))
+                except Exception:
+                    p_xy = None
+                # Y->X
+                p_yx = None
+                try:
+                    rf = RandomForestRegressor(random_state=42, n_estimators=200)
+                    rf.fit(Y, X.ravel())
+                    resid_yx = X.ravel() - rf.predict(Y)
+                    try:
+                        from causallearn.utils.cit import hsic_test_gamma
+                        p_yx = float(hsic_test_gamma(Y.ravel(), resid_yx))
+                    except Exception:
+                        from causallearn.utils.cit import kci
+                        p_yx = float(kci(Y, resid_yx.reshape(-1,1)))
+                except Exception:
+                    p_yx = None
+                if p_xy is None and p_yx is None:
+                    continue
+                if p_xy is None: p_xy = 0.0
+                if p_yx is None: p_yx = 0.0
+                best_p = max(p_xy, p_yx)
+                if best_p < tau:
+                    continue
+                if (p_xy - p_yx) >= delta:
+                    edges.append({"from": xi, "to": yj, "weight": float(best_p)})
+                elif (p_yx - p_xy) >= delta:
+                    edges.append({"from": yj, "to": xi, "weight": float(best_p)})
+        runtime = time.time() - t0
+        return normalize_graph_result("ANM", vars_, edges, {"delta": delta, "tau": tau, "backend": "causal-learn"}, runtime)
 
-class EqVarLinearTool:
-    """Equal Variance Linear algorithm implementation"""
-    
+
+
+
+
+# CAM tool
+class CAMTool:
     @staticmethod
-    def eqvar_linear(df: pd.DataFrame) -> Dict[str, Any]:
-        """EqVar Linear algorithm implementation"""
+    def discover(df: pd.DataFrame, **kwargs) -> Dict[str, Any]:
+        import time
+        vars_ = list(df.columns)
+        t0 = time.time()
         try:
-            n_vars = len(df.columns)
-            variables = list(df.columns)
+            from cdt.causality.graph import CAM
+            model = CAM()
+            output_graph = model.predict(df)
             edges = []
-            
-            # Test all variable pairs for linear relationships with equal variance
-            for i, var1 in enumerate(variables):
-                for j, var2 in enumerate(variables):
-                    if i != j:
-                        # Test linearity and equal variance
-                        linearity_result = StatsTool.linearity_test(df[var1], df[var2])
-                        gauss_eqvar_result = StatsTool.gaussian_eqvar_test(df[var1], df[var2])
-                        
-                        # Combine scores
-                        combined_score = (
-                            0.5 * linearity_result["linearity_score"] +
-                            0.3 * gauss_eqvar_result["gaussian_score"] +
-                            0.2 * gauss_eqvar_result["eqvar_score"]
-                        )
-                        
-                        if combined_score > 0.6:
-                            edges.append({
-                                "from": var1,
-                                "to": var2,
-                                "weight": combined_score,
-                                "method": "EqVarLinear"
-                            })
-            
-            return {
-                "graph": {
-                    "edges": edges,
-                    "variables": variables
-                },
-                "metadata": {
-                    "method": "EqVarLinear",
-                    "n_variables": n_vars,
-                    "n_edges": len(edges)
-                }
-            }
-            
+            for u, v in output_graph.edges():
+                edges.append({"from": str(u), "to": str(v), "weight": 1.0})
+            runtime = time.time() - t0
+            return normalize_graph_result("CAM", vars_, edges, {"backend": "cdt"}, runtime)
         except Exception as e:
-            logger.error(f"EqVar Linear execution failed: {e}")
-            return {"error": str(e)}
+            return {"error": f"CAM not available: {e}"}
+
+
+    # Dataset-level EqVar scoring method
+    @staticmethod
+    def score_eqvar_assumptions(
+        df: pd.DataFrame,
+        pair_agg: str = "mean",
+        transform: Optional[str] = None,
+        a: float = 50.0,
+        tau: float = 0.05
+    ) -> Dict[str, Any]:
+        import numpy as np, math
+        def _t(x):
+            if transform == "softlogistic":
+                return 1.0 / (1.0 + math.exp(-a * (x - tau)))
+            return x
+        vars_ = list(df.columns)
+        lin_vals, gau_vals, eqv_vals = [], [], []
+        for i, vi in enumerate(vars_):
+            for j, vj in enumerate(vars_):
+                if i >= j:
+                    continue
+                lin = StatsTool.linearity_test(df[vi], df[vj]).get("linearity_score", 0.5)
+                ge = StatsTool.gaussian_eqvar_test(df[vi], df[vj])
+                gau = ge.get("gaussian_score", 0.5)
+                eqv = ge.get("eqvar_score", 0.5)
+                lin_vals.append(_t(lin)); gau_vals.append(_t(gau)); eqv_vals.append(_t(eqv))
+        agg = np.median if pair_agg == "median" else np.mean
+        S_lin = float(agg(lin_vals)) if lin_vals else 0.5
+        S_Gauss = float(agg(gau_vals)) if gau_vals else 0.5
+        S_EqVar = float(agg(eqv_vals)) if eqv_vals else 0.5
+        def smry(vals):
+            if not vals: return {"mean":0.5,"median":0.5,"q25":0.5,"q75":0.5}
+            q25, med, q75 = np.percentile(vals, [25,50,75])
+            return {"mean": float(np.mean(vals)), "median": float(med), "q25": float(q25), "q75": float(q75), "n_pairs": len(vals)}
+        return {"S_lin": S_lin, "S_Gauss": S_Gauss, "S_EqVar": S_EqVar,
+                "summary": {"S_lin": smry(lin_vals), "S_Gauss": smry(gau_vals), "S_EqVar": smry(eqv_vals),
+                             "transform": transform, "pair_agg": pair_agg}}
 
 class Bootstrapper:
     """Bootstrap evaluation tools"""
@@ -337,8 +397,6 @@ class Bootstrapper:
                     bootstrap_result = LiNGAMTool.direct_lingam(bootstrap_df)
                 elif algorithm == "ANM":
                     bootstrap_result = ANMTool.anm_discovery(bootstrap_df)
-                elif algorithm == "EqVar":
-                    bootstrap_result = EqVarLinearTool.eqvar_linear(bootstrap_df)
                 else:
                     continue
                 
@@ -512,3 +570,50 @@ class GraphOps:
             "n_input_graphs": n_graphs,
             "n_merged_edges": len(merged_edges)
         }
+
+# --- PC and GES tools ---
+
+class PCTool:
+    """PC algorithm wrapper. Uses causal-learn."""
+    @staticmethod
+    def discover(df: pd.DataFrame, alpha: float = 0.05, **kwargs) -> Dict[str, Any]:
+        import time
+        t0 = time.time()
+        vars_ = list(df.columns)
+        edges = []
+        params = {"alpha": alpha}
+        try:
+            from causallearn.search.ConstraintBased.PC import pc
+            from causallearn.utils.cit import fisherz
+            data = df.values
+            cg = pc(data, alpha=alpha, indep_test=fisherz, verbose=False)
+            for (i, j), v in cg.G.graph.items():
+                if v != 0:
+                    edges.append((vars_[i], vars_[j]))
+            runtime = time.time() - t0
+            return normalize_graph_result("PC", vars_, edges, params, runtime)
+        except Exception as e:
+            return {"error": str(e)}
+
+class GESTool:
+    """GES algorithm wrapper. Uses causal-learn (score=BIC by default)."""
+    @staticmethod
+    def discover(df: pd.DataFrame, score_func: str = "bic", **kwargs) -> Dict[str, Any]:
+        import time
+        t0 = time.time()
+        vars_ = list(df.columns)
+        params = {"score_func": score_func}
+        edges = []
+        try:
+            from causallearn.search.ScoreBased.GES import ges
+            data = df.values
+            res = ges(data, score_func=score_func)
+            G = getattr(res, 'G', None) or (res.get('G', None) if isinstance(res, dict) else None)
+            if G is not None and hasattr(G, 'graph'):
+                for (i, j), v in G.graph.items():
+                    if v != 0:
+                        edges.append((vars_[i], vars_[j]))
+            runtime = time.time() - t0
+            return normalize_graph_result("GES", vars_, edges, params, runtime)
+        except Exception as e:
+            return {"error": str(e)}

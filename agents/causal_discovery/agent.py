@@ -21,7 +21,90 @@ from core.base import SpecialistAgent, AgentType, AgentResult
 from core.state import AgentState, PipelinePhase
 from monitoring.metrics.collector import MetricsCollector
 
+
 logger = logging.getLogger(__name__)
+
+"""Algorithm cheatsheet (assumptions → brief)  [근거/References in brackets]
+
+LiNGAM  — Required: linear relations + non‑Gaussian noise.
+          Identifiable causal ordering via ICA/independent noise.  
+          [Shimizu et al., JMLR 2006]
+ANM     — Required: additive noise model + noise ⟂ cause (residual independence).
+          Nonlinear, identifies direction by testing residual–input independence.  
+          [Hoyer et al., NIPS 2009]
+PNL     — Required: post‑nonlinear transform around additive noise.
+          Extends ANM with outer nonlinearity; direction identifiable under mild conds.  
+          [Zhang & Hyvärinen, UAI 2009]
+GES     — Required: (typically) linear‑Gaussian likelihood; equal‑variance often assumed.
+          Score‑based DAG search optimizing BIC/MDL over equivalence classes.  
+          [Chickering, JMLR 2002]
+PC      — Required: CI tests valid for the data‑generating process (often Gaussian‑CI).
+          Constraint‑based: removes/extends edges via conditional independence tests.  
+          [Spirtes, Glymour, Scheines, 2000]
+CAM     — Required: additive models (nonparametric) per node.
+          Hybrid (score + pruning) using GAMs to recover DAG under ANM‑like assumptions.  
+          [Bühlmann et al., Biometrika 2014]
+FCI     — Required: CI tests valid; allows latent confounders (outputs PAG).
+          Constraint‑based generalization of PC robust to hidden variables.  
+          [Spirtes et al., 1995/2000]"""
+
+# === Standardized algorithm catalog & assumption-role mapping ===
+ALGORITHM_LIST = [
+    "LiNGAM",     # linear + non-Gaussian (fully identifiable)
+    "ANM",        # additive noise (fully identifiable)
+    "PNL",        # post-nonlinear (fully identifiable)
+    "GES",        # score-based (BIC/generalized)
+    "PC",         # constraint-based
+    "CAM",        # additive models
+    "FCI"         # allows latent confounders (PAG)
+]
+
+# Roles → scoring: Required: S^beta (conservative), Preferred: 0.5+0.5S, Irrelevant: 0.5.
+# A soft‑AND across required assumptions is applied via geometric mean.
+ASSUMPTION_METHODS = {
+    # LiNGAM: linear relations + non‑Gaussian noise (identifiable ordering)
+    "LiNGAM": {
+        "required": ["S_lin", "S_nG"],
+        "preferred": ["S_ANM"],
+        "irrelevant": ["S_Gauss", "S_EqVar"]
+    },
+    # ANM: additive noise model + noise ⟂ cause (residual independence)
+    "ANM": {
+        "required": ["S_ANM"],
+        "preferred": ["S_lin"],  # prefer nonlinearity: (1 - S_lin) in scoring
+        "irrelevant": ["S_nG", "S_Gauss", "S_EqVar"]
+    },
+    # PNL: post‑nonlinear transform around additive noise
+    "PNL": {
+        "required": ["S_ANM"],
+        "preferred": ["S_lin"],
+        "irrelevant": ["S_nG", "S_Gauss", "S_EqVar"]
+    },
+    # GES: linear‑Gaussian likelihood + equal variance (score-based)
+    "GES": {
+        "required": ["S_lin", "S_Gauss", "S_EqVar"],
+        "preferred": [],
+        "irrelevant": ["S_nG", "S_ANM"]
+    },
+    # PC: CI tests valid for data‑generating process (often Gaussian‑CI)
+    "PC": {
+        "required": ["S_lin"],  # constraint-based; minimal linearity assumed
+        "preferred": ["S_Gauss"],
+        "irrelevant": ["S_EqVar", "S_nG", "S_ANM"]
+    },
+    # CAM: additive models (nonparametric) per node
+    "CAM": {
+        "required": ["S_ANM"],
+        "preferred": ["S_lin"],
+        "irrelevant": ["S_nG", "S_Gauss", "S_EqVar"]
+    },
+    # FCI: CI tests valid; allows latent confounders (outputs PAG)
+    "FCI": {
+        "required": ["S_lin"],
+        "preferred": ["S_Gauss"],
+        "irrelevant": ["S_EqVar", "S_nG", "S_ANM"]
+    }
+}
 
 class CausalDiscoveryAgent(SpecialistAgent):
     """Causal Discovery Agent using tool registry pattern"""
@@ -46,6 +129,10 @@ class CausalDiscoveryAgent(SpecialistAgent):
         self.top_k_algorithms = self.config.get("top_k_algorithms", 3)
         self.lambda_soft_and = self.config.get("lambda_soft_and", 0.7)
         self.beta_conservative = self.config.get("beta_conservative", 2.0)
+
+        # Store assumption-role mapping and algorithm priority in config for downstream nodes
+        self.config.setdefault("ASSUMPTION_METHODS", ASSUMPTION_METHODS)
+        self.config.setdefault("algorithm_list", ALGORITHM_LIST)
     
     def _register_specialist_tools(self) -> None:
         """Register causal discovery specific tools"""
@@ -75,13 +162,6 @@ class CausalDiscoveryAgent(SpecialistAgent):
             self._anm_tool,
             "ANM algorithm: Additive Noise Model directionality testing"
         )
-        
-        self.register_tool(
-            "eqvar_linear_tool",
-            self._eqvar_linear_tool,
-            "EqVar Linear: Linear+Gaussian+equal variance assumption"
-        )
-        
         # Evaluation and analysis tools
         self.register_tool(
             "bootstrapper",
@@ -99,6 +179,21 @@ class CausalDiscoveryAgent(SpecialistAgent):
             "graph_ops",
             self._graph_ops,
             "Graph operations: DAG/PAG/AG conversion, merge, voting"
+        )
+        self.register_tool(
+            "pc_tool",
+            self._pc_tool,
+            "PC algorithm via backend (default: causal-learn)"
+        )
+        self.register_tool(
+            "ges_tool",
+            self._ges_tool,
+            "GES algorithm via backend (default: causal-learn)"
+        )
+        self.register_tool(
+            "cam_tool",
+            self._cam_tool,
+            "CAM algorithm (via CDT)"
         )
     
     def step(self, state: AgentState) -> AgentState:
@@ -198,23 +293,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 raise ValueError("No assumption scores available")
             
             # Algorithm requirements and preferences
-            algorithm_configs = {
-                "LiNGAM": {
-                    "required": ["S_lin", "S_nG"],
-                    "preferred": ["S_ANM"],
-                    "irrelevant": ["S_Gauss", "S_EqVar"]
-                },
-                "ANM": {
-                    "required": ["S_ANM"],
-                    "preferred": ["S_lin"],  # 1 - S_lin
-                    "irrelevant": ["S_nG", "S_Gauss", "S_EqVar"]
-                },
-                "EqVar": {
-                    "required": ["S_lin", "S_Gauss", "S_EqVar"],
-                    "preferred": [],
-                    "irrelevant": ["S_nG", "S_ANM"]
-                }
-            }
+            algorithm_configs = self.config.get("ASSUMPTION_METHODS", ASSUMPTION_METHODS)
             
             algorithm_scores = {}
             selected_algorithms = []
@@ -245,23 +324,22 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 pref_scores = []
                 irr_scores = []
                 
-                for assumption_type in config["required"]:
+                for assumption_type in config.get("required", []):
                     if assumption_type in scores:
                         # Conservative transformation for required
                         req_score = scores[assumption_type] ** self.beta_conservative
                         req_scores.append(req_score)
                 
-                for assumption_type in config["preferred"]:
+                for assumption_type in config.get("preferred", []):
                     if assumption_type in scores:
-                        # Preferred transformation
-                        if assumption_type == "S_lin" and alg_name == "ANM":
-                            # ANM prefers non-linearity
+                        # Generic preferred transform; allow ANM/PNL/CAM to prefer nonlinearity by negating S_lin
+                        if assumption_type == "S_lin" and alg_name in ("ANM", "PNL", "CAM"):
                             pref_score = 0.5 + 0.5 * (1 - scores[assumption_type])
                         else:
                             pref_score = 0.5 + 0.5 * scores[assumption_type]
                         pref_scores.append(pref_score)
                 
-                for assumption_type in config["irrelevant"]:
+                for assumption_type in config.get("irrelevant", []):
                     if assumption_type in scores:
                         # Irrelevant gets neutral score
                         irr_scores.append(0.5)
@@ -295,11 +373,15 @@ class CausalDiscoveryAgent(SpecialistAgent):
                                      key=lambda x: x[1]["final_score"], 
                                      reverse=True)
             selected_algorithms = [alg[0] for alg in sorted_algorithms[:self.top_k_algorithms]]
-            
+            IMPLEMENTED_ALGOS = {"LiNGAM", "ANM", "PC", "GES", "CAM"}
+            selected_algorithms = [a for a in selected_algorithms if a in IMPLEMENTED_ALGOS]
+            if not selected_algorithms:
+                raise ValueError("No runnable algorithms available after filtering")
             # Update state
             state["algorithm_scores"] = algorithm_scores
             state["selected_algorithms"] = selected_algorithms
             state["algorithm_scoring_completed"] = True
+            state["ASSUMPTION_METHODS"] = algorithm_configs
             
             logger.info(f"Algorithm scoring completed. Selected: {selected_algorithms}")
             return state
@@ -333,8 +415,12 @@ class CausalDiscoveryAgent(SpecialistAgent):
                         future = executor.submit(self._run_lingam, df)
                     elif alg_name == "ANM":
                         future = executor.submit(self._run_anm, df)
-                    elif alg_name == "EqVar":
-                        future = executor.submit(self._run_eqvar_linear, df)
+                    elif alg_name == "PC":
+                        future = executor.submit(self._run_pc, df)
+                    elif alg_name == "GES":
+                        future = executor.submit(self._run_ges, df)
+                    elif alg_name == "CAM":
+                        future = executor.submit(self._run_cam, df)
                     else:
                         logger.warning(f"Unknown algorithm: {alg_name}")
                         continue
@@ -535,14 +621,53 @@ class CausalDiscoveryAgent(SpecialistAgent):
             logger.error(f"ANM execution failed: {e}")
             return {"error": str(e)}
     
-    def _run_eqvar_linear(self, df: pd.DataFrame) -> Dict[str, Any]:
-        """Run EqVar Linear algorithm"""
+
+    def _run_cam(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Run CAM algorithm"""
         try:
-            result = self.use_tool("eqvar_linear_tool", "eqvar_linear", df)
+            result = self.use_tool("cam_tool", "cam_discovery", df)
             return result
         except Exception as e:
-            logger.error(f"EqVar Linear execution failed: {e}")
+            logger.error(f"CAM execution failed: {e}")
             return {"error": str(e)}
+
+    def _cam_tool(self, method: str, *args, **kwargs) -> Dict[str, Any]:
+        from .tools import CAMTool
+        if method == "cam_discovery":
+            df = args[0]
+            return CAMTool.discover(df, **kwargs)
+        return {"error": f"Unknown method: {method}"}
+
+    def _run_pc(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Run PC algorithm (backend default: causal-learn)"""
+        try:
+            result = self.use_tool("pc_tool", "pc_discovery", df)
+            return result
+        except Exception as e:
+            logger.error(f"PC execution failed: {e}")
+            return {"error": str(e)}
+
+    def _run_ges(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Run GES algorithm (backend default: causal-learn, score=BIC)"""
+        try:
+            result = self.use_tool("ges_tool", "ges_discovery", df, score_func="bic")
+            return result
+        except Exception as e:
+            logger.error(f"GES execution failed: {e}")
+            return {"error": str(e)}
+    def _pc_tool(self, method: str, *args, **kwargs) -> Dict[str, Any]:
+        from .tools import PCTool
+        if method == "pc_discovery":
+            df = args[0]
+            return PCTool.discover(df, **kwargs)
+        return {"error": f"Unknown method: {method}"}
+
+    def _ges_tool(self, method: str, *args, **kwargs) -> Dict[str, Any]:
+        from .tools import GESTool
+        if method == "ges_discovery":
+            df = args[0]
+            return GESTool.discover(df, **kwargs)
+        return {"error": f"Unknown method: {method}"}
     
     # === Evaluation Methods ===
     
