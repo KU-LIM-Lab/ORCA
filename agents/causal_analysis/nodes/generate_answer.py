@@ -5,7 +5,7 @@ from langchain_core.runnables import RunnableLambda
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from utils.llm import call_llm
-from ORCA.prompts.causal_analysis_prompts import generate_answer_prompt, generate_answer_parser
+from prompts.causal_analysis_prompts import generate_answer_prompt, generate_answer_parser
 
 
 def build_generate_answer_node(llm: BaseChatModel) -> RunnableLambda:

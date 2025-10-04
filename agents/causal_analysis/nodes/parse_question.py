@@ -5,7 +5,7 @@ from typing import Callable, Dict
 from utils.llm import call_llm
 from utils.data_prep.metadata import generate_table_markdown
 from utils.query_validation import extract_table_metadata, validate_parsed_query, sanitize_parsed_query
-from ORCA.prompts.causal_analysis_prompts import parse_query_prompt, parse_query_parser
+from prompts.causal_analysis_prompts import parse_query_prompt, parse_query_parser
 
 from langchain_core.runnables import RunnableLambda
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -14,7 +14,7 @@ from utils.redis_client import redis_client
 
 def build_parse_question_node(llm: BaseChatModel) -> Callable:
     def _parse_question(state: Dict) -> Dict:
-        if state["variable_info"]: # variable_info is already provided
+        if state.get("variable_info"): # variable_info is already provided
             state["parsed_query"] = state["variable_info"]
             return state
 
