@@ -87,13 +87,13 @@ class DataExplorerAgent(SpecialistAgent):
         """Register data explorer specific tools"""
         # 2. 커스텀 도구들 등록
         self.register_tool(
-            "table_recommendation",
+            "table_selection",
             self._table_recommendation_tool,
             "Recommend relevant tables for analysis"
         )
         
         self.register_tool(
-            "text2sql_generation",
+            "table_retrieval",
             self._text2sql_generation_tool,
             "Generate SQL query from natural language"
         )
@@ -115,9 +115,9 @@ class DataExplorerAgent(SpecialistAgent):
         # 3. 메인 실행 로직
         current_substep = state.get("current_substep", "full_pipeline")
         
-        if current_substep == "table_recommendation":
+        if current_substep == "table_selection":
             return self._execute_table_recommendation(state)
-        elif current_substep == "text2sql_generation":
+        elif current_substep == "table_retrieval":
             return self._execute_text2sql_generation(state)
         elif current_substep == "table_exploration":
             return self._execute_table_exploration(state)
