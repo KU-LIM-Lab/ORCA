@@ -271,6 +271,16 @@ class OrchestratorAgent(BaseAgent):
                 "timeout": 180,
                 "hitl_required": True
             },
+            {
+                "phase": PipelinePhase.DATA_EXPLORATION,
+                "substep": "schema_analysis",
+                "agent": "data_explorer",
+                "action": "analyze_schema",
+                "description": "Analyze schema and relationships",
+                "required_state_keys": ["selected_tables"],
+                "timeout": 120,
+                "hitl_required": True
+            },
             
             # Causal Discovery Phase
             {
@@ -289,7 +299,7 @@ class OrchestratorAgent(BaseAgent):
                 "agent": "causal_discovery",
                 "action": "score_algorithms",
                 "description": "Score algorithms based on assumption-method matrix",
-                "required_state_keys": ["assumption_method_matrix"],
+                "required_state_keys": ["assumption_method_matrix_completed"],
                 "timeout": 60,
                 "hitl_required": True
             },
@@ -299,7 +309,7 @@ class OrchestratorAgent(BaseAgent):
                 "agent": "causal_discovery",
                 "action": "run_algorithms",
                 "description": "Run selected algorithms in parallel",
-                "required_state_keys": ["selected_algorithms"],
+                "required_state_keys": ["algorithm_scoring_completed", "selected_algorithms"],
                 "timeout": 600,
                 "hitl_required": True
             },
@@ -309,7 +319,7 @@ class OrchestratorAgent(BaseAgent):
                 "agent": "causal_discovery",
                 "action": "calculate_intermediate_scores",
                 "description": "Calculate intermediate scores for each algorithm",
-                "required_state_keys": ["algorithm_results"],
+                "required_state_keys": ["run_algorithms_completed", "algorithm_results"],
                 "timeout": 120,
                 "hitl_required": True
             },
@@ -319,7 +329,7 @@ class OrchestratorAgent(BaseAgent):
                 "agent": "causal_discovery",
                 "action": "select_final_graph",
                 "description": "Select final causal graph based on scores",
-                "required_state_keys": ["intermediate_scores"],
+                "required_state_keys": ["intermediate_scoring_completed", "intermediate_scores"],
                 "timeout": 180,
                 "hitl_required": True
             },
@@ -363,7 +373,7 @@ class OrchestratorAgent(BaseAgent):
                 "agent": "report_generator",
                 "action": "generate_report",
                 "description": "Generate final analysis report",
-                "required_state_keys": ["interpretation_results"],
+                "required_state_keys": [],
                 "timeout": 240,
                 "hitl_required": True
             }

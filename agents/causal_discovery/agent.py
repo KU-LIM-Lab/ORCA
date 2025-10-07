@@ -191,6 +191,11 @@ class CausalDiscoveryAgent(SpecialistAgent):
             "GES algorithm via backend (default: causal-learn)"
         )
         self.register_tool(
+            "fci_tool",
+            self._fci_tool,
+            "FCI algorithm via backend (default: causal-learn)"
+        )
+        self.register_tool(
             "cam_tool",
             self._cam_tool,
             "CAM algorithm (via CDT)"
@@ -227,8 +232,18 @@ class CausalDiscoveryAgent(SpecialistAgent):
         logger.info("Generating assumption-method matrix...")
         
         try:
-            # Get preprocessed data
+            # Get preprocessed data (load from reference if necessary)
             df = state.get("df_preprocessed")
+            if df is None and state.get("df_preprocessed_key"):
+                try:
+                    from utils.redis_client import redis_client
+                    import pandas as pd
+                    raw = redis_client.get(state["df_preprocessed_key"]) or ""
+                    if raw:
+                        df = pd.read_json(raw, orient="split")
+                        state["df_preprocessed"] = df
+                except Exception as _:
+                    df = None
             if df is None:
                 raise ValueError("No preprocessed data available")
             
@@ -373,7 +388,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
                                      key=lambda x: x[1]["final_score"], 
                                      reverse=True)
             selected_algorithms = [alg[0] for alg in sorted_algorithms[:self.top_k_algorithms]]
-            IMPLEMENTED_ALGOS = {"LiNGAM", "ANM", "PC", "GES", "CAM"}
+            IMPLEMENTED_ALGOS = {"LiNGAM", "ANM", "PC", "GES", "FCI", "CAM"}
             selected_algorithms = [a for a in selected_algorithms if a in IMPLEMENTED_ALGOS]
             if not selected_algorithms:
                 raise ValueError("No runnable algorithms available after filtering")
@@ -419,6 +434,8 @@ class CausalDiscoveryAgent(SpecialistAgent):
                         future = executor.submit(self._run_pc, df)
                     elif alg_name == "GES":
                         future = executor.submit(self._run_ges, df)
+                    elif alg_name == "FCI":
+                        future = executor.submit(self._run_fci, df)
                     elif alg_name == "CAM":
                         future = executor.submit(self._run_cam, df)
                     else:
@@ -655,6 +672,14 @@ class CausalDiscoveryAgent(SpecialistAgent):
         except Exception as e:
             logger.error(f"GES execution failed: {e}")
             return {"error": str(e)}
+    def _run_fci(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Run FCI algorithm (backend default: causal-learn)"""
+        try:
+            result = self.use_tool("fci_tool", "fci_discovery", df)
+            return result
+        except Exception as e:
+            logger.error(f"FCI execution failed: {e}")
+            return {"error": str(e)}
     def _pc_tool(self, method: str, *args, **kwargs) -> Dict[str, Any]:
         from .tools import PCTool
         if method == "pc_discovery":
@@ -667,6 +692,12 @@ class CausalDiscoveryAgent(SpecialistAgent):
         if method == "ges_discovery":
             df = args[0]
             return GESTool.discover(df, **kwargs)
+        return {"error": f"Unknown method: {method}"}
+    def _fci_tool(self, method: str, *args, **kwargs) -> Dict[str, Any]:
+        from .tools import FCITool
+        if method == "fci_discovery":
+            df = args[0]
+            return FCITool.discover(df, **kwargs)
         return {"error": f"Unknown method: {method}"}
     
     # === Evaluation Methods ===

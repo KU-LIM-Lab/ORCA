@@ -617,3 +617,41 @@ class GESTool:
             return normalize_graph_result("GES", vars_, edges, params, runtime)
         except Exception as e:
             return {"error": str(e)}
+
+
+# --- FCI tool ---
+class FCITool:
+    """FCI algorithm wrapper. Uses causal-learn and returns a PAG-oriented result.
+    Note: PAG edges may be partially directed; we expose adjacencies as edges and
+    mark graph_type="PAG" in metadata/params for downstream handling.
+    """
+    @staticmethod
+    def discover(df: pd.DataFrame, alpha: float = 0.05, **kwargs) -> Dict[str, Any]:
+        import time
+        t0 = time.time()
+        vars_ = list(df.columns)
+        edges = []
+        try:
+            from causallearn.search.ConstraintBased.FCI import fci
+            from causallearn.utils.cit import fisherz
+            data = df.values
+            # Causal-Learn FCI API: fci(data, indep_test, alpha)
+            pag = fci(data, fisherz, alpha)
+            G = getattr(pag, 'G', None)
+            if G is not None and hasattr(G, 'graph'):
+                for (i, j), v in G.graph.items():
+                    if v != 0:
+                        # Keep adjacency; orientation marks are PAG-specific and not
+                        # represented in normalized edges. Downstream can treat as PAG.
+                        edges.append((vars_[i], vars_[j]))
+            runtime = time.time() - t0
+            result = normalize_graph_result(
+                "FCI", vars_, edges,
+                params={"alpha": alpha, "graph_type": "PAG"},
+                runtime=runtime,
+            )
+            # Also set a top-level hint to consumers
+            result["metadata"]["graph_type"] = "PAG"
+            return result
+        except Exception as e:
+            return {"error": str(e)}

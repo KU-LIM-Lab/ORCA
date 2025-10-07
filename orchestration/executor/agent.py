@@ -153,8 +153,90 @@ class ExecutorAgent(OrchestratorAgent):
                     error=f"Dependencies not met for step {substep}",
                     metadata={"substep": substep}
                 )
-            
-            # All remaining steps should be actual agent steps
+
+            # Dispatch to specialist agents (minimal integration for causal_discovery)
+            start_time = time.time()
+            if agent_name == "causal_discovery":
+                from agents.causal_discovery.agent import CausalDiscoveryAgent
+                cd_agent = CausalDiscoveryAgent()
+                # Map substep to agent step
+                state_copy = dict(state)
+                state_copy["current_substep"] = substep
+                new_state = cd_agent.step(state_copy)
+                execution_time = time.time() - start_time
+                # Report
+                success = not bool(new_state.get("error"))
+                return AgentResult(
+                    success=success,
+                    data=new_state,
+                    error=new_state.get("error"),
+                    execution_time=execution_time,
+                    metadata={"substep": substep, "agent": agent_name, "action": action}
+                )
+
+            if agent_name == "data_explorer":
+                from agents.data_explorer.agent import DataExplorerAgent
+                de_agent = DataExplorerAgent()
+                state_copy = dict(state)
+                state_copy["current_substep"] = substep
+                new_state = de_agent.step(state_copy)
+                execution_time = time.time() - start_time
+                success = not bool(new_state.get("error"))
+                return AgentResult(
+                    success=success,
+                    data=new_state,
+                    error=new_state.get("error"),
+                    execution_time=execution_time,
+                    metadata={"substep": substep, "agent": agent_name, "action": action}
+                )
+
+            if agent_name == "causal_analysis":
+                try:
+                    # Attempt to run the causal analysis LangGraph subgraph end-to-end
+                    from agents.causal_analysis import generate_causal_analysis_graph
+                    # Use a simple LLM callable if available, otherwise None
+                    try:
+                        from utils.llm import call_llm as llm
+                    except Exception:
+                        llm = None
+                    compiled = generate_causal_analysis_graph(llm)
+                    # Invoke subgraph with current state
+                    new_state = compiled.invoke(state)
+                    execution_time = time.time() - start_time
+                    success = not bool(new_state.get("error"))
+                    return AgentResult(
+                        success=success,
+                        data=new_state,
+                        error=new_state.get("error"),
+                        execution_time=execution_time,
+                        metadata={"substep": substep, "agent": agent_name, "action": action}
+                    )
+                except Exception as e:
+                    execution_time = time.time() - start_time
+                    return AgentResult(
+                        success=False,
+                        error=f"Causal analysis execution failed: {str(e)}",
+                        execution_time=execution_time,
+                        metadata={"substep": substep, "agent": agent_name, "action": action}
+                    )
+
+            if agent_name == "report_generator":
+                from agents.report_generation.agent import ReportGenerationAgent
+                rg_agent = ReportGenerationAgent()
+                state_copy = dict(state)
+                state_copy["current_substep"] = substep
+                new_state = rg_agent.step(state_copy)
+                execution_time = time.time() - start_time
+                success = not bool(new_state.get("error"))
+                return AgentResult(
+                    success=success,
+                    data=new_state,
+                    error=new_state.get("error"),
+                    execution_time=execution_time,
+                    metadata={"substep": substep, "agent": agent_name, "action": action}
+                )
+
+            # Fallback for unimplemented agents
             return AgentResult(
                 success=False,
                 error=f"Agent {agent_name} not implemented in current architecture",
@@ -213,9 +295,7 @@ class ExecutorAgent(OrchestratorAgent):
     
     def _execute_with_timeout_sync(self, func, timeout: int):
         """Execute synchronous function with timeout"""
-        return asyncio.run(asyncio.wait_for(
-            asyncio.to_thread(func), timeout=timeout
-        ))
+        return asyncio.run(asyncio.wait_for(asyncio.to_thread(func), timeout=timeout))
     
     def _check_dependencies(self, step: Dict[str, Any], state: AgentState) -> bool:
         """Check if step requirements are met by verifying state values are present/non-empty."""
@@ -299,6 +379,7 @@ class ExecutorAgent(OrchestratorAgent):
             state.update(result.data or {})
         else:
             state["execution_status"] = ExecutionStatus.FAILED
+            state["error"] = result.error or "Execution failed"
             state["error_log"] = state.get("error_log", [])
             state["error_log"].append({
                 "timestamp": datetime.now().isoformat(),
