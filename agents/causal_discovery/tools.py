@@ -177,7 +177,7 @@ class IndependenceTool:
     """Independence testing tools for ANM and other tests"""
     
     @staticmethod
-    def anm_test(x: pd.Series, y: pd.Series) -> Dict[str, Any]:
+    def anm_test(x: pd.Series, y: pd.Series, n_estimators: int = 100) -> Dict[str, Any]:
         """Test ANM assumption via residual independence using causal-learn KCI/HSIC.
         Returns anm_score in [0,1] where higher is more consistent with ANM X->Y.
         """
@@ -187,7 +187,7 @@ class IndependenceTool:
             # Fit nonparametric regression y ~ f(x)
             X = x.values.reshape(-1, 1)
             Y = y.values.reshape(-1, 1)
-            rf = RandomForestRegressor(random_state=42, n_estimators=200, max_depth=None)
+            rf = RandomForestRegressor(random_state=42, n_estimators=int(max(10, n_estimators)), max_depth=None)
             rf.fit(X, Y.ravel())
             resid = Y.ravel() - rf.predict(X)
             # Independence test between x and residual
@@ -316,9 +316,6 @@ class ANMTool:
         return normalize_graph_result("ANM", vars_, edges, {"delta": delta, "tau": tau, "backend": "causal-learn"}, runtime)
 
 
-
-
-
 # CAM tool
 class CAMTool:
     @staticmethod
@@ -338,43 +335,6 @@ class CAMTool:
         except Exception as e:
             return {"error": f"CAM not available: {e}"}
 
-
-    # Dataset-level EqVar scoring method
-    @staticmethod
-    def score_eqvar_assumptions(
-        df: pd.DataFrame,
-        pair_agg: str = "mean",
-        transform: Optional[str] = None,
-        a: float = 50.0,
-        tau: float = 0.05
-    ) -> Dict[str, Any]:
-        import numpy as np, math
-        def _t(x):
-            if transform == "softlogistic":
-                return 1.0 / (1.0 + math.exp(-a * (x - tau)))
-            return x
-        vars_ = list(df.columns)
-        lin_vals, gau_vals, eqv_vals = [], [], []
-        for i, vi in enumerate(vars_):
-            for j, vj in enumerate(vars_):
-                if i >= j:
-                    continue
-                lin = StatsTool.linearity_test(df[vi], df[vj]).get("linearity_score", 0.5)
-                ge = StatsTool.gaussian_eqvar_test(df[vi], df[vj])
-                gau = ge.get("gaussian_score", 0.5)
-                eqv = ge.get("eqvar_score", 0.5)
-                lin_vals.append(_t(lin)); gau_vals.append(_t(gau)); eqv_vals.append(_t(eqv))
-        agg = np.median if pair_agg == "median" else np.mean
-        S_lin = float(agg(lin_vals)) if lin_vals else 0.5
-        S_Gauss = float(agg(gau_vals)) if gau_vals else 0.5
-        S_EqVar = float(agg(eqv_vals)) if eqv_vals else 0.5
-        def smry(vals):
-            if not vals: return {"mean":0.5,"median":0.5,"q25":0.5,"q75":0.5}
-            q25, med, q75 = np.percentile(vals, [25,50,75])
-            return {"mean": float(np.mean(vals)), "median": float(med), "q25": float(q25), "q75": float(q75), "n_pairs": len(vals)}
-        return {"S_lin": S_lin, "S_Gauss": S_Gauss, "S_EqVar": S_EqVar,
-                "summary": {"S_lin": smry(lin_vals), "S_Gauss": smry(gau_vals), "S_EqVar": smry(eqv_vals),
-                             "transform": transform, "pair_agg": pair_agg}}
 
 class Bootstrapper:
     """Bootstrap evaluation tools"""
@@ -655,3 +615,419 @@ class FCITool:
             return result
         except Exception as e:
             return {"error": str(e)}
+
+class PruningTool:
+    """Pruning tools for CI testing and structural consistency"""
+    
+    @staticmethod
+    def global_markov_test(graph: Dict[str, Any], df: pd.DataFrame, alpha: float = 0.05) -> Dict[str, Any]:
+        """Test global Markov property using CI tests"""
+        try:
+            if "graph" not in graph or "edges" not in graph["graph"]:
+                return {"violation_ratio": 1.0, "error": "Invalid graph structure"}
+            
+            edges = graph["graph"]["edges"]
+            variables = graph["graph"]["variables"]
+            
+            if not edges or not variables:
+                return {"violation_ratio": 0.0, "message": "No edges to test"}
+            
+            # Extract CI basis set via d-separation
+            ci_tests = []
+            violations = 0
+            
+            # For each edge, test if it should be removed based on CI
+            for edge in edges:
+                from_var = edge["from"]
+                to_var = edge["to"]
+                
+                if from_var not in variables or to_var not in variables:
+                    continue
+                
+                # Test conditional independence
+                try:
+                    # Use causal-learn CI tests
+                    from causallearn.utils.cit import fisherz, kci
+                    
+                    # Get variable indices
+                    from_idx = variables.index(from_var)
+                    to_idx = variables.index(to_var)
+                    
+                    # Test X ⊥ Y | Z for all possible conditioning sets Z
+                    # Simplified: test X ⊥ Y (marginal independence)
+                    X = df[from_var].values.reshape(-1, 1)
+                    Y = df[to_var].values.reshape(-1, 1)
+                    
+                    # Use Fisher's Z test for Gaussian data
+                    p_value = fisherz(X, Y, alpha=alpha)
+                    
+                    if p_value < alpha:
+                        violations += 1
+                    
+                    ci_tests.append({
+                        "from": from_var,
+                        "to": to_var,
+                        "p_value": p_value,
+                        "violation": p_value < alpha
+                    })
+                    
+                except Exception as e:
+                    logger.warning(f"CI test failed for {from_var}->{to_var}: {e}")
+                    violations += 1
+                    ci_tests.append({
+                        "from": from_var,
+                        "to": to_var,
+                        "p_value": 0.0,
+                        "violation": True,
+                        "error": str(e)
+                    })
+            
+            violation_ratio = violations / len(ci_tests) if ci_tests else 0.0
+            
+            return {
+                "violation_ratio": violation_ratio,
+                "total_tests": len(ci_tests),
+                "violations": violations,
+                "ci_tests": ci_tests
+            }
+            
+        except Exception as e:
+            logger.error(f"Global Markov test failed: {e}")
+            return {"violation_ratio": 1.0, "error": str(e)}
+    
+    @staticmethod
+    def structural_consistency_test(graph: Dict[str, Any], df: pd.DataFrame, algorithm_name: str, n_subsets: int = 3) -> Dict[str, Any]:
+        """Test structural consistency using subsampling"""
+        try:
+            if "graph" not in graph or "edges" not in graph["graph"]:
+                return {"instability_score": 1.0, "error": "Invalid graph structure"}
+            
+            variables = graph["graph"]["variables"]
+            if len(variables) < 3:
+                return {"instability_score": 0.0, "message": "Too few variables for subsampling"}
+            
+            # Generate random variable subsets
+            subset_results = []
+            
+            for i in range(n_subsets):
+                try:
+                    # Random subset of variables (at least 3, at most all)
+                    subset_size = max(3, min(len(variables), len(variables) - 1))
+                    subset_vars = np.random.choice(variables, size=subset_size, replace=False)
+                    
+                    # Create subset DataFrame
+                    subset_df = df[subset_vars]
+                    
+                    # Run same algorithm on subset
+                    if algorithm_name == "LiNGAM":
+                        subset_result = LiNGAMTool.direct_lingam(subset_df)
+                    elif algorithm_name == "ANM":
+                        subset_result = ANMTool.anm_discovery(subset_df)
+                    elif algorithm_name == "PC":
+                        subset_result = PCTool.discover(subset_df)
+                    elif algorithm_name == "GES":
+                        subset_result = GESTool.discover(subset_df)
+                    elif algorithm_name == "FCI":
+                        subset_result = FCITool.discover(subset_df)
+                    elif algorithm_name == "CAM":
+                        subset_result = CAMTool.discover(subset_df)
+                    else:
+                        continue
+                    
+                    if "error" in subset_result:
+                        continue
+                    
+                    subset_results.append({
+                        "subset": subset_vars.tolist(),
+                        "result": subset_result
+                    })
+                    
+                except Exception as e:
+                    logger.warning(f"Subset {i} failed: {e}")
+                    continue
+            
+            if not subset_results:
+                return {"instability_score": 1.0, "error": "All subsets failed"}
+            
+            # Compute Structural Hamming Distance between graphs
+            shd_scores = []
+            
+            for i, result1 in enumerate(subset_results):
+                for j, result2 in enumerate(subset_results):
+                    if i >= j:
+                        continue
+                    
+                    try:
+                        shd = PruningTool._compute_shd(result1["result"], result2["result"])
+                        shd_scores.append(shd)
+                    except Exception as e:
+                        logger.warning(f"SHD computation failed: {e}")
+                        continue
+            
+            if not shd_scores:
+                return {"instability_score": 0.0, "message": "No SHD scores computed"}
+            
+            instability_score = np.mean(shd_scores)
+            
+            return {
+                "instability_score": instability_score,
+                "n_subsets": len(subset_results),
+                "shd_scores": shd_scores,
+                "subset_results": subset_results
+            }
+            
+        except Exception as e:
+            logger.error(f"Structural consistency test failed: {e}")
+            return {"instability_score": 1.0, "error": str(e)}
+    
+    @staticmethod
+    def _compute_shd(graph1: Dict[str, Any], graph2: Dict[str, Any]) -> float:
+        """Compute Structural Hamming Distance between two graphs"""
+        try:
+            edges1 = set()
+            edges2 = set()
+            
+            if "graph" in graph1 and "edges" in graph1["graph"]:
+                for edge in graph1["graph"]["edges"]:
+                    edges1.add((edge["from"], edge["to"]))
+            
+            if "graph" in graph2 and "edges" in graph2["graph"]:
+                for edge in graph2["graph"]["edges"]:
+                    edges2.add((edge["from"], edge["to"]))
+            
+            # SHD = |E1 - E2| + |E2 - E1|
+            shd = len(edges1 - edges2) + len(edges2 - edges1)
+            
+            # Normalize by maximum possible edges
+            all_vars = set()
+            if "graph" in graph1 and "variables" in graph1["graph"]:
+                all_vars.update(graph1["graph"]["variables"])
+            if "graph" in graph2 and "variables" in graph2["graph"]:
+                all_vars.update(graph2["graph"]["variables"])
+            
+            max_edges = len(all_vars) * (len(all_vars) - 1)
+            normalized_shd = shd / max_edges if max_edges > 0 else 0.0
+            
+            return normalized_shd
+            
+        except Exception as e:
+            logger.warning(f"SHD computation failed: {e}")
+            return 1.0
+
+class EnsembleTool:
+    """Ensemble tools for consensus skeleton and PAG construction"""
+    
+    @staticmethod
+    def build_consensus_skeleton(graphs: List[Dict[str, Any]], weights: Optional[List[float]] = None) -> Dict[str, Any]:
+        """Build consensus skeleton with confidence scores"""
+        try:
+            if not graphs:
+                return {"edges": [], "variables": [], "confidence_scores": {}}
+            
+            if weights is None:
+                weights = [1.0] * len(graphs)
+            
+            # Normalize weights
+            total_weight = sum(weights)
+            if total_weight > 0:
+                weights = [w / total_weight for w in weights]
+            else:
+                weights = [1.0 / len(graphs)] * len(graphs)
+            
+            # Collect all edges with weights
+            edge_weights = {}
+            all_variables = set()
+            
+            for i, graph in enumerate(graphs):
+                if "graph" not in graph or "edges" not in graph["graph"]:
+                    continue
+                
+                weight = weights[i]
+                
+                if "variables" in graph["graph"]:
+                    all_variables.update(graph["graph"]["variables"])
+                
+                for edge in graph["graph"]["edges"]:
+                    edge_key = (edge["from"], edge["to"])
+                    if edge_key not in edge_weights:
+                        edge_weights[edge_key] = 0.0
+                    edge_weights[edge_key] += weight
+            
+            # Build consensus skeleton
+            consensus_edges = []
+            confidence_scores = {}
+            
+            for (from_var, to_var), confidence in edge_weights.items():
+                if confidence > 0.3:  # Threshold for inclusion
+                    consensus_edges.append({
+                        "from": from_var,
+                        "to": to_var,
+                        "weight": confidence,
+                        "confidence": confidence
+                    })
+                    confidence_scores[f"{from_var}->{to_var}"] = confidence
+            
+            return {
+                "edges": consensus_edges,
+                "variables": list(all_variables),
+                "confidence_scores": confidence_scores,
+                "n_input_graphs": len(graphs)
+            }
+            
+        except Exception as e:
+            logger.error(f"Consensus skeleton building failed: {e}")
+            return {"edges": [], "variables": [], "confidence_scores": {}, "error": str(e)}
+    
+    @staticmethod
+    def resolve_directions(skeleton: Dict[str, Any], graphs: List[Dict[str, Any]], data_profile: Dict[str, Any]) -> Dict[str, Any]:
+        """Resolve edge directions with uncertainty markers"""
+        try:
+            if "edges" not in skeleton:
+                return skeleton
+            
+            resolved_edges = []
+            
+            for edge in skeleton["edges"]:
+                from_var = edge["from"]
+                to_var = edge["to"]
+                
+                # Count direction votes
+                forward_votes = 0
+                backward_votes = 0
+                total_votes = 0
+                
+                for graph in graphs:
+                    if "graph" not in graph or "edges" not in graph["graph"]:
+                        continue
+                    
+                    for graph_edge in graph["graph"]["edges"]:
+                        if graph_edge["from"] == from_var and graph_edge["to"] == to_var:
+                            forward_votes += 1
+                            total_votes += 1
+                        elif graph_edge["from"] == to_var and graph_edge["to"] == from_var:
+                            backward_votes += 1
+                            total_votes += 1
+                
+                # Resolve direction
+                if total_votes == 0:
+                    # No direction information, mark as uncertain
+                    resolved_edge = edge.copy()
+                    resolved_edge["direction"] = "uncertain"
+                    resolved_edge["marker"] = "o-o"
+                elif forward_votes > backward_votes:
+                    # Forward direction consensus
+                    resolved_edge = edge.copy()
+                    resolved_edge["direction"] = "forward"
+                    resolved_edge["marker"] = "->"
+                elif backward_votes > forward_votes:
+                    # Backward direction consensus
+                    resolved_edge = edge.copy()
+                    resolved_edge["from"] = to_var
+                    resolved_edge["to"] = from_var
+                    resolved_edge["direction"] = "backward"
+                    resolved_edge["marker"] = "->"
+                else:
+                    # Conflict, mark as uncertain
+                    resolved_edge = edge.copy()
+                    resolved_edge["direction"] = "conflict"
+                    resolved_edge["marker"] = "o-o"
+                
+                resolved_edge["forward_votes"] = forward_votes
+                resolved_edge["backward_votes"] = backward_votes
+                resolved_edge["total_votes"] = total_votes
+                
+                resolved_edges.append(resolved_edge)
+            
+            skeleton["edges"] = resolved_edges
+            return skeleton
+            
+        except Exception as e:
+            logger.error(f"Direction resolution failed: {e}")
+            return skeleton
+    
+    @staticmethod
+    def construct_pag(skeleton: Dict[str, Any], directions: Dict[str, Any]) -> Dict[str, Any]:
+        """Construct PAG-like graph with uncertainty markers"""
+        try:
+            pag = skeleton.copy()
+            
+            # Add PAG-specific metadata
+            pag["graph_type"] = "PAG"
+            pag["metadata"] = {
+                "construction_method": "consensus",
+                "uncertainty_markers": True,
+                "edge_types": ["->", "o-o", "o->"]
+            }
+            
+            return pag
+            
+        except Exception as e:
+            logger.error(f"PAG construction failed: {e}")
+            return skeleton
+    
+    @staticmethod
+    def construct_dag(pag: Dict[str, Any], data_profile: Dict[str, Any], top_algorithm: str) -> Dict[str, Any]:
+        """Construct single DAG with tie-breaking"""
+        try:
+            dag = pag.copy()
+            dag["graph_type"] = "DAG"
+            
+            # Apply assumption-based tie-breaking for uncertain edges
+            resolved_edges = []
+            
+            for edge in pag.get("edges", []):
+                if edge.get("direction") == "uncertain" or edge.get("direction") == "conflict":
+                    # Apply tie-breaking based on data profile and algorithm
+                    resolved_edge = EnsembleTool._apply_tie_breaking(edge, data_profile, top_algorithm)
+                    resolved_edges.append(resolved_edge)
+                else:
+                    resolved_edges.append(edge)
+            
+            dag["edges"] = resolved_edges
+            dag["metadata"] = {
+                "construction_method": "tie_breaking",
+                "top_algorithm": top_algorithm,
+                "data_profile": data_profile
+            }
+            
+            return dag
+            
+        except Exception as e:
+            logger.error(f"DAG construction failed: {e}")
+            return pag
+    
+    @staticmethod
+    def _apply_tie_breaking(edge: Dict[str, Any], data_profile: Dict[str, Any], top_algorithm: str) -> Dict[str, Any]:
+        """Apply tie-breaking rules for uncertain edges"""
+        try:
+            # Simple tie-breaking based on algorithm preferences
+            if top_algorithm in ["LiNGAM", "PC", "GES"]:
+                # Prefer forward direction for linear algorithms
+                resolved_edge = edge.copy()
+                resolved_edge["direction"] = "forward"
+                resolved_edge["marker"] = "->"
+                resolved_edge["tie_breaking"] = f"Linear algorithm preference ({top_algorithm})"
+            elif top_algorithm in ["ANM", "CAM"]:
+                # Prefer direction based on ANM compatibility
+                if data_profile.get("anm_compatible", False):
+                    resolved_edge = edge.copy()
+                    resolved_edge["direction"] = "forward"
+                    resolved_edge["marker"] = "->"
+                    resolved_edge["tie_breaking"] = f"ANM compatibility ({top_algorithm})"
+                else:
+                    resolved_edge = edge.copy()
+                    resolved_edge["direction"] = "backward"
+                    resolved_edge["marker"] = "->"
+                    resolved_edge["tie_breaking"] = f"Non-ANM preference ({top_algorithm})"
+            else:
+                # Default: keep original direction
+                resolved_edge = edge.copy()
+                resolved_edge["direction"] = "forward"
+                resolved_edge["marker"] = "->"
+                resolved_edge["tie_breaking"] = f"Default preference ({top_algorithm})"
+            
+            return resolved_edge
+            
+        except Exception as e:
+            logger.warning(f"Tie-breaking failed: {e}")
+            return edge

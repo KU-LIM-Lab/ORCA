@@ -24,3 +24,21 @@ redis:
   db: 0
   password:
   decode_responses: true
+
+# Global agent configs
+agents:
+  causal_discovery:
+    bootstrap_iterations: 100
+    cv_folds: 5
+    ci_alpha: 0.05
+    violation_threshold: 0.1
+    n_subsets: 3
+    profiling_max_pairs: 300
+    profiling_parallelism:
+    anm_rf_estimators: 100
+    composite_weights:
+      statistical_fit: 0.3
+      global_consistency: 0.25
+      sampling_stability: 0.25
+      structural_stability: 0.2
+    run_all_tier_algorithms: false

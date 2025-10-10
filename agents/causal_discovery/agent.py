@@ -3,22 +3,22 @@
 Causal Discovery Agent implementation using tool registry pattern.
 
 This agent implements the complete causal discovery pipeline:
-1. assumption_method_matrix - Test assumptions and generate scores
-2. algorithm_scoring - Score algorithms based on assumption compatibility
-3. run_algorithms - Execute selected algorithms in parallel
-4. intermediate_scoring - Evaluate robustness, fidelity, generalizability
-5. final_graph_selection - Select final causal graph
+1. data_profiling - Profile data characteristics and generate qualitative summary
+2. algorithm_tiering - Tier algorithms based on data profile compatibility
+3. run_algorithms_portfolio - Execute algorithms from all tiers in parallel
+4. candidate_pruning - Prune candidates using CI testing and structural consistency
+5. scorecard_evaluation - Evaluate candidates using composite scorecard
+6. ensemble_synthesis - Synthesize ensemble with PAG-like and DAG outputs
 """
 
 import logging
 from typing import Dict, Any, Optional, List, Tuple
-import asyncio
 import numpy as np
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
 
-from core.base import SpecialistAgent, AgentType, AgentResult
-from core.state import AgentState, PipelinePhase
+from core.base import SpecialistAgent, AgentType
+from core.state import AgentState
 from monitoring.metrics.collector import MetricsCollector
 
 
@@ -58,6 +58,25 @@ ALGORITHM_LIST = [
     "CAM",        # additive models
     "FCI"         # allows latent confounders (PAG)
 ]
+
+# === Algorithm Family Classification ===
+# Representative algorithms per family (default mode)
+ALGORITHM_FAMILIES_REP = {
+    "Linear": ["LiNGAM"],
+    "Nonlinear-FCM": ["ANM"],
+    "Constraint-based": ["PC"],
+    "Score-based": ["GES"],
+    "Latent-robust": ["FCI"]
+}
+
+# Full algorithm sets per family (when run_all_tier_algorithms=True)
+ALGORITHM_FAMILIES_ALL = {
+    "Linear": ["LiNGAM"],
+    "Nonlinear-FCM": ["ANM", "CAM"],
+    "Constraint-based": ["PC"],
+    "Score-based": ["GES"],
+    "Latent-robust": ["FCI"]
+}
 
 # Roles → scoring: Required: S^beta (conservative), Preferred: 0.5+0.5S, Irrelevant: 0.5.
 # A soft‑AND across required assumptions is applied via geometric mean.
@@ -126,9 +145,24 @@ class CausalDiscoveryAgent(SpecialistAgent):
         self.config = config or {}
         self.bootstrap_iterations = self.config.get("bootstrap_iterations", 100)
         self.cv_folds = self.config.get("cv_folds", 5)
-        self.top_k_algorithms = self.config.get("top_k_algorithms", 3)
-        self.lambda_soft_and = self.config.get("lambda_soft_and", 0.7)
-        self.beta_conservative = self.config.get("beta_conservative", 2.0)
+        
+        # New configuration parameters for restructured pipeline
+        self.ci_alpha = self.config.get("ci_alpha", 0.05)
+        self.violation_threshold = self.config.get("violation_threshold", 0.1)
+        # Reduce subsampling cost by default
+        self.n_subsets = self.config.get("n_subsets", 3)
+        # Data profiling performance knobs
+        self.profiling_max_pairs = self.config.get("profiling_max_pairs", 300)
+        self.profiling_parallelism = self.config.get("profiling_parallelism")  # None -> autoset
+        self.anm_rf_estimators = self.config.get("anm_rf_estimators", 100)
+        # Control: run all algorithms in selected tiers vs representatives only
+        self.run_all_tier_algorithms = self.config.get("run_all_tier_algorithms", False)
+        self.composite_weights = self.config.get("composite_weights", {
+            "statistical_fit": 0.3,
+            "global_consistency": 0.25,
+            "sampling_stability": 0.25,
+            "structural_stability": 0.2
+        })
 
         # Store assumption-role mapping and algorithm priority in config for downstream nodes
         self.config.setdefault("ASSUMPTION_METHODS", ASSUMPTION_METHODS)
@@ -200,24 +234,49 @@ class CausalDiscoveryAgent(SpecialistAgent):
             self._cam_tool,
             "CAM algorithm (via CDT)"
         )
+        
+        # New tools for restructured pipeline
+        self.register_tool(
+            "pruning_tool",
+            self._pruning_tool,
+            "CI testing and structural consistency"
+        )
+        self.register_tool(
+            "ensemble_tool",
+            self._ensemble_tool,
+            "Consensus skeleton and PAG construction"
+        )
     
     def step(self, state: AgentState) -> AgentState:
         """Execute causal discovery step"""
-        substep = state.get("current_substep", "assumption_method_matrix")
+        substep = state.get("current_substep", "data_profiling")
         
         logger.info(f"CausalDiscoveryAgent executing substep: {substep}")
         
         try:
-            if substep == "assumption_method_matrix":
-                return self._assumption_method_matrix(state)
+            if substep == "data_profiling":
+                return self._data_profiling(state)
+            elif substep == "algorithm_tiering":
+                return self._algorithm_tiering(state)
+            elif substep == "run_algorithms_portfolio":
+                return self._run_algorithms_portfolio(state)
+            elif substep == "candidate_pruning":
+                return self._candidate_pruning(state)
+            elif substep == "scorecard_evaluation":
+                return self._scorecard_evaluation(state)
+            elif substep == "ensemble_synthesis":
+                return self._ensemble_synthesis(state)
+            # Legacy substeps for backward compatibility
+            elif substep == "assumption_method_matrix":
+                return self._data_profiling(state)
             elif substep == "algorithm_scoring":
-                return self._algorithm_scoring(state)
+                return self._algorithm_tiering(state)
             elif substep == "run_algorithms":
-                return self._run_algorithms(state)
+                return self._run_algorithms_portfolio(state)
             elif substep == "intermediate_scoring":
-                return self._intermediate_scoring(state)
+                return self._scorecard_evaluation(state)
             elif substep == "final_graph_selection":
-                return self._final_graph_selection(state)
+                return self._ensemble_synthesis(state)
             else:
                 raise ValueError(f"Unknown substep: {substep}")
                 
@@ -227,29 +286,19 @@ class CausalDiscoveryAgent(SpecialistAgent):
             state["causal_discovery_status"] = "failed"
             return state
     
-    def _assumption_method_matrix(self, state: AgentState) -> AgentState:
-        """Step 1: Generate assumption-method compatibility matrix"""
-        logger.info("Generating assumption-method matrix...")
+    def _data_profiling(self, state: AgentState) -> AgentState:
+        """Stage 1: Data profiling with qualitative summary generation"""
+        logger.info("Performing data profiling...")
         
         try:
             # Get preprocessed data (load from reference if necessary)
-            df = state.get("df_preprocessed")
-            if df is None and state.get("df_preprocessed_key"):
-                try:
-                    from utils.redis_client import redis_client
-                    import pandas as pd
-                    raw = redis_client.get(state["df_preprocessed_key"]) or ""
-                    if raw:
-                        df = pd.read_json(raw, orient="split")
-                        state["df_preprocessed"] = df
-                except Exception as _:
-                    df = None
+            df = self._load_dataframe_from_state(state)
             if df is None:
                 raise ValueError("No preprocessed data available")
             
             # Get variable information
             variables = list(df.columns)
-            logger.info(f"Testing assumptions for variables: {variables}")
+            logger.info(f"Profiling data for variables: {variables}")
             
             # Initialize assumption scores
             assumption_scores = {
@@ -260,321 +309,656 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 "S_EqVar": {}     # Equal variance scores
             }
             
-            # Test each variable pair for assumptions
-            for i, var1 in enumerate(variables):
-                for j, var2 in enumerate(variables):
-                    if i >= j:  # Skip diagonal and upper triangle
-                        continue
-                    
-                    pair_key = f"{var1}_{var2}"
-                    logger.info(f"Testing assumptions for pair: {pair_key}")
-                    
-                    # 1. Linearity test (GLM vs GAM)
-                    linearity_score = self._test_linearity(df[var1], df[var2])
-                    assumption_scores["S_lin"][pair_key] = linearity_score
-                    
-                    # 2. Non-Gaussian test
-                    non_gaussian_score = self._test_non_gaussian(df[var1], df[var2])
-                    assumption_scores["S_nG"][pair_key] = non_gaussian_score
-                    
-                    # 3. ANM test (bidirectional independence)
-                    anm_score = self._test_anm(df[var1], df[var2])
-                    assumption_scores["S_ANM"][pair_key] = anm_score
-                    
-                    # 4. Gaussian + Equal Variance test
-                    gauss_score, eqvar_score = self._test_gaussian_eqvar(df[var1], df[var2])
-                    assumption_scores["S_Gauss"][pair_key] = gauss_score
-                    assumption_scores["S_EqVar"][pair_key] = eqvar_score
+            # Build all lower-triangle pairs
+            pairs = [(variables[i], variables[j]) for i in range(len(variables)) for j in range(i+1, len(variables))]
+            # Optional sampling for very large pair sets
+            if self.profiling_max_pairs and len(pairs) > self.profiling_max_pairs:
+                rng = np.random.default_rng(42)
+                idx = rng.choice(len(pairs), size=self.profiling_max_pairs, replace=False)
+                pairs = [pairs[k] for k in idx]
+                logger.info(f"Sampling pairwise tests: using {len(pairs)} pairs")
+
+            # Determine parallelism
+            max_workers = self.profiling_parallelism or min(32, max(1, len(pairs)))
+
+            def _eval_pair(var1: str, var2: str):
+                pair_key = f"{var1}_{var2}"
+                # 1. Linearity test
+                linearity_score = self._test_linearity(df[var1], df[var2])
+                # 2. Non-Gaussian test
+                non_gaussian_score = self._test_non_gaussian(df[var1], df[var2])
+                # 3. ANM test
+                anm_score = self._test_anm(df[var1], df[var2])
+                # 4. Gaussian + Equal Variance
+                gauss_score, eqvar_score = self._test_gaussian_eqvar(df[var1], df[var2])
+                return pair_key, linearity_score, non_gaussian_score, anm_score, gauss_score, eqvar_score
+
+            # Parallel execution
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(_eval_pair, v1, v2) for v1, v2 in pairs]
+                for fut in futures:
+                    pair_key, lin_s, ng_s, anm_s, g_s, ev_s = fut.result()
+                    assumption_scores["S_lin"][pair_key] = lin_s
+                    assumption_scores["S_nG"][pair_key] = ng_s
+                    assumption_scores["S_ANM"][pair_key] = anm_s
+                    assumption_scores["S_Gauss"][pair_key] = g_s
+                    assumption_scores["S_EqVar"][pair_key] = ev_s
+            
+            # Generate qualitative data profile
+            data_profile = self._generate_qualitative_profile(assumption_scores, variables)
             
             # Update state
             state["assumption_method_scores"] = assumption_scores
-            state["assumption_method_matrix_completed"] = True
+            state["data_profile"] = data_profile
+            state["data_profiling_completed"] = True
             
-            logger.info("Assumption-method matrix generation completed")
+            logger.info("Data profiling completed")
             return state
             
         except Exception as e:
-            logger.error(f"Assumption method matrix generation failed: {str(e)}")
-            state["error"] = f"Assumption method matrix failed: {str(e)}"
+            logger.error(f"Data profiling failed: {str(e)}")
+            state["error"] = f"Data profiling failed: {str(e)}"
             return state
     
-    def _algorithm_scoring(self, state: AgentState) -> AgentState:
-        """Step 2: Score algorithms based on assumption compatibility"""
-        logger.info("Scoring algorithms based on assumption compatibility...")
+    def _generate_qualitative_profile(self, assumption_scores: Dict[str, Dict[str, float]], variables: List[str]) -> Dict[str, Any]:
+        """Generate qualitative data profile from assumption scores"""
+        try:
+            # Aggregate scores across all pairs
+            aggregated_scores = {}
+            for assumption_type, pair_scores in assumption_scores.items():
+                if pair_scores:
+                    scores = list(pair_scores.values())
+                    aggregated_scores[assumption_type] = {
+                        "mean": np.mean(scores),
+                        "median": np.median(scores),
+                        "std": np.std(scores),
+                        "min": np.min(scores),
+                        "max": np.max(scores)
+                    }
+                else:
+                    aggregated_scores[assumption_type] = {"mean": 0.5, "median": 0.5, "std": 0.0, "min": 0.5, "max": 0.5}
+            
+            # Generate qualitative descriptions
+            linearity_mean = aggregated_scores["S_lin"]["mean"]
+            non_gaussian_mean = aggregated_scores["S_nG"]["mean"]
+            anm_mean = aggregated_scores["S_ANM"]["mean"]
+            gaussian_mean = aggregated_scores["S_Gauss"]["mean"]
+            eqvar_mean = aggregated_scores["S_EqVar"]["mean"]
+            
+            # Qualitative profiling
+            linearity_desc = "strong" if linearity_mean > 0.7 else "weak" if linearity_mean < 0.3 else "moderate"
+            non_gaussian_desc = "strong" if non_gaussian_mean > 0.7 else "weak" if non_gaussian_mean < 0.3 else "moderate"
+            anm_compatible = anm_mean > 0.6
+            gaussian_desc = "strong" if gaussian_mean > 0.7 else "weak" if gaussian_mean < 0.3 else "moderate"
+            eqvar_desc = "strong" if eqvar_mean > 0.7 else "weak" if eqvar_mean < 0.3 else "moderate"
+            
+            data_profile = {
+                "linearity": linearity_desc,
+                "non_gaussian": non_gaussian_desc,
+                "anm_compatible": anm_compatible,
+                "gaussian": gaussian_desc,
+                "equal_variance": eqvar_desc,
+                "n_variables": len(variables),
+                "n_pairs": len(variables) * (len(variables) - 1) // 2,
+                "aggregated_scores": aggregated_scores,
+                "summary": f"Data shows {linearity_desc} linearity, {non_gaussian_desc} non-Gaussianity, "
+                          f"{'ANM-compatible' if anm_compatible else 'ANM-incompatible'} patterns"
+            }
+            
+            return data_profile
+            
+        except Exception as e:
+            logger.warning(f"Qualitative profile generation failed: {e}")
+            return {
+                "linearity": "moderate",
+                "non_gaussian": "moderate", 
+                "anm_compatible": False,
+                "gaussian": "moderate",
+                "equal_variance": "moderate",
+                "n_variables": len(variables),
+                "n_pairs": len(variables) * (len(variables) - 1) // 2,
+                "summary": "Default profile due to generation error"
+            }
+    
+    def _algorithm_tiering(self, state: AgentState) -> AgentState:
+        """Stage 1: Algorithm tiering based on data profile"""
+        logger.info("Performing algorithm tiering...")
         
         try:
-            assumption_scores = state.get("assumption_method_scores", {})
-            if not assumption_scores:
-                raise ValueError("No assumption scores available")
+            data_profile = state.get("data_profile", {})
+            if not data_profile:
+                raise ValueError("No data profile available")
+                        
+            # Match data profile to family requirements
+            tier1_algorithms = []  # Best match algorithms
+            tier2_algorithms = []  # Partial match algorithms  
+            tier3_algorithms = []  # Opposite assumption algorithms (for exploration)
             
-            # Algorithm requirements and preferences
-            algorithm_configs = self.config.get("ASSUMPTION_METHODS", ASSUMPTION_METHODS)
-            
-            algorithm_scores = {}
-            selected_algorithms = []
-            
-            for alg_name, config in algorithm_configs.items():
-                logger.info(f"Scoring algorithm: {alg_name}")
-                
-                # Calculate scores for each assumption type
-                scores = {}
-                weights = {}
-                
-                for assumption_type in ["S_lin", "S_nG", "S_ANM", "S_Gauss", "S_EqVar"]:
-                    if assumption_type in assumption_scores:
-                        # Aggregate scores across all variable pairs
-                        pair_scores = list(assumption_scores[assumption_type].values())
-                        if pair_scores:
-                            scores[assumption_type] = np.mean(pair_scores)
-                            weights[assumption_type] = 1.0
-                        else:
-                            scores[assumption_type] = 0.5
-                            weights[assumption_type] = 0.0
-                    else:
-                        scores[assumption_type] = 0.5
-                        weights[assumption_type] = 0.0
-                
-                # Calculate role-based scores
-                req_scores = []
-                pref_scores = []
-                irr_scores = []
-                
-                for assumption_type in config.get("required", []):
-                    if assumption_type in scores:
-                        # Conservative transformation for required
-                        req_score = scores[assumption_type] ** self.beta_conservative
-                        req_scores.append(req_score)
-                
-                for assumption_type in config.get("preferred", []):
-                    if assumption_type in scores:
-                        # Generic preferred transform; allow ANM/PNL/CAM to prefer nonlinearity by negating S_lin
-                        if assumption_type == "S_lin" and alg_name in ("ANM", "PNL", "CAM"):
-                            pref_score = 0.5 + 0.5 * (1 - scores[assumption_type])
-                        else:
-                            pref_score = 0.5 + 0.5 * scores[assumption_type]
-                        pref_scores.append(pref_score)
-                
-                for assumption_type in config.get("irrelevant", []):
-                    if assumption_type in scores:
-                        # Irrelevant gets neutral score
-                        irr_scores.append(0.5)
-                
-                # Calculate weighted average score
-                total_weight = len(req_scores) + len(pref_scores) + len(irr_scores)
-                if total_weight > 0:
-                    weighted_score = (sum(req_scores) + sum(pref_scores) + sum(irr_scores)) / total_weight
-                else:
-                    weighted_score = 0.5
-                
-                # Calculate soft-AND for required assumptions
-                if req_scores:
-                    soft_and_score = np.prod(req_scores) ** (1/len(req_scores))
-                else:
-                    soft_and_score = 1.0
-                
-                # Final score: combination of weighted average and soft-AND
-                final_score = (self.lambda_soft_and * soft_and_score + 
-                             (1 - self.lambda_soft_and) * weighted_score)
-                
-                algorithm_scores[alg_name] = {
-                    "final_score": final_score,
-                    "weighted_score": weighted_score,
-                    "soft_and_score": soft_and_score,
-                    "individual_scores": scores
+            # Define family requirements based on data profile
+            family_requirements = {
+                "Linear": {
+                    "required": ["linearity"],
+                    "preferred": ["non_gaussian"],
+                    "opposite": ["anm_compatible"]
+                },
+                "Nonlinear-FCM": {
+                    "required": ["anm_compatible"],
+                    "preferred": ["linearity"],  # prefer nonlinearity
+                    "opposite": ["gaussian"]
+                },
+                "Constraint-based": {
+                    "required": ["linearity"],
+                    "preferred": ["gaussian"],
+                    "opposite": ["non_gaussian"]
+                },
+                "Score-based": {
+                    "required": ["linearity", "gaussian", "equal_variance"],
+                    "preferred": [],
+                    "opposite": ["non_gaussian", "anm_compatible"]
+                },
+                "Latent-robust": {
+                    "required": ["linearity"],
+                    "preferred": ["gaussian"],
+                    "opposite": ["non_gaussian"]
                 }
+            }
             
-            # Select top-k algorithms
-            sorted_algorithms = sorted(algorithm_scores.items(), 
-                                     key=lambda x: x[1]["final_score"], 
-                                     reverse=True)
-            selected_algorithms = [alg[0] for alg in sorted_algorithms[:self.top_k_algorithms]]
-            IMPLEMENTED_ALGOS = {"LiNGAM", "ANM", "PC", "GES", "FCI", "CAM"}
-            selected_algorithms = [a for a in selected_algorithms if a in IMPLEMENTED_ALGOS]
-            if not selected_algorithms:
-                raise ValueError("No runnable algorithms available after filtering")
+            # Score each family
+            family_scores = {}
+            for family_name in ALGORITHM_FAMILIES_REP.keys():
+                if family_name not in family_requirements:
+                    continue
+                    
+                requirements = family_requirements[family_name]
+                score = 0.0
+                total_weight = 0.0
+                
+                # Required assumptions (must be satisfied)
+                for req in requirements["required"]:
+                    if req == "linearity":
+                        score += 1.0 if data_profile["linearity"] == "strong" else 0.5 if data_profile["linearity"] == "moderate" else 0.0
+                    elif req == "anm_compatible":
+                        score += 1.0 if data_profile["anm_compatible"] else 0.0
+                    elif req == "gaussian":
+                        score += 1.0 if data_profile["gaussian"] == "strong" else 0.5 if data_profile["gaussian"] == "moderate" else 0.0
+                    elif req == "equal_variance":
+                        score += 1.0 if data_profile["equal_variance"] == "strong" else 0.5 if data_profile["equal_variance"] == "moderate" else 0.0
+                    total_weight += 1.0
+                
+                # Preferred assumptions (bonus points)
+                for pref in requirements["preferred"]:
+                    if pref == "linearity":
+                        bonus = 0.3 if data_profile["linearity"] == "strong" else 0.1 if data_profile["linearity"] == "moderate" else 0.0
+                    elif pref == "non_gaussian":
+                        bonus = 0.3 if data_profile["non_gaussian"] == "strong" else 0.1 if data_profile["non_gaussian"] == "moderate" else 0.0
+                    elif pref == "gaussian":
+                        bonus = 0.3 if data_profile["gaussian"] == "strong" else 0.1 if data_profile["gaussian"] == "moderate" else 0.0
+                    else:
+                        bonus = 0.0
+                    score += bonus
+                    total_weight += 0.3
+                
+                if total_weight > 0:
+                    family_scores[family_name] = score / total_weight
+                else:
+                    family_scores[family_name] = 0.5
+            
+            # Build tier algorithms based on mode: representatives vs all family algorithms
+            run_all = state.get("run_all_tier_algorithms", self.run_all_tier_algorithms)
+            family_source = ALGORITHM_FAMILIES_ALL if run_all else ALGORITHM_FAMILIES_REP
+            for family_name, alg_list in family_source.items():
+                if family_name not in family_scores:
+                    continue
+                score = family_scores[family_name]
+                target = tier1_algorithms if score >= 0.7 else tier2_algorithms if score >= 0.4 else tier3_algorithms
+                target.extend(alg_list)
+            
+            # FCI always included (latent-robust)
+            if "FCI" not in tier1_algorithms and "FCI" not in tier2_algorithms and "FCI" not in tier3_algorithms:
+                tier1_algorithms.append("FCI")
+            
+            # Remove duplicates
+            tier1_algorithms = list(set(tier1_algorithms))
+            tier2_algorithms = list(set(tier2_algorithms))
+            tier3_algorithms = list(set(tier3_algorithms))
+            
+            # Generate tiering reasoning
+            reasoning = self._generate_tiering_reasoning(data_profile, family_scores, tier1_algorithms, tier2_algorithms, tier3_algorithms)
+            
             # Update state
-            state["algorithm_scores"] = algorithm_scores
-            state["selected_algorithms"] = selected_algorithms
-            state["algorithm_scoring_completed"] = True
-            state["ASSUMPTION_METHODS"] = algorithm_configs
+            state["algorithm_tiers"] = {
+                "tier1": tier1_algorithms,
+                "tier2": tier2_algorithms, 
+                "tier3": tier3_algorithms
+            }
+            state["tiering_reasoning"] = reasoning
+            state["algorithm_tiering_completed"] = True
             
-            logger.info(f"Algorithm scoring completed. Selected: {selected_algorithms}")
+            logger.info(f"Algorithm tiering completed. Tier1: {tier1_algorithms}, Tier2: {tier2_algorithms}, Tier3: {tier3_algorithms}")
             return state
             
         except Exception as e:
-            logger.error(f"Algorithm scoring failed: {str(e)}")
-            state["error"] = f"Algorithm scoring failed: {str(e)}"
+            logger.error(f"Algorithm tiering failed: {str(e)}")
+            state["error"] = f"Algorithm tiering failed: {str(e)}"
             return state
     
-    def _run_algorithms(self, state: AgentState) -> AgentState:
-        """Step 3: Run selected algorithms in parallel"""
-        logger.info("Running selected algorithms in parallel...")
+    def _generate_tiering_reasoning(self, data_profile: Dict[str, Any], family_scores: Dict[str, float], 
+                                   tier1: List[str], tier2: List[str], tier3: List[str]) -> str:
+        """Generate reasoning for algorithm tiering"""
+        reasoning = f"""
+        Data Profile Analysis:
+        - Linearity: {data_profile['linearity']}
+        - Non-Gaussianity: {data_profile['non_gaussian']}
+        - ANM Compatibility: {data_profile['anm_compatible']}
+        - Gaussian: {data_profile['gaussian']}
+        - Equal Variance: {data_profile['equal_variance']}
+        
+        Family Scores: {family_scores}
+        
+        Algorithm Tiering:
+        - Tier 1 (Best Match): {tier1}
+        - Tier 2 (Partial Match): {tier2}
+        - Tier 3 (Exploration): {tier3}
+        
+        Rationale: Each family contributes one representative algorithm by default. Extended algorithms
+        (PNL, CAM) can be included when explicitly requested. FCI is always included for latent robustness.
+        Tier 1 algorithms have the best assumption compatibility, Tier 2 have partial compatibility,
+        and Tier 3 algorithms have opposite assumptions for exploratory analysis.
+        """
+        return reasoning.strip()
+    
+    
+    def _run_algorithms_portfolio(self, state: AgentState) -> AgentState:
+        """Stage 2: Run algorithms from all tiers in parallel"""
+        logger.info("Running algorithm portfolio in parallel...")
         
         try:
-            selected_algorithms = state.get("selected_algorithms", [])
-            df = state.get("df_preprocessed")
+            algorithm_tiers = state.get("algorithm_tiers", {})
+            df = self._load_dataframe_from_state(state)
             
-            if not selected_algorithms:
-                raise ValueError("No algorithms selected")
+            if not algorithm_tiers:
+                raise ValueError("No algorithm tiers available")
             if df is None:
                 raise ValueError("No preprocessed data available")
+            
+            # Collect all algorithms from all tiers
+            all_algorithms = []
+            all_algorithms.extend(algorithm_tiers.get("tier1", []))
+            all_algorithms.extend(algorithm_tiers.get("tier2", []))
+            all_algorithms.extend(algorithm_tiers.get("tier3", []))
+            
+            # Remove duplicates
+            all_algorithms = list(set(all_algorithms))
+            
+            if not all_algorithms:
+                raise ValueError("No algorithms to execute")
+            
+            logger.info(f"Executing algorithms: {all_algorithms}")
             
             # Run algorithms in parallel
             algorithm_results = {}
             
-            with ThreadPoolExecutor(max_workers=len(selected_algorithms)) as executor:
+            with ThreadPoolExecutor(max_workers=len(all_algorithms)) as executor:
                 futures = {}
-                
-                for alg_name in selected_algorithms:
-                    if alg_name == "LiNGAM":
-                        future = executor.submit(self._run_lingam, df)
-                    elif alg_name == "ANM":
-                        future = executor.submit(self._run_anm, df)
-                    elif alg_name == "PC":
-                        future = executor.submit(self._run_pc, df)
-                    elif alg_name == "GES":
-                        future = executor.submit(self._run_ges, df)
-                    elif alg_name == "FCI":
-                        future = executor.submit(self._run_fci, df)
-                    elif alg_name == "CAM":
-                        future = executor.submit(self._run_cam, df)
-                    else:
-                        logger.warning(f"Unknown algorithm: {alg_name}")
-                        continue
-                    
+                # Per-algorithm timeouts (seconds)
+                timeout_map = {"LiNGAM": 120, "ANM": 180, "PC": 180, "GES": 300, "FCI": 300, "CAM": 300}
+                for alg_name in all_algorithms:
+                    future = executor.submit(self._dispatch_algorithm, alg_name, df)
                     futures[alg_name] = future
                 
                 # Collect results
                 for alg_name, future in futures.items():
                     try:
-                        result = future.result(timeout=300)  # 5 minute timeout
+                        result = future.result(timeout=timeout_map.get(alg_name, 300))
                         algorithm_results[alg_name] = result
                         logger.info(f"Algorithm {alg_name} completed successfully")
                     except Exception as e:
                         logger.error(f"Algorithm {alg_name} failed: {str(e)}")
                         algorithm_results[alg_name] = {"error": str(e)}
             
+            # Store results in Redis if large
+            if len(algorithm_results) > 5:  # threshold
+                try:
+                    from utils.redis_client import redis_client
+                    import json
+                    session_id = state.get("session_id", "default")
+                    redis_key = f"{state.get('db_id', 'default')}:algorithm_results:{session_id}"
+                    redis_client.set(redis_key, json.dumps(algorithm_results))
+                    state["algorithm_results_key"] = redis_key
+                    logger.info(f"Algorithm results stored in Redis: {redis_key}")
+                except Exception as e:
+                    logger.warning(f"Failed to store results in Redis: {e}")
+            
             # Update state
             state["algorithm_results"] = algorithm_results
-            state["run_algorithms_completed"] = True
+            state["run_algorithms_portfolio_completed"] = True
             
-            logger.info("Algorithm execution completed")
+            logger.info("Algorithm portfolio execution completed")
             return state
             
         except Exception as e:
-            logger.error(f"Algorithm execution failed: {str(e)}")
-            state["error"] = f"Algorithm execution failed: {str(e)}"
+            logger.error(f"Algorithm portfolio execution failed: {str(e)}")
+            state["error"] = f"Algorithm portfolio execution failed: {str(e)}"
             return state
     
-    def _intermediate_scoring(self, state: AgentState) -> AgentState:
-        """Step 4: Calculate intermediate scores (robustness, fidelity, generalizability)"""
-        logger.info("Calculating intermediate scores...")
+    def _candidate_pruning(self, state: AgentState) -> AgentState:
+        """Stage 3: Candidate pruning using CI testing and structural consistency"""
+        logger.info("Performing candidate pruning...")
         
         try:
-            algorithm_results = state.get("algorithm_results", {})
-            df = state.get("df_preprocessed")
+            algorithm_results = self._load_algorithm_results_from_state(state)
+            df = self._load_dataframe_from_state(state)
             
             if not algorithm_results:
                 raise ValueError("No algorithm results available")
             if df is None:
                 raise ValueError("No preprocessed data available")
             
-            intermediate_scores = {}
-            graph_candidates = []
+            pruned_candidates = []
+            pruning_log = []
             
             for alg_name, result in algorithm_results.items():
                 if "error" in result:
+                    pruning_log.append({
+                        "algorithm": alg_name,
+                        "reason": "execution_error",
+                        "error": result["error"]
+                    })
                     continue
                 
-                logger.info(f"Evaluating {alg_name} results...")
+                logger.info(f"Pruning candidate from {alg_name}...")
                 
-                # 1. Robustness: Bootstrap evaluation
-                robustness_score = self._evaluate_robustness(df, result, alg_name)
+                # 1. Global Markov test
+                markov_result = self.use_tool("pruning_tool", "global_markov_test", result, df, alpha=self.ci_alpha)
+                violation_ratio = markov_result.get("violation_ratio", 1.0)
                 
-                # 2. Fidelity: BIC/MDL score
-                fidelity_score = self._evaluate_fidelity(df, result)
+                # Filter if violation ratio too high
+                if violation_ratio > self.violation_threshold:
+                    pruning_log.append({
+                        "algorithm": alg_name,
+                        "reason": "high_ci_violations",
+                        "violation_ratio": violation_ratio,
+                        "threshold": self.violation_threshold
+                    })
+                    continue
                 
-                # 3. Generalizability: Cross-validation
-                generalizability_score = self._evaluate_generalizability(df, result)
+                # 2. Structural consistency test
+                consistency_result = self.use_tool("pruning_tool", "structural_consistency_test", result, df, alg_name)
+                instability_score = consistency_result.get("instability_score", 1.0)
                 
-                # 4. Assumption-Method: Reuse previous scores
-                assumption_score = self._get_assumption_score(alg_name, state)
-                
-                intermediate_scores[alg_name] = {
-                    "robustness": robustness_score,
-                    "fidelity": fidelity_score,
-                    "generalizability": generalizability_score,
-                    "assumption_method": assumption_score
-                }
-                
-                # Store graph candidate
-                graph_candidates.append({
+                # Store pruned candidate
+                pruned_candidates.append({
                     "algorithm": alg_name,
-                    "graph": result.get("graph", {}),
-                    "scores": intermediate_scores[alg_name],
-                    "metadata": result.get("metadata", {})
+                    "graph": result,
+                    "violation_ratio": violation_ratio,
+                    "instability_score": instability_score,
+                    "markov_result": markov_result,
+                    "consistency_result": consistency_result
                 })
             
             # Update state
-            state["intermediate_scores"] = intermediate_scores
-            state["candidate_graphs"] = graph_candidates
-            state["intermediate_scoring_completed"] = True
+            state["pruned_candidates"] = pruned_candidates
+            state["pruning_log"] = pruning_log
+            state["candidate_pruning_completed"] = True
             
-            logger.info("Intermediate scoring completed")
+            logger.info(f"Candidate pruning completed. {len(pruned_candidates)} candidates retained, {len(pruning_log)} rejected")
             return state
             
         except Exception as e:
-            logger.error(f"Intermediate scoring failed: {str(e)}")
-            state["error"] = f"Intermediate scoring failed: {str(e)}"
+            logger.error(f"Candidate pruning failed: {str(e)}")
+            state["error"] = f"Candidate pruning failed: {str(e)}"
             return state
     
-    def _final_graph_selection(self, state: AgentState) -> AgentState:
-        """Step 5: Select final causal graph"""
-        logger.info("Selecting final causal graph...")
+    def _scorecard_evaluation(self, state: AgentState) -> AgentState:
+        """Stage 4: Scorecard evaluation with composite scoring"""
+        logger.info("Performing scorecard evaluation...")
         
         try:
-            candidate_graphs = state.get("candidate_graphs", [])
-            intermediate_scores = state.get("intermediate_scores", {})
+            pruned_candidates = state.get("pruned_candidates", [])
+            df = state.get("df_preprocessed")
             
-            if not candidate_graphs:
-                raise ValueError("No candidate graphs available")
+            if not pruned_candidates:
+                raise ValueError("No pruned candidates available")
+            if df is None:
+                raise ValueError("No preprocessed data available")
             
-            # Calculate composite scores for each candidate
-            final_scores = {}
-            for candidate in candidate_graphs:
+            scorecard = []
+            
+            for candidate in pruned_candidates:
                 alg_name = candidate["algorithm"]
-                scores = intermediate_scores.get(alg_name, {})
+                graph = candidate["graph"]
                 
-                # Weighted combination of all scores
+                logger.info(f"Evaluating {alg_name} for scorecard...")
+                
+                # 1. Statistical fit (BIC/AIC) - use algorithm-native score if available
+                statistical_fit = self._compute_algorithm_native_score(graph, alg_name)
+                if statistical_fit is None:
+                    # Fallback to GraphEvaluator
+                    fidelity_result = self.use_tool("graph_evaluator", "fidelity_evaluation", df, graph)
+                    statistical_fit = fidelity_result.get("fidelity_score", 0.5)
+                
+                # 2. Global consistency - use CI violation ratio from pruning
+                global_consistency = 1.0 - candidate["violation_ratio"]
+                
+                # 3. Sampling stability - use existing Bootstrapper
+                sampling_stability = self._evaluate_robustness(df, graph, alg_name)
+                
+                # 4. Structural stability - use instability score from pruning
+                structural_stability = 1.0 - candidate["instability_score"]
+                
+                # Calculate composite score
                 composite_score = (
-                    0.3 * scores.get("robustness", 0.5) +
-                    0.3 * scores.get("fidelity", 0.5) +
-                    0.2 * scores.get("generalizability", 0.5) +
-                    0.2 * scores.get("assumption_method", 0.5)
+                    self.composite_weights["statistical_fit"] * statistical_fit +
+                    self.composite_weights["global_consistency"] * global_consistency +
+                    self.composite_weights["sampling_stability"] * sampling_stability +
+                    self.composite_weights["structural_stability"] * structural_stability
                 )
                 
-                final_scores[alg_name] = composite_score
+                scorecard.append({
+                    "algorithm": alg_name,
+                    "graph_id": f"{alg_name}_{id(graph)}",
+                    "statistical_fit": statistical_fit,
+                    "global_consistency": global_consistency,
+                    "sampling_stability": sampling_stability,
+                    "structural_stability": structural_stability,
+                    "composite_score": composite_score,
+                    "graph": graph
+                })
             
-            # Select best graph
-            best_algorithm = max(final_scores.items(), key=lambda x: x[1])[0]
-            best_candidate = next(c for c in candidate_graphs if c["algorithm"] == best_algorithm)
-            
-            # Generate selection reasoning
-            reasoning = self._generate_selection_reasoning(best_candidate, final_scores, intermediate_scores)
+            # Sort by composite score and select top candidates
+            scorecard.sort(key=lambda x: x["composite_score"], reverse=True)
+            top_candidates = scorecard[:3]  # Top 3 graphs
             
             # Update state
-            state["selected_graph"] = best_candidate["graph"]
-            state["graph_selection_reasoning"] = reasoning
-            state["causal_discovery_status"] = "completed"
-            state["final_graph_selection_completed"] = True
+            state["scorecard"] = scorecard
+            state["top_candidates"] = top_candidates
+            state["scorecard_evaluation_completed"] = True
             
-            logger.info(f"Final graph selected: {best_algorithm}")
+            logger.info(f"Scorecard evaluation completed. Top candidate: {top_candidates[0]['algorithm'] if top_candidates else 'None'}")
             return state
             
         except Exception as e:
-            logger.error(f"Final graph selection failed: {str(e)}")
-            state["error"] = f"Final graph selection failed: {str(e)}"
+            logger.error(f"Scorecard evaluation failed: {str(e)}")
+            state["error"] = f"Scorecard evaluation failed: {str(e)}"
             return state
+    
+    def _compute_algorithm_native_score(self, graph: Dict[str, Any], algorithm_name: str) -> Optional[float]:
+        """Extract algorithm-native BIC/AIC score from metadata if available"""
+        try:
+            if "metadata" in graph:
+                metadata = graph["metadata"]
+                
+                # Check for common score fields
+                if "bic" in metadata:
+                    # Convert BIC to score (lower BIC = higher score)
+                    bic = metadata["bic"]
+                    return max(0.0, min(1.0, 1.0 - (bic / 1000)))  # Simple normalization
+                elif "aic" in metadata:
+                    # Convert AIC to score
+                    aic = metadata["aic"]
+                    return max(0.0, min(1.0, 1.0 - (aic / 1000)))
+                elif "score" in metadata:
+                    return float(metadata["score"])
+                elif "log_likelihood" in metadata:
+                    # Convert log-likelihood to score
+                    ll = metadata["log_likelihood"]
+                    return max(0.0, min(1.0, (ll + 100) / 200))  # Simple normalization
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Failed to extract native score for {algorithm_name}: {e}")
+            return None
+
+    # === Helpers and dispatch ===
+
+    def _load_dataframe_from_state(self, state: AgentState) -> Optional[pd.DataFrame]:
+        df = state.get("df_preprocessed")
+        if df is not None:
+            return df
+        if state.get("df_preprocessed_key"):
+            try:
+                from utils.redis_client import redis_client
+                import pandas as pd
+                import io
+                df_bytes = redis_client.get(state["df_preprocessed_key"])
+                if df_bytes:
+                    df = pd.read_parquet(io.BytesIO(df_bytes))
+                    state["df_preprocessed"] = df
+                    return df
+            except Exception:
+                return None
+        return None
+
+    def _load_algorithm_results_from_state(self, state: AgentState) -> Dict[str, Any]:
+        results = state.get("algorithm_results", {})
+        if results:
+            return results
+        if state.get("algorithm_results_key"):
+            try:
+                from utils.redis_client import redis_client
+                import json
+                redis_key = state["algorithm_results_key"]
+                data = redis_client.get(redis_key)
+                if data:
+                    return json.loads(data)
+            except Exception:
+                return {}
+        return {}
+
+    def _validate_graph_structure(self, graph: Dict[str, Any]) -> bool:
+        try:
+            return bool(graph and "graph" in graph and "edges" in graph["graph"])
+        except Exception:
+            return False
+
+    def _dispatch_algorithm(self, alg_name: str, df: pd.DataFrame) -> Dict[str, Any]:
+        if alg_name == "LiNGAM":
+            return self._run_lingam(df)
+        if alg_name == "ANM":
+            return self._run_anm(df)
+        if alg_name == "PC":
+            return self._run_pc(df)
+        if alg_name == "GES":
+            return self._run_ges(df)
+        if alg_name == "FCI":
+            return self._run_fci(df)
+        if alg_name == "CAM":
+            return self._run_cam(df)
+        return {"error": f"Unknown algorithm: {alg_name}"}
+    
+    def _intermediate_scoring(self, state: AgentState) -> AgentState:
+        """Legacy method for backward compatibility"""
+        return self._scorecard_evaluation(state)
+    
+    def _ensemble_synthesis(self, state: AgentState) -> AgentState:
+        """Stage 5: Ensemble synthesis with PAG-like and DAG outputs"""
+        logger.info("Performing ensemble synthesis...")
+        
+        try:
+            top_candidates = state.get("top_candidates", [])
+            data_profile = state.get("data_profile", {})
+            
+            if not top_candidates:
+                raise ValueError("No top candidates available")
+            
+            # Extract graphs and weights from top candidates
+            graphs = []
+            weights = []
+            
+            for candidate in top_candidates:
+                graphs.append(candidate["graph"])
+                weights.append(candidate["composite_score"])
+            
+            # 1. Build consensus skeleton
+            skeleton_result = self.use_tool("ensemble_tool", "build_consensus_skeleton", graphs, weights)
+            
+            # 2. Resolve directions
+            directions_result = self.use_tool("ensemble_tool", "resolve_directions", skeleton_result, graphs, data_profile)
+            
+            # 3. Construct PAG-like graph
+            pag_result = self.use_tool("ensemble_tool", "construct_pag", directions_result, {})
+            
+            # 4. Construct single DAG with tie-breaking
+            top_algorithm = top_candidates[0]["algorithm"]
+            dag_result = self.use_tool("ensemble_tool", "construct_dag", pag_result, data_profile, top_algorithm)
+            
+            # Generate synthesis reasoning
+            reasoning = self._generate_synthesis_reasoning(top_candidates, pag_result, dag_result, data_profile)
+            
+            # Update state
+            state["consensus_pag"] = pag_result
+            state["selected_graph"] = dag_result
+            state["synthesis_reasoning"] = reasoning
+            state["causal_discovery_status"] = "completed"
+            state["ensemble_synthesis_completed"] = True
+            
+            logger.info(f"Ensemble synthesis completed. Top algorithm: {top_algorithm}")
+            return state
+            
+        except Exception as e:
+            logger.error(f"Ensemble synthesis failed: {str(e)}")
+            state["error"] = f"Ensemble synthesis failed: {str(e)}"
+            return state
+    
+    def _generate_synthesis_reasoning(self, top_candidates: List[Dict[str, Any]], pag_result: Dict[str, Any], 
+                                    dag_result: Dict[str, Any], data_profile: Dict[str, Any]) -> str:
+        """Generate reasoning for ensemble synthesis"""
+        try:
+            top_algorithm = top_candidates[0]["algorithm"] if top_candidates else "Unknown"
+            
+            reasoning = f"""
+            Ensemble Synthesis Results:
+            
+            Top Candidates: {[c['algorithm'] for c in top_candidates]}
+            Leading Algorithm: {top_algorithm}
+            
+            Data Profile: {data_profile.get('summary', 'N/A')}
+            
+            PAG Construction:
+            - Graph Type: {pag_result.get('graph_type', 'Unknown')}
+            - Edge Count: {len(pag_result.get('edges', []))}
+            - Uncertainty Markers: {pag_result.get('metadata', {}).get('uncertainty_markers', False)}
+            
+            DAG Construction:
+            - Graph Type: {dag_result.get('graph_type', 'Unknown')}
+            - Edge Count: {len(dag_result.get('edges', []))}
+            - Tie-breaking Method: {dag_result.get('metadata', {}).get('construction_method', 'Unknown')}
+            
+            Rationale: The ensemble synthesis combines the top {len(top_candidates)} candidates using consensus
+            skeleton building and direction resolution. The PAG preserves uncertainty information for reporting,
+            while the DAG applies assumption-based tie-breaking for downstream inference tasks.
+            """
+            
+            return reasoning.strip()
+            
+        except Exception as e:
+            logger.warning(f"Synthesis reasoning generation failed: {e}")
+            return f"Ensemble synthesis completed with top algorithm: {top_algorithm}"
+    
+    def _final_graph_selection(self, state: AgentState) -> AgentState:
+        """Legacy method for backward compatibility"""
+        return self._ensemble_synthesis(state)
     
     # === Assumption Testing Methods ===
     
@@ -602,7 +986,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
         """Test ANM assumption using independence testing"""
         try:
             # Use independence tool for ANM testing
-            result = self.use_tool("independence_tool", "anm_test", x, y)
+            result = self.use_tool("independence_tool", "anm_test", x, y, n_estimators=self.anm_rf_estimators)
             return result.get("anm_score", 0.5)
         except Exception as e:
             logger.warning(f"ANM test failed: {e}")
@@ -711,53 +1095,6 @@ class CausalDiscoveryAgent(SpecialistAgent):
             logger.warning(f"Robustness evaluation failed: {e}")
             return 0.5
     
-    def _evaluate_fidelity(self, df: pd.DataFrame, result: Dict[str, Any]) -> float:
-        """Evaluate fidelity using BIC/MDL"""
-        try:
-            fidelity_result = self.use_tool("graph_evaluator", "fidelity_evaluation", df, result)
-            return fidelity_result.get("fidelity_score", 0.5)
-        except Exception as e:
-            logger.warning(f"Fidelity evaluation failed: {e}")
-            return 0.5
-    
-    def _evaluate_generalizability(self, df: pd.DataFrame, result: Dict[str, Any]) -> float:
-        """Evaluate generalizability using cross-validation"""
-        try:
-            cv_result = self.use_tool("graph_evaluator", "cv_evaluation", df, result, self.cv_folds)
-            return cv_result.get("generalizability_score", 0.5)
-        except Exception as e:
-            logger.warning(f"Generalizability evaluation failed: {e}")
-            return 0.5
-    
-    def _get_assumption_score(self, alg_name: str, state: AgentState) -> float:
-        """Get assumption-method score for algorithm"""
-        algorithm_scores = state.get("algorithm_scores", {})
-        if alg_name in algorithm_scores:
-            return algorithm_scores[alg_name].get("final_score", 0.5)
-        return 0.5
-    
-    def _generate_selection_reasoning(self, candidate: Dict[str, Any], final_scores: Dict[str, float], 
-                                    intermediate_scores: Dict[str, Dict[str, float]]) -> str:
-        """Generate reasoning for graph selection"""
-        alg_name = candidate["algorithm"]
-        scores = intermediate_scores.get(alg_name, {})
-        
-        reasoning = f"""
-        Selected Algorithm: {alg_name}
-        Final Score: {final_scores[alg_name]:.3f}
-        
-        Score Breakdown:
-        - Robustness: {scores.get('robustness', 0.5):.3f}
-        - Fidelity: {scores.get('fidelity', 0.5):.3f}
-        - Generalizability: {scores.get('generalizability', 0.5):.3f}
-        - Assumption-Method: {scores.get('assumption_method', 0.5):.3f}
-        
-        Selection Criteria: Weighted combination of robustness (30%), fidelity (30%), 
-        generalizability (20%), and assumption-method compatibility (20%).
-        """
-        
-        return reasoning.strip()
-    
     # === Tool Implementations ===
     
     def _stats_tool(self, test_type: str, *args, **kwargs) -> Dict[str, Any]:
@@ -800,14 +1137,6 @@ class CausalDiscoveryAgent(SpecialistAgent):
         else:
             return {"error": f"Unknown method: {method}"}
     
-    def _eqvar_linear_tool(self, method: str, *args, **kwargs) -> Dict[str, Any]:
-        """EqVar Linear algorithm tool implementation"""
-        from .tools import EqVarLinearTool
-        
-        if method == "eqvar_linear":
-            return EqVarLinearTool.eqvar_linear(args[0])
-        else:
-            return {"error": f"Unknown method: {method}"}
     
     def _bootstrapper(self, method: str, *args, **kwargs) -> Dict[str, Any]:
         """Bootstrap tool implementation"""
@@ -837,5 +1166,40 @@ class CausalDiscoveryAgent(SpecialistAgent):
             return GraphOps.convert_dag_to_pag(args[0])
         elif method == "merge_graphs":
             return GraphOps.merge_graphs(args[0])
+        else:
+            return {"error": f"Unknown method: {method}"}
+    
+    def _pruning_tool(self, method: str, *args, **kwargs) -> Dict[str, Any]:
+        """Pruning tool implementation"""
+        from .tools import PruningTool
+        
+        if method == "global_markov_test":
+            graph, df = args[0], args[1]
+            alpha = kwargs.get("alpha", self.ci_alpha)
+            return PruningTool.global_markov_test(graph, df, alpha)
+        elif method == "structural_consistency_test":
+            graph, df, algorithm_name = args[0], args[1], args[2]
+            n_subsets = kwargs.get("n_subsets", self.n_subsets)
+            return PruningTool.structural_consistency_test(graph, df, algorithm_name, n_subsets)
+        else:
+            return {"error": f"Unknown method: {method}"}
+    
+    def _ensemble_tool(self, method: str, *args, **kwargs) -> Dict[str, Any]:
+        """Ensemble tool implementation"""
+        from .tools import EnsembleTool
+        
+        if method == "build_consensus_skeleton":
+            graphs = args[0]
+            weights = kwargs.get("weights")
+            return EnsembleTool.build_consensus_skeleton(graphs, weights)
+        elif method == "resolve_directions":
+            skeleton, graphs, data_profile = args[0], args[1], args[2]
+            return EnsembleTool.resolve_directions(skeleton, graphs, data_profile)
+        elif method == "construct_pag":
+            skeleton, directions = args[0], args[1]
+            return EnsembleTool.construct_pag(skeleton, directions)
+        elif method == "construct_dag":
+            pag, data_profile, top_algorithm = args[0], args[1], args[2]
+            return EnsembleTool.construct_dag(pag, data_profile, top_algorithm)
         else:
             return {"error": f"Unknown method: {method}"}

@@ -46,28 +46,28 @@ def test_causal_discovery_agent():
         config={
             "bootstrap_iterations": 10,  # 테스트용으로 줄임
             "cv_folds": 3,
-            "top_k_algorithms": 2,
-            "lambda_soft_and": 0.7,
-            "beta_conservative": 2.0
+            "run_all_tier_algorithms": False
         }
     )
     logger.info("CausalDiscoveryAgent created successfully")
     
-    # 3. 초기 상태 생성
+    # 3. 초기 상태 생성 (기본 실행)
     state = {
         "df_preprocessed": df,
-        "current_substep": "assumption_method_matrix",
+        "current_substep": "data_profiling",
         "initial_query": "Test causal discovery",
         "db_id": "test_db"
+    #   "run_all_tier_algorithms": True  # 계열 전체 실행
     }
     
-    # 4. 파이프라인 단계별 실행
+    # 4. 새로운 파이프라인 단계별 실행
     substeps = [
-        "assumption_method_matrix",
-        "algorithm_scoring", 
-        "run_algorithms",
-        "intermediate_scoring",
-        "final_graph_selection"
+        "data_profiling",
+        "algorithm_tiering", 
+        "run_algorithms_portfolio",
+        "candidate_pruning",
+        "scorecard_evaluation",
+        "ensemble_synthesis"
     ]
     
     for substep in substeps:
@@ -84,20 +84,23 @@ def test_causal_discovery_agent():
                 logger.info(f"✓ {substep} completed successfully")
                 
                 # 각 단계별 결과 출력
-                if substep == "assumption_method_matrix":
+                if substep == "data_profiling":
+                    profile = state.get("data_profile", {})
                     scores = state.get("assumption_method_scores", {})
+                    logger.info(f"  - Data profile: {profile.get('summary', 'N/A')}")
                     logger.info(f"  - Generated {len(scores)} assumption types")
                     for score_type, score_dict in scores.items():
                         logger.info(f"    {score_type}: {len(score_dict)} variable pairs")
                 
-                elif substep == "algorithm_scoring":
-                    selected = state.get("selected_algorithms", [])
-                    scores = state.get("algorithm_scores", {})
-                    logger.info(f"  - Selected algorithms: {selected}")
-                    for alg, score_info in scores.items():
-                        logger.info(f"    {alg}: {score_info.get('final_score', 0):.3f}")
+                elif substep == "algorithm_tiering":
+                    tiers = state.get("algorithm_tiers", {})
+                    reasoning = state.get("tiering_reasoning", "")
+                    logger.info(f"  - Tier 1 algorithms: {tiers.get('tier1', [])}")
+                    logger.info(f"  - Tier 2 algorithms: {tiers.get('tier2', [])}")
+                    logger.info(f"  - Tier 3 algorithms: {tiers.get('tier3', [])}")
+                    logger.info(f"  - Tiering reasoning: {reasoning[:100]}...")
                 
-                elif substep == "run_algorithms":
+                elif substep == "run_algorithms_portfolio":
                     results = state.get("algorithm_results", {})
                     logger.info(f"  - Executed {len(results)} algorithms")
                     for alg, result in results.items():
@@ -107,19 +110,36 @@ def test_causal_discovery_agent():
                             n_edges = len(result.get("graph", {}).get("edges", []))
                             logger.info(f"    {alg}: {n_edges} edges found")
                 
-                elif substep == "intermediate_scoring":
-                    scores = state.get("intermediate_scores", {})
-                    candidates = state.get("candidate_graphs", [])
-                    logger.info(f"  - Evaluated {len(scores)} algorithms")
-                    logger.info(f"  - Generated {len(candidates)} candidate graphs")
+                elif substep == "candidate_pruning":
+                    pruned = state.get("pruned_candidates", [])
+                    pruning_log = state.get("pruning_log", [])
+                    logger.info(f"  - Pruned candidates: {len(pruned)}")
+                    logger.info(f"  - Rejected candidates: {len(pruning_log)}")
+                    for candidate in pruned:
+                        alg = candidate.get("algorithm", "Unknown")
+                        violation = candidate.get("violation_ratio", 0)
+                        instability = candidate.get("instability_score", 0)
+                        logger.info(f"    {alg}: violation={violation:.3f}, instability={instability:.3f}")
                 
-                elif substep == "final_graph_selection":
+                elif substep == "scorecard_evaluation":
+                    scorecard = state.get("scorecard", [])
+                    top_candidates = state.get("top_candidates", [])
+                    logger.info(f"  - Scorecard entries: {len(scorecard)}")
+                    logger.info(f"  - Top candidates: {len(top_candidates)}")
+                    for candidate in top_candidates:
+                        alg = candidate.get("algorithm", "Unknown")
+                        composite = candidate.get("composite_score", 0)
+                        logger.info(f"    {alg}: composite_score={composite:.3f}")
+                
+                elif substep == "ensemble_synthesis":
+                    consensus_pag = state.get("consensus_pag", {})
                     selected_graph = state.get("selected_graph", {})
-                    reasoning = state.get("graph_selection_reasoning", "")
+                    reasoning = state.get("synthesis_reasoning", "")
                     status = state.get("causal_discovery_status", "unknown")
                     logger.info(f"  - Final status: {status}")
-                    logger.info(f"  - Selected graph edges: {len(selected_graph.get('edges', []))}")
-                    logger.info(f"  - Selection reasoning: {reasoning[:100]}...")
+                    logger.info(f"  - Consensus PAG edges: {len(consensus_pag.get('edges', []))}")
+                    logger.info(f"  - Selected DAG edges: {len(selected_graph.get('edges', []))}")
+                    logger.info(f"  - Synthesis reasoning: {reasoning[:100]}...")
                     
         except Exception as e:
             logger.error(f"Exception in {substep}: {str(e)}")
@@ -129,12 +149,34 @@ def test_causal_discovery_agent():
     logger.info("\n=== Final Results ===")
     logger.info(f"Causal discovery status: {state.get('causal_discovery_status', 'unknown')}")
     
+    # 데이터 프로파일 출력
+    if "data_profile" in state:
+        profile = state["data_profile"]
+        logger.info(f"Data profile: {profile.get('summary', 'N/A')}")
+    
+    # 알고리즘 계층 출력
+    if "algorithm_tiers" in state:
+        tiers = state["algorithm_tiers"]
+        logger.info(f"Algorithm tiers: Tier1={tiers.get('tier1', [])}, Tier2={tiers.get('tier2', [])}, Tier3={tiers.get('tier3', [])}")
+    
+    # 최종 그래프 출력
     if "selected_graph" in state:
         graph = state["selected_graph"]
         edges = graph.get("edges", [])
-        logger.info(f"Final graph has {len(edges)} edges:")
+        logger.info(f"Selected DAG has {len(edges)} edges:")
         for edge in edges:
             logger.info(f"  {edge.get('from', '?')} -> {edge.get('to', '?')} (weight: {edge.get('weight', 0):.3f})")
+    
+    # 합의 PAG 출력
+    if "consensus_pag" in state:
+        pag = state["consensus_pag"]
+        edges = pag.get("edges", [])
+        logger.info(f"Consensus PAG has {len(edges)} edges:")
+        for edge in edges:
+            direction = edge.get("direction", "unknown")
+            marker = edge.get("marker", "?")
+            confidence = edge.get("confidence", 0)
+            logger.info(f"  {edge.get('from', '?')} {marker} {edge.get('to', '?')} (direction: {direction}, confidence: {confidence:.3f})")
     
     if "error" in state:
         logger.error(f"Pipeline failed with error: {state['error']}")

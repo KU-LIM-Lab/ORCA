@@ -158,7 +158,14 @@ class ExecutorAgent(OrchestratorAgent):
             start_time = time.time()
             if agent_name == "causal_discovery":
                 from agents.causal_discovery.agent import CausalDiscoveryAgent
-                cd_agent = CausalDiscoveryAgent()
+                from utils.settings import CONFIG
+                cd_config = {}
+                try:
+                    cd_config = (CONFIG.get("agents", {}) or {}).get("causal_discovery", {})
+                except Exception:
+                    cd_config = {}
+
+                cd_agent = CausalDiscoveryAgent(config=cd_config)
                 # Map substep to agent step
                 state_copy = dict(state)
                 state_copy["current_substep"] = substep

@@ -2,34 +2,66 @@
 
 ## 개요
 
-CausalDiscoveryAgent는 인과관계 발견을 위한 전문 에이전트입니다. 5단계 파이프라인을 통해 데이터의 가정을 검증하고, 적절한 알고리즘을 선택하여 인과 그래프를 생성합니다.
+CausalDiscoveryAgent는 인과관계 발견을 위한 전문 에이전트입니다. 새로운 5단계 파이프라인을 통해 데이터 프로파일링, 알고리즘 계층화, 포트폴리오 실행, 후보 정제, 앙상블 합성을 수행합니다.
 
-## 파이프라인 구조
+## 새로운 파이프라인 구조 (5단계)
 
-### 1. assumption_method_matrix
+### Stage 1: Data Profiling & Algorithm Tiering
 
-- **목적**: 각 변수쌍에 대해 가정을 테스트하고 점수 생성
-- **출력**: `assumption_method_scores` (S_lin, S_nG, S_ANM, S_Gauss, S_EqVar)
+#### 1.1 data_profiling
 
-### 2. algorithm_scoring
+- **목적**: 데이터 특성 프로파일링 및 정성적 요약 생성
+- **출력**: `data_profile` (선형성, 비가우시안성, ANM 호환성 등), `assumption_method_scores`
 
-- **목적**: 가정 호환성에 기반하여 알고리즘 점수화
-- **출력**: `algorithm_scores`, `selected_algorithms` (Top-k)
+#### 1.2 algorithm_tiering
 
-### 3. run_algorithms
+- **목적**: 데이터 프로파일에 기반한 알고리즘 계층화 (계열당 대표 알고리즘 선택)
+- **전략**:
+  - 각 계열(family)에서 1개의 대표 알고리즘만 기본 선택
+  - Nonlinear-FCM 계열: ANM을 기본으로, PNL/CAM은 명시적 요청시만 포함
+  - FCI는 항상 포함 (잠재 변수 강건성)
+- **입력**: `data_profile` (+ 선택적으로 `run_all_tier_algorithms` via config/state)
+- **출력**: `algorithm_tiers` (Tier1: 최적 매치, Tier2: 부분 매치, Tier3: 탐색용), `tiering_reasoning`
 
-- **목적**: 선택된 알고리즘들을 병렬로 실행
-- **출력**: `algorithm_results` (각 알고리즘의 그래프와 메타데이터)
+### Stage 2: Parallel Algorithm Execution
 
-### 4. intermediate_scoring
+#### 2.1 run_algorithms_portfolio
 
-- **목적**: 견고성, 충실도, 일반화 가능성 평가
-- **출력**: `intermediate_scores`, `candidate_graphs`
+- **목적**: 모든 계층의 알고리즘을 병렬로 실행
+- **출력**: `algorithm_results` (모든 알고리즘의 그래프와 메타데이터)
 
-### 5. final_graph_selection
+### Stage 3: Candidate Pruning
 
-- **목적**: 최종 인과 그래프 선택
-- **출력**: `selected_graph`, `graph_selection_reasoning`
+#### 3.1 candidate_pruning
+
+- **목적**: CI 테스트와 구조적 일관성을 통한 후보 정제
+- **출력**: `pruned_candidates`, `pruning_log`
+
+### Stage 4: Scorecard Evaluation
+
+#### 4.1 scorecard_evaluation
+
+- **목적**: 복합 점수카드를 통한 후보 평가
+- **출력**: `scorecard`, `top_candidates` (상위 3개 그래프)
+
+### Stage 5: Ensemble & Synthesis
+
+#### 5.1 ensemble_synthesis
+
+- **목적**: PAG-like 및 DAG 출력을 통한 앙상블 합성
+- **출력**: `consensus_pag` (보고용), `selected_graph` (추론용), `synthesis_reasoning`
+
+## 알고리즘 패밀리 분류
+
+```python
+ALGORITHM_FAMILIES = {
+    "Linear": ["LiNGAM"],
+    "Nonlinear-FCM": ["ANM", "PNL", "CAM"],
+    "Constraint-based": ["PC"],
+    "Score-based": ["GES"],
+    "Latent-robust": ["FCI"]
+}
+```
 
 ## 사용법
 
@@ -45,16 +77,24 @@ agent = CausalDiscoveryAgent(
     config={
         "bootstrap_iterations": 100,
         "cv_folds": 5,
-        "top_k_algorithms": 3,
-        "lambda_soft_and": 0.7,
-        "beta_conservative": 2.0
+        "ci_alpha": 0.05,
+        "violation_threshold": 0.1,
+        "n_subsets": 3,
+        "composite_weights": {
+            "statistical_fit": 0.3,
+            "global_consistency": 0.25,
+            "sampling_stability": 0.25,
+            "structural_stability": 0.2
+        },
+        # 대표 vs 전체 실행 스위치
+        "run_all_tier_algorithms": False
     }
 )
 
 # 상태 생성 (전처리된 데이터 필요)
 state = create_initial_state("분석 쿼리", "db_id")
 state["df_preprocessed"] = your_dataframe  # pandas DataFrame
-state["current_substep"] = "assumption_method_matrix"
+state["current_substep"] = "data_profiling"
 
 # 단계별 실행
 state = agent.step(state)
@@ -63,145 +103,178 @@ state = agent.step(state)
 ### 전체 파이프라인 실행
 
 ```python
-# 1. 가정-방법 매트릭스 생성
-state["current_substep"] = "assumption_method_matrix"
-state = agent.step(state)
+# 새로운 5단계 파이프라인
+substeps = [
+    "data_profiling",
+    "algorithm_tiering",
+    "run_algorithms_portfolio",
+    "candidate_pruning",
+    "scorecard_evaluation",
+    "ensemble_synthesis"
+]
 
-# 2. 알고리즘 점수화
-state["current_substep"] = "algorithm_scoring"
-state = agent.step(state)
-
-# 3. 알고리즘 실행
-state["current_substep"] = "run_algorithms"
-state = agent.step(state)
-
-# 4. 중간 점수 계산
-state["current_substep"] = "intermediate_scoring"
-state = agent.step(state)
-
-# 5. 최종 그래프 선택
-state["current_substep"] = "final_graph_selection"
-state = agent.step(state)
+for substep in substeps:
+    state["current_substep"] = substep
+    state = agent.step(state)
+    print(f"Completed {substep}: {state.get('causal_discovery_status', 'unknown')}")
 ```
 
-## 설정 옵션
+## 새로운 설정 옵션
 
 ```python
 config = {
-    "bootstrap_iterations": 100,    # 부트스트랩 반복 횟수
-    "cv_folds": 5,                  # 교차 검증 폴드 수
-    "top_k_algorithms": 3,          # 선택할 상위 알고리즘 수
-    "lambda_soft_and": 0.7,         # Soft-AND 가중치
-    "beta_conservative": 2.0        # 보수적 변환 지수
+    # 기존 설정
+    "bootstrap_iterations": 100,
+    "cv_folds": 5,
+    # legacy removed: lambda_soft_and, beta_conservative
+
+    # 새로운 설정
+    "ci_alpha": 0.05,                    # CI 테스트 유의수준
+    "violation_threshold": 0.1,          # CI 위반 임계값
+    "n_subsets": 5,                      # 구조적 일관성 테스트용 서브셋 수
+    "composite_weights": {               # 복합 점수 가중치
+        "statistical_fit": 0.3,
+        "global_consistency": 0.25,
+        "sampling_stability": 0.25,
+        "structural_stability": 0.2
+    }
 }
 ```
 
-## 도구 (Tools)
+## 새로운 도구 (Tools)
 
-### StatsTool
+### PruningTool
 
-- `linearity_test()`: GLM vs GAM 비교로 선형성 테스트
-- `normality_test()`: Jarque-Bera, Shapiro-Wilk으로 정규성 테스트
-- `gaussian_eqvar_test()`: 가우시안 및 등분산 가정 테스트
+- `global_markov_test()`: 전역 마르코프 성질 CI 테스트
+- `structural_consistency_test()`: 서브샘플링을 통한 구조적 일관성 테스트
 
-### IndependenceTool
+### EnsembleTool
 
-- `anm_test()`: ANM 가정을 위한 독립성 테스트
+- `build_consensus_skeleton()`: 신뢰도 점수가 있는 합의 스켈레톤 구축
+- `resolve_directions()`: 불확실성 마커를 통한 방향 해결
+- `construct_pag()`: PAG-like 그래프 구축
+- `construct_dag()`: 가정 기반 타이 브레이킹을 통한 단일 DAG 구축
 
-### 알고리즘 도구
+### 기존 도구
 
-- `LiNGAMTool`: DirectLiNGAM 알고리즘
-- `ANMTool`: Additive Noise Model 알고리즘
-- `PCTool`: PC 알고리즘
-- `GESTool`: GES 알고리즘
-- `CAMTool`: CAM 알고리즘
-
-### 평가 도구
-
-- `Bootstrapper`: 부트스트랩 평가
-- `GraphEvaluator`: BIC/MDL, 교차검증 평가
-- `GraphOps`: 그래프 변환 및 병합
+- `StatsTool`: 통계 테스트 도구
+- `IndependenceTool`: 독립성 테스트 도구
+- `LiNGAMTool`, `ANMTool`, `PCTool`, `GESTool`, `CAMTool`, `FCITool`: 알고리즘 도구
+- `Bootstrapper`, `GraphEvaluator`, `GraphOps`: 평가 도구
 
 ## 출력 데이터
 
-### assumption_method_scores
+### data_profile
 
 ```python
 {
-    "S_lin": {"var1_var2": 0.7, ...},      # 선형성 점수
-    "S_nG": {"var1_var2": 0.6, ...},       # 비가우시안 점수
-    "S_ANM": {"var1_var2": 0.8, ...},      # ANM 점수
-    "S_Gauss": {"var1_var2": 0.9, ...},    # 가우시안 점수
-    "S_EqVar": {"var1_var2": 0.7, ...}     # 등분산 점수
+    "linearity": "strong|moderate|weak",
+    "non_gaussian": "strong|moderate|weak",
+    "anm_compatible": bool,
+    "gaussian": "strong|moderate|weak",
+    "equal_variance": "strong|moderate|weak",
+    "n_variables": int,
+    "n_pairs": int,
+    "summary": "Data shows ... patterns"
 }
 ```
 
-### algorithm_scores
+### algorithm_tiers
 
 ```python
 {
-    "LiNGAM": {
-        "final_score": 0.85,
-        "weighted_score": 0.80,
-        "soft_and_score": 0.90,
-        "individual_scores": {...}
+    "tier1": ["LiNGAM", "PC"],           # 최적 매치 알고리즘
+    "tier2": ["ANM", "CAM"],             # 부분 매치 알고리즘
+    "tier3": ["GES"]                     # 탐색용 알고리즘
+}
+```
+
+### scorecard
+
+```python
+[
+    {
+        "algorithm": "LiNGAM",
+        "graph_id": "LiNGAM_12345",
+        "statistical_fit": 0.85,
+        "global_consistency": 0.90,
+        "sampling_stability": 0.80,
+        "structural_stability": 0.75,
+        "composite_score": 0.82
     },
-    "ANM": {...},
-    "PC": {...},
-    "GES": {...},
-    "CAM": {...}
-}
+    ...
+]
 ```
 
-### selected_graph
+### consensus_pag (보고용)
 
 ```python
-# selected_graph는 최종 후보의 graph 딕셔너리입니다 (edges, variables 포함).
-# metadata는 candidate_graphs의 각 항목에 포함됩니다.
 {
+    "graph_type": "PAG",
     "edges": [
-        {"from": "variable1", "to": "variable2", "weight": 0.85}
+        {
+            "from": "X", "to": "Y",
+            "direction": "forward|backward|uncertain|conflict",
+            "marker": "->|o-o|o->",
+            "confidence": 0.85,
+            "forward_votes": 3,
+            "backward_votes": 1
+        }
     ],
-    "variables": ["var1", "var2", ...]
+    "metadata": {
+        "construction_method": "consensus",
+        "uncertainty_markers": True
+    }
 }
 ```
 
-```
+### selected_graph (추론용)
 
-### Optional: keep all algorithms in catalog but restrict selection
-- We preserved the catalog for role mapping but filtered selections to implemented algorithms.
-- When you add `CAM`, `FCI`, or `PNL` later, add their tool wrappers and `_run_*` handlers and include them in `self.IMPLEMENTED_ALGOS`.
-
-- I reviewed the agent and tools, identified misalignments (unsupported algorithms, ANM score interpretation, EqVar references, and README schema), and provided concise edits to fix them.
-- Next, apply the above edits. This will ensure selection only includes runnable methods, ANM scoring matches its statistical interpretation, bootstrap evaluation doesn’t reference missing tools, and the README accurately reflects behavior.
+```python
+{
+    "graph_type": "DAG",
+    "edges": [
+        {
+            "from": "X", "to": "Y",
+            "direction": "forward",
+            "marker": "->",
+            "tie_breaking": "Linear algorithm preference (LiNGAM)"
+        }
+    ],
+    "metadata": {
+        "construction_method": "tie_breaking",
+        "top_algorithm": "LiNGAM"
+    }
+}
 ```
 
 ## HITL (Human-in-the-Loop) 지원
 
 다음 단계에서 HITL이 활성화됩니다:
 
-- `assumption_method_matrix`: 가정 검증 결과 검토
-- `algorithm_scoring`: 알고리즘 선택 검토
-- `final_graph_selection`: 최종 그래프 선택 검토
+- `data_profiling`: 데이터 프로파일 검토
+- `algorithm_tiering`: 알고리즘 계층화 검토
+- `run_algorithms_portfolio`: 알고리즘 실행 검토
+- `candidate_pruning`: 후보 정제 검토
+- `scorecard_evaluation`: 점수카드 평가 검토
+- `ensemble_synthesis`: 앙상블 합성 검토
 
-## 오류 처리
+## Redis 저장소 패턴
 
-각 단계에서 오류가 발생하면:
+대용량 객체는 Redis에 저장되고 상태에는 키만 전달됩니다:
 
-1. 오류가 `state["error"]`에 기록됩니다
-2. 해당 단계의 상태가 "failed"로 설정됩니다
-3. 로그에 상세한 오류 정보가 기록됩니다
-
-## 성능 고려사항
-
-- **병렬 처리**: 알고리즘 실행은 ThreadPoolExecutor로 병렬화됩니다
-- **메모리**: 대용량 데이터의 경우 배치 처리 고려
-- **시간**: 부트스트랩 반복 횟수와 교차검증 폴드 수 조정
+```python
+# 알고리즘 결과가 많을 때
+if len(algorithm_results) > 5:
+    redis_key = f"{db_id}:algorithm_results:{session_id}"
+    redis_client.set(redis_key, json.dumps(algorithm_results))
+    state["algorithm_results_key"] = redis_key
+```
 
 ## 예제
 
 ```python
-# 간단한 예제
+# 새로운 파이프라인 예제
 import pandas as pd
 import numpy as np
 from agents.causal_discovery.agent import CausalDiscoveryAgent
@@ -215,16 +288,41 @@ data = pd.DataFrame({
 
 # Agent 생성 및 실행
 agent = CausalDiscoveryAgent()
-state = {"df_preprocessed": data, "current_substep": "assumption_method_matrix"}
 
-# 전체 파이프라인 실행
-for substep in ["assumption_method_matrix", "algorithm_scoring",
-                "run_algorithms", "intermediate_scoring", "final_graph_selection"]:
+# 기본 실행 (계열당 대표 알고리즘만)
+state = {"df_preprocessed": data, "current_substep": "data_profiling"}
+
+# 확장 알고리즘을 명시적으로 포함하려면:
+# 대표 vs 전체 실행 스위치 (config or state)
+# config: {"run_all_tier_algorithms": true}
+# state["run_all_tier_algorithms"] = True
+
+# 새로운 5단계 파이프라인 실행
+substeps = [
+    "data_profiling",
+    "algorithm_tiering",
+    "run_algorithms_portfolio",
+    "candidate_pruning",
+    "scorecard_evaluation",
+    "ensemble_synthesis"
+]
+
+for substep in substeps:
     state["current_substep"] = substep
     state = agent.step(state)
     print(f"Completed {substep}: {state.get('causal_discovery_status', 'unknown')}")
 
 # 결과 확인
-print("Selected graph:", state.get("selected_graph"))
-print("Selection reasoning:", state.get("graph_selection_reasoning"))
+print("Data profile:", state.get("data_profile"))
+print("Algorithm tiers:", state.get("algorithm_tiers"))
+print("Consensus PAG:", state.get("consensus_pag"))
+print("Selected DAG:", state.get("selected_graph"))
+print("Synthesis reasoning:", state.get("synthesis_reasoning"))
 ```
+
+## 성능 고려사항
+
+- **병렬 처리**: 알고리즘 실행은 ThreadPoolExecutor로 병렬화됩니다
+- **메모리**: 대용량 객체는 Redis에 저장하여 메모리 사용량 최적화
+- **시간**: CI 테스트와 구조적 일관성 테스트로 인한 추가 시간 고려
+- **확장성**: 새로운 알고리즘 패밀리와 도구 추가 가능
