@@ -56,6 +56,7 @@ Note: EqVar is diagnostics only (not a discovery algorithm).
 import logging
 import numpy as np
 import pandas as pd
+import networkx as nx
 from typing import Dict, Any, List, Tuple, Optional
 from scipy import stats
 from sklearn.linear_model import LinearRegression
@@ -279,12 +280,11 @@ class ANMTool:
             return None
     
     @staticmethod
-    def anm_discovery(df: pd.DataFrame) -> Dict[str, Any]:
+    def anm_discovery(df: pd.DataFrame, delta: float = 0.02, tau: float = 0.05) -> Dict[str, Any]:
         import time
         t0 = time.time()
         vars_ = list(df.columns)
         edges = []
-        delta, tau = 0.05, 0.10
         
         for i, xi in enumerate(vars_):
             for j, yj in enumerate(vars_):
@@ -538,17 +538,22 @@ class GraphOps:
 class PCTool:
     """PC algorithm wrapper. Uses causal-learn."""
     @staticmethod
-    def discover(df: pd.DataFrame, alpha: float = 0.05, **kwargs) -> Dict[str, Any]:
+    def discover(df: pd.DataFrame, alpha: float = 0.05, indep_test: str = "fisherz", **kwargs) -> Dict[str, Any]:
         import time
         t0 = time.time()
         vars_ = list(df.columns)
         edges = []
-        params = {"alpha": alpha}
+        params = {"alpha": alpha, "indep_test": indep_test}
         try:
             from causallearn.search.ConstraintBased.PC import pc
-            from causallearn.utils.cit import fisherz
+            from causallearn.utils.cit import fisherz, kci, gsq
             data = df.values
-            cg = pc(data, alpha=alpha, indep_test=fisherz, verbose=False)
+            
+            # Convert string to actual test function
+            test_map = {"fisherz": fisherz, "kci": kci, "gsq": gsq}
+            test_func = test_map.get(indep_test, fisherz)
+            
+            cg = pc(data, alpha=alpha, indep_test=test_func, verbose=False)
             graph = cg.G.graph
             if hasattr(graph, 'items'):
                 # Dictionary format
@@ -578,6 +583,9 @@ class GESTool:
         try:
             from causallearn.search.ScoreBased.GES import ges
             data = df.values
+            # Convert score_func to causallearn format
+            if score_func == "bic":
+                score_func = "local_score_BIC"
             res = ges(data, score_func=score_func)
             G = getattr(res, 'G', None) or (res.get('G', None) if isinstance(res, dict) else None)
             if G is not None and hasattr(G, 'graph'):
@@ -606,17 +614,22 @@ class FCITool:
     mark graph_type="PAG" in metadata/params for downstream handling.
     """
     @staticmethod
-    def discover(df: pd.DataFrame, alpha: float = 0.05, **kwargs) -> Dict[str, Any]:
+    def discover(df: pd.DataFrame, alpha: float = 0.05, indep_test: str = "fisherz", **kwargs) -> Dict[str, Any]:
         import time
         t0 = time.time()
         vars_ = list(df.columns)
         edges = []
         try:
             from causallearn.search.ConstraintBased.FCI import fci
-            from causallearn.utils.cit import fisherz
+            from causallearn.utils.cit import fisherz, kci, gsq
             data = df.values
+            
+            # Convert string to actual test function
+            test_map = {"fisherz": fisherz, "kci": kci, "gsq": gsq}
+            test_func = test_map.get(indep_test, fisherz)
+            
             # Causal-Learn FCI API: fci(data, indep_test, alpha)
-            pag = fci(data, fisherz, alpha)
+            pag = fci(data, test_func, alpha)
             G = getattr(pag, 'G', None)
             if G is not None and hasattr(G, 'graph'):
                 for (i, j), v in G.graph.items():
@@ -627,7 +640,7 @@ class FCITool:
             runtime = time.time() - t0
             result = normalize_graph_result(
                 "FCI", vars_, edges,
-                params={"alpha": alpha, "graph_type": "PAG"},
+                params={"alpha": alpha, "indep_test": indep_test, "graph_type": "PAG"},
                 runtime=runtime,
             )
             # Also set a top-level hint to consumers
@@ -640,8 +653,41 @@ class PruningTool:
     """Pruning tools for CI testing and structural consistency"""
     
     @staticmethod
+    def _get_graph_type(graph: Dict[str, Any]) -> str:
+        """Identify graph type (DAG/CPDAG/PAG) from metadata"""
+        metadata = graph.get("metadata", {})
+        if metadata.get("graph_type") == "PAG":
+            return "PAG"
+        if metadata.get("method") == "PC":
+            return "CPDAG"
+        return "DAG"
+    
+    @staticmethod
+    def _convert_to_networkx_dag(graph: Dict[str, Any]) -> nx.DiGraph:
+        """Convert graph dict to NetworkX DAG"""
+        variables = graph["graph"]["variables"]
+        edges = graph["graph"]["edges"]
+        
+        G = nx.DiGraph()
+        G.add_nodes_from(variables)
+        
+        for edge in edges:
+            from_var = edge["from"]
+            to_var = edge["to"]
+            if from_var in variables and to_var in variables:
+                G.add_edge(from_var, to_var)
+        
+        return G
+    
+    @staticmethod
     def global_markov_test(graph: Dict[str, Any], df: pd.DataFrame, alpha: float = 0.05) -> Dict[str, Any]:
-        """Test global Markov property using CI tests"""
+        """Test global Markov property using d-separation and CI tests
+        
+        Handles different graph types:
+        - DAG: Direct d-separation testing
+        - CPDAG: Convert to representative DAG first
+        - PAG: Skip (latent confounders present)
+        """
         try:
             if "graph" not in graph or "edges" not in graph["graph"]:
                 return {"violation_ratio": 1.0, "error": "Invalid graph structure"}
@@ -652,63 +698,117 @@ class PruningTool:
             if not edges or not variables:
                 return {"violation_ratio": 0.0, "message": "No edges to test"}
             
-            # Extract CI basis set via d-separation
-            ci_tests = []
-            violations = 0
+            # Determine graph type
+            graph_type = PruningTool._get_graph_type(graph)
             
-            # For each edge, test if it should be removed based on CI
-            for edge in edges:
-                from_var = edge["from"]
-                to_var = edge["to"]
+            # Skip PAG graphs (latent confounders present)
+            if graph_type == "PAG":
+                return {
+                    "violation_ratio": 0.0,
+                    "total_tests": 0,
+                    "violations": 0,
+                    "ci_tests": [],
+                    "message": "Global Markov test skipped for PAG (latent confounders present)"
+                }
+            
+            # Convert to NetworkX DAG
+            G = PruningTool._convert_to_networkx_dag(graph)
+            
+            # Verify it's a valid DAG
+            if not nx.is_directed_acyclic_graph(G):
+                return {
+                    "violation_ratio": 0.0,
+                    "message": f"Global Markov test skipped (converted graph from {graph_type} is not a DAG)"
+                }
+            
+            # Get CI test method from graph metadata
+            ci_test_method = "fisherz"  # default
+            if "metadata" in graph and "params" in graph["metadata"]:
+                ci_test_method = graph["metadata"]["params"].get("indep_test", "fisherz")
+            
+            # Prepare data for CI testing
+            data_np = df[variables].values.astype(float)
+            
+            # Import and instantiate CI test function
+            try:
+                from causallearn.utils.cit import FisherZ, KCI, Chisq_or_Gsq
+                if ci_test_method == "fisherz":
+                    ci_test_func = FisherZ(data_np)
+                elif ci_test_method == "kci":
+                    ci_test_func = KCI(data_np)
+                elif ci_test_method == "gsq":
+                    ci_test_func = Chisq_or_Gsq(data_np, "gsq")
+                else:
+                    logger.warning(f"Unknown CI test {ci_test_method}, using fisherz")
+                    ci_test_func = FisherZ(data_np)
+            except ImportError:
+                logger.warning(f"CI test {ci_test_method} not available, using fisherz")
+                from causallearn.utils.cit import FisherZ
+                ci_test_func = FisherZ(data_np)
+            
+            # Perform d-separation tests
+            ci_tests_log = []
+            violations = 0
+            total_tests = 0
+            
+            # Create variable index mapping
+            var_to_idx = {var: i for i, var in enumerate(variables)}
+            
+            for x in G.nodes():
+                # Get parents of X
+                pa_x = list(G.predecessors(x))
+                # Get descendants of X (including X itself)
+                desc_x = set(nx.descendants(G, x)) | {x}
+                # Get non-descendants of X (excluding parents)
+                non_desc_x = [y for y in G.nodes() if y not in desc_x and y not in pa_x]
                 
-                if from_var not in variables or to_var not in variables:
+                if not non_desc_x:
                     continue
                 
-                # Test conditional independence
-                try:
-                    # Use causal-learn CI tests
-                    from causallearn.utils.cit import fisherz, kci
+                # Test X ⊥ Y | Pa(X) for each non-descendant Y
+                x_idx = var_to_idx[x]
+                pa_indices = [var_to_idx[p] for p in pa_x]
+                
+                for y in non_desc_x:
+                    y_idx = var_to_idx[y]
+                    total_tests += 1
                     
-                    # Get variable indices
-                    from_idx = variables.index(from_var)
-                    to_idx = variables.index(to_var)
-                    
-                    # Test X ⊥ Y | Z for all possible conditioning sets Z
-                    # Simplified: test X ⊥ Y (marginal independence)
-                    X = df[from_var].values.reshape(-1, 1)
-                    Y = df[to_var].values.reshape(-1, 1)
-                    
-                    # Use Fisher's Z test for Gaussian data
-                    p_value = fisherz(X.ravel(), Y.ravel())
-                    
-                    if p_value < alpha:
+                    try:
+                        # Perform CI test: X ⊥ Y | Pa(X)
+                        p_value = ci_test_func(x_idx, y_idx, pa_indices)
+                        violated = p_value < alpha
+                        
+                        if violated:
+                            violations += 1
+                        
+                        ci_tests_log.append({
+                            "hypothesis": f"{x} ⟂ {y} | {pa_x}",
+                            "p_value": float(p_value),
+                            "violation": violated
+                        })
+                        
+                    except Exception as e:
+                        logger.warning(f"CI test failed for {x} ⟂ {y} | {pa_x}: {e}")
+                        # Treat test failure as violation
                         violations += 1
-                    
-                    ci_tests.append({
-                        "from": from_var,
-                        "to": to_var,
-                        "p_value": p_value,
-                        "violation": p_value < alpha
-                    })
-                    
-                except Exception as e:
-                    logger.warning(f"CI test failed for {from_var}->{to_var}: {e}")
-                    violations += 1
-                    ci_tests.append({
-                        "from": from_var,
-                        "to": to_var,
-                        "p_value": 0.0,
-                        "violation": True,
-                        "error": str(e)
-                    })
+                        ci_tests_log.append({
+                            "hypothesis": f"{x} ⟂ {y} | {pa_x}",
+                            "p_value": 1.0,
+                            "violation": True,
+                            "error": str(e)
+                        })
             
-            violation_ratio = violations / len(ci_tests) if ci_tests else 0.0
+            violation_ratio = violations / total_tests if total_tests > 0 else 0.0
             
             return {
                 "violation_ratio": violation_ratio,
-                "total_tests": len(ci_tests),
+                "total_tests": total_tests,
                 "violations": violations,
-                "ci_tests": ci_tests
+                "ci_tests": ci_tests_log,
+                "alpha": alpha,
+                "ci_test_method": ci_test_method,
+                "graph_type": graph_type,
+                "message": f"Test completed on {graph_type} with {total_tests} d-separation tests"
             }
             
         except Exception as e:
@@ -838,8 +938,8 @@ class EnsembleTool:
     """Ensemble tools for consensus skeleton and PAG construction"""
     
     @staticmethod
-    def build_consensus_skeleton(graphs: List[Dict[str, Any]], weights: Optional[List[float]] = None) -> Dict[str, Any]:
-        """Build consensus skeleton with confidence scores"""
+    def build_consensus_skeleton(graphs: List[Dict[str, Any]], weights: Optional[List[float]] = None, threshold: float = 0.5) -> Dict[str, Any]:
+        """Build consensus skeleton based on undirected adjacency with confidence scores"""
         try:
             if not graphs:
                 return {"edges": [], "variables": [], "confidence_scores": {}}
@@ -854,8 +954,8 @@ class EnsembleTool:
             else:
                 weights = [1.0 / len(graphs)] * len(graphs)
             
-            # Collect all edges with weights
-            edge_weights = {}
+            # Collect adjacency weights (undirected)
+            adjacency_weights = {}
             all_variables = set()
             
             for i, graph in enumerate(graphs):
@@ -868,30 +968,35 @@ class EnsembleTool:
                     all_variables.update(graph["graph"]["variables"])
                 
                 for edge in graph["graph"]["edges"]:
-                    edge_key = (edge["from"], edge["to"])
-                    if edge_key not in edge_weights:
-                        edge_weights[edge_key] = 0.0
-                    edge_weights[edge_key] += weight
+                    # KEY CHANGE: Create undirected adjacency key
+                    u, v = str(edge["from"]), str(edge["to"])
+                    adjacency_key = tuple(sorted((u, v)))
+                    
+                    if adjacency_key not in adjacency_weights:
+                        adjacency_weights[adjacency_key] = 0.0
+                    adjacency_weights[adjacency_key] += weight
             
             # Build consensus skeleton
             consensus_edges = []
             confidence_scores = {}
             
-            for (from_var, to_var), confidence in edge_weights.items():
-                if confidence > 0.3:  # Threshold for inclusion
+            for (var1, var2), confidence in adjacency_weights.items():
+                if confidence >= threshold:
+                    # Direction is undetermined at this stage
                     consensus_edges.append({
-                        "from": from_var,
-                        "to": to_var,
+                        "from": var1,
+                        "to": var2,
                         "weight": confidence,
                         "confidence": confidence
                     })
-                    confidence_scores[f"{from_var}->{to_var}"] = confidence
+                    confidence_scores[f"{var1}-{var2}"] = confidence
             
             return {
                 "edges": consensus_edges,
                 "variables": list(all_variables),
                 "confidence_scores": confidence_scores,
-                "n_input_graphs": len(graphs)
+                "n_input_graphs": len(graphs),
+                "threshold": threshold
             }
             
         except Exception as e:
@@ -987,30 +1092,63 @@ class EnsembleTool:
     
     @staticmethod
     def construct_dag(pag: Dict[str, Any], data_profile: Dict[str, Any], top_algorithm: str) -> Dict[str, Any]:
-        """Construct single DAG with tie-breaking"""
+        """Construct single DAG with tie-breaking and cycle avoidance"""
+        import networkx as nx
+        
         try:
-            dag = pag.copy()
-            dag["graph_type"] = "DAG"
+            dag_dict = pag.copy()
+            dag_dict["graph_type"] = "DAG"
             
-            # Apply assumption-based tie-breaking for uncertain edges
+            # Step 1: Apply tie-breaking to resolve uncertain edges
             resolved_edges = []
             
             for edge in pag.get("edges", []):
-                if edge.get("direction") == "uncertain" or edge.get("direction") == "conflict":
-                    # Apply tie-breaking based on data profile and algorithm
+                if edge.get("direction") in ["uncertain", "conflict"]:
                     resolved_edge = EnsembleTool._apply_tie_breaking(edge, data_profile, top_algorithm)
                     resolved_edges.append(resolved_edge)
                 else:
                     resolved_edges.append(edge)
             
-            dag["edges"] = resolved_edges
-            dag["metadata"] = {
-                "construction_method": "tie_breaking",
+            # Step 2: Build DAG incrementally to avoid cycles
+            G = nx.DiGraph()
+            final_edges = []
+            skipped_edges = []
+            
+            # Sort edges by confidence (highest first) to prioritize reliable edges
+            sorted_edges = sorted(resolved_edges, key=lambda e: e.get("confidence", 0.0), reverse=True)
+            
+            for edge in sorted_edges:
+                u, v = str(edge["from"]), str(edge["to"])
+                
+                # Check if adding this edge would create a cycle
+                # A cycle occurs if v is already an ancestor of u
+                if G.has_node(u) and G.has_node(v) and nx.has_path(G, v, u):
+                    # Cycle would be created, skip this edge
+                    logger.warning(f"Cycle detected when adding edge {u}->{v}. Skipping to maintain DAG property.")
+                    skipped_edges.append(edge)
+                else:
+                    # Safe to add this edge
+                    G.add_edge(u, v)
+                    final_edges.append(edge)
+            
+            # Verify final graph is a DAG
+            if not nx.is_directed_acyclic_graph(G):
+                logger.error("Final graph is not a DAG despite cycle prevention. This should not happen.")
+                raise ValueError("Constructed graph contains cycles")
+            
+            dag_dict["edges"] = final_edges
+            dag_dict["metadata"] = {
+                "construction_method": "tie_breaking_and_cycle_avoidance",
                 "top_algorithm": top_algorithm,
-                "data_profile": data_profile
+                "data_profile": data_profile,
+                "skipped_edges_count": len(skipped_edges),
+                "final_edge_count": len(final_edges)
             }
             
-            return dag
+            if skipped_edges:
+                logger.info(f"Skipped {len(skipped_edges)} edges to avoid cycles in DAG construction")
+            
+            return dag_dict
             
         except Exception as e:
             logger.error(f"DAG construction failed: {e}")

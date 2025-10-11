@@ -26,11 +26,22 @@ def print_step(header: str, payload: Dict[str, Any]):
 
 def extract_edges_from_graph(graph: Dict[str, Any]) -> List[Tuple[str, str]]:
     """Extract edge list from graph structure"""
-    if not graph or "graph" not in graph or "edges" not in graph["graph"]:
+    if not graph:
+        return []
+    
+    # Handle different graph structures:
+    # 1. Standard structure: graph["graph"]["edges"] (algorithm results)
+    # 2. Ensemble structure: graph["edges"] (consensus_pag, selected_graph)
+    edges_list = []
+    if "graph" in graph and "edges" in graph["graph"]:
+        edges_list = graph["graph"]["edges"]
+    elif "edges" in graph:
+        edges_list = graph["edges"]
+    else:
         return []
     
     edges = []
-    for edge in graph["graph"]["edges"]:
+    for edge in edges_list:
         if isinstance(edge, dict) and "from" in edge and "to" in edge:
             edges.append((edge["from"], edge["to"]))
         elif isinstance(edge, (list, tuple)) and len(edge) >= 2:
@@ -217,8 +228,8 @@ def main():
                 metrics = evaluation["metrics"]
                 
                 print_step("ensemble_synthesis", {
-                    "pag_edges": len(pag.get("edges", [])) if isinstance(pag, dict) else None,
-                    "dag_edges": len(dag.get("edges", [])) if isinstance(dag, dict) else None,
+                    "pag_edges": len(extract_edges_from_graph(pag)) if isinstance(pag, dict) else None,
+                    "dag_edges": len(extract_edges_from_graph(dag)) if isinstance(dag, dict) else None,
                     "ground_truth_evaluation": {
                         "precision": round(metrics["precision"], 3),
                         "recall": round(metrics["recall"], 3),
@@ -237,8 +248,8 @@ def main():
                 })
             else:
                 print_step("ensemble_synthesis", {
-                    "pag_edges": len(pag.get("edges", [])) if isinstance(pag, dict) else None,
-                    "dag_edges": len(dag.get("edges", [])) if isinstance(dag, dict) else None,
+                    "pag_edges": len(extract_edges_from_graph(pag)) if isinstance(pag, dict) else None,
+                    "dag_edges": len(extract_edges_from_graph(dag)) if isinstance(dag, dict) else None,
                     "error": "No valid DAG found for evaluation"
                 })
 

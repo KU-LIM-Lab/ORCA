@@ -594,6 +594,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
         try:
             algorithm_tiers = state.get("algorithm_tiers", {})
             df = self._load_dataframe_from_state(state)
+            data_profile = state.get("data_profile", {})
             
             if not algorithm_tiers:
                 raise ValueError("No algorithm tiers available")
@@ -622,7 +623,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 # Per-algorithm timeouts (seconds)
                 timeout_map = {"LiNGAM": 120, "ANM": 180, "PC": 180, "GES": 300, "FCI": 300, "CAM": 300}
                 for alg_name in all_algorithms:
-                    future = executor.submit(self._dispatch_algorithm, alg_name, df)
+                    future = executor.submit(self._dispatch_algorithm, alg_name, df, data_profile)
                     futures[alg_name] = future
                 
                 # Collect results
@@ -757,21 +758,44 @@ class CausalDiscoveryAgent(SpecialistAgent):
                     statistical_fit = fidelity_result.get("fidelity_score", 0.5)
                 
                 # 2. Global consistency - use CI violation ratio from pruning
-                global_consistency = 1.0 - candidate["violation_ratio"]
+                # For PAG (FCI), skip global consistency as d-separation doesn't apply
+                is_pag = graph.get("metadata", {}).get("graph_type") == "PAG"
                 
-                # 3. Sampling stability - use existing Bootstrapper
-                sampling_stability = self._evaluate_robustness(df, graph, alg_name)
-                
-                # 4. Structural stability - use instability score from pruning
-                structural_stability = 1.0 - candidate["instability_score"]
-                
-                # Calculate composite score
-                composite_score = (
-                    self.composite_weights["statistical_fit"] * statistical_fit +
-                    self.composite_weights["global_consistency"] * global_consistency +
-                    self.composite_weights["sampling_stability"] * sampling_stability +
-                    self.composite_weights["structural_stability"] * structural_stability
-                )
+                if is_pag:
+                    global_consistency = 0.0  # Not applicable for PAG
+                    # Normalize remaining weights to sum to 1.0
+                    w_stat = self.composite_weights["statistical_fit"]
+                    w_samp = self.composite_weights["sampling_stability"]
+                    w_struct = self.composite_weights["structural_stability"]
+                    weight_sum = w_stat + w_samp + w_struct
+                    
+                    # 3. Sampling stability - use existing Bootstrapper
+                    sampling_stability = self._evaluate_robustness(df, graph, alg_name)
+                    
+                    # 4. Structural stability - use instability score from pruning
+                    structural_stability = 1.0 - candidate["instability_score"]
+                    
+                    composite_score = (
+                        (w_stat / weight_sum) * statistical_fit +
+                        (w_samp / weight_sum) * sampling_stability +
+                        (w_struct / weight_sum) * structural_stability
+                    )
+                else:
+                    global_consistency = 1.0 - candidate["violation_ratio"]
+                    
+                    # 3. Sampling stability - use existing Bootstrapper
+                    sampling_stability = self._evaluate_robustness(df, graph, alg_name)
+                    
+                    # 4. Structural stability - use instability score from pruning
+                    structural_stability = 1.0 - candidate["instability_score"]
+                    
+                    # Use standard weights
+                    composite_score = (
+                        self.composite_weights["statistical_fit"] * statistical_fit +
+                        self.composite_weights["global_consistency"] * global_consistency +
+                        self.composite_weights["sampling_stability"] * sampling_stability +
+                        self.composite_weights["structural_stability"] * structural_stability
+                    )
                 
                 # Apply edge count penalty to discourage empty graphs
                 n_edges = len(graph.get("graph", {}).get("edges", []))
@@ -838,6 +862,20 @@ class CausalDiscoveryAgent(SpecialistAgent):
 
     # === Helpers and dispatch ===
 
+    def _select_ci_test(self, data_profile: Dict) -> str:
+        """Select appropriate CI test based on data characteristics"""
+        linearity = data_profile.get("linearity", "moderate")
+        
+        # Non-linear data needs kernel-based test
+        if linearity == "weak":
+            logger.info("Non-linear data detected, using KCI test")
+            return "kci"
+        
+        # For now, default to fisherz for linear data
+        # Future: add checks for categorical data → "gsq"
+        logger.info("Linear data detected, using Fisher-Z test")
+        return "fisherz"
+
     def _load_dataframe_from_state(self, state: AgentState) -> Optional[pd.DataFrame]:
         df = state.get("df_preprocessed")
         if df is not None:
@@ -878,17 +916,17 @@ class CausalDiscoveryAgent(SpecialistAgent):
         except Exception:
             return False
 
-    def _dispatch_algorithm(self, alg_name: str, df: pd.DataFrame) -> Dict[str, Any]:
+    def _dispatch_algorithm(self, alg_name: str, df: pd.DataFrame, data_profile: Dict = None) -> Dict[str, Any]:
         if alg_name == "LiNGAM":
             return self._run_lingam(df)
         if alg_name == "ANM":
             return self._run_anm(df)
         if alg_name == "PC":
-            return self._run_pc(df)
+            return self._run_pc(df, data_profile=data_profile)
         if alg_name == "GES":
             return self._run_ges(df)
         if alg_name == "FCI":
-            return self._run_fci(df)
+            return self._run_fci(df, data_profile=data_profile)
         if alg_name == "CAM":
             return self._run_cam(df)
         return {"error": f"Unknown algorithm: {alg_name}"}
@@ -1039,10 +1077,14 @@ class CausalDiscoveryAgent(SpecialistAgent):
             logger.error(f"LiNGAM execution failed: {e}")
             return {"error": str(e)}
     
-    def _run_anm(self, df: pd.DataFrame) -> Dict[str, Any]:
+    def _run_anm(self, df: pd.DataFrame, **kwargs) -> Dict[str, Any]:
         """Run ANM algorithm"""
         try:
-            result = self.use_tool("anm_tool", "anm_discovery", df)
+            # Use configurable thresholds with sensible defaults
+            delta = kwargs.get('delta', 0.02)  # More lenient than original 0.05
+            tau = kwargs.get('tau', 0.05)      # More lenient than original 0.10
+            
+            result = self.use_tool("anm_tool", "anm_discovery", df, delta=delta, tau=tau)
             return result
         except Exception as e:
             logger.error(f"ANM execution failed: {e}")
@@ -1065,10 +1107,19 @@ class CausalDiscoveryAgent(SpecialistAgent):
             return CAMTool.discover(df, **kwargs)
         return {"error": f"Unknown method: {method}"}
 
-    def _run_pc(self, df: pd.DataFrame) -> Dict[str, Any]:
+    def _run_pc(self, df: pd.DataFrame, data_profile: Dict = None, **kwargs) -> Dict[str, Any]:
         """Run PC algorithm (backend default: causal-learn)"""
         try:
-            result = self.use_tool("pc_tool", "pc_discovery", df)
+            # Select appropriate CI test based on data profile
+            if data_profile is None:
+                data_profile = {}
+            indep_test = self._select_ci_test(data_profile)
+            
+            # Pass alpha and indep_test
+            kwargs['alpha'] = kwargs.get('alpha', self.ci_alpha)
+            kwargs['indep_test'] = kwargs.get('indep_test', indep_test)
+            
+            result = self.use_tool("pc_tool", "pc_discovery", df, **kwargs)
             return result
         except Exception as e:
             logger.error(f"PC execution failed: {e}")
@@ -1082,10 +1133,19 @@ class CausalDiscoveryAgent(SpecialistAgent):
         except Exception as e:
             logger.error(f"GES execution failed: {e}")
             return {"error": str(e)}
-    def _run_fci(self, df: pd.DataFrame) -> Dict[str, Any]:
+    def _run_fci(self, df: pd.DataFrame, data_profile: Dict = None, **kwargs) -> Dict[str, Any]:
         """Run FCI algorithm (backend default: causal-learn)"""
         try:
-            result = self.use_tool("fci_tool", "fci_discovery", df)
+            # Select appropriate CI test based on data profile
+            if data_profile is None:
+                data_profile = {}
+            indep_test = self._select_ci_test(data_profile)
+            
+            # Pass alpha and indep_test
+            kwargs['alpha'] = kwargs.get('alpha', self.ci_alpha)
+            kwargs['indep_test'] = kwargs.get('indep_test', indep_test)
+            
+            result = self.use_tool("fci_tool", "fci_discovery", df, **kwargs)
             return result
         except Exception as e:
             logger.error(f"FCI execution failed: {e}")
