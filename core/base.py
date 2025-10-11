@@ -54,7 +54,7 @@ class BaseAgent(ABC):
         self.agent_type = agent_type
         self.config = config or {}
         self.memory = None
-        self.logger = print
+        self.logger = print # disable when not needed
         self.status = AgentStatus.IDLE
         self.execution_history: List[AgentResult] = []
         self.metrics_collector = metrics_collector

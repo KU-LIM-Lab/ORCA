@@ -134,118 +134,84 @@ class CausalDiscoveryAgent(SpecialistAgent):
         
         # Set domain expertise
         self.set_domain_expertise([
-            "assumption_validation",
-            "algorithm_selection", 
-            "causal_graph_generation",
-            "graph_evaluation",
-            "statistical_testing"
+            "assumption_validation", "algorithm_selection", "causal_graph_generation",
+            "graph_evaluation", "statistical_testing"
         ])
         
-        # Configuration
+        # Load configuration
+        self._load_configuration(config)
+    
+    def _load_configuration(self, config: Optional[Dict[str, Any]]) -> None:
+        """Load and validate configuration parameters"""
         self.config = config or {}
+        
+        # Core parameters
         self.bootstrap_iterations = self.config.get("bootstrap_iterations", 100)
         self.cv_folds = self.config.get("cv_folds", 5)
         
-        # New configuration parameters for restructured pipeline
+        # Pipeline parameters
         self.ci_alpha = self.config.get("ci_alpha", 0.05)
         self.violation_threshold = self.config.get("violation_threshold", 0.1)
-        # Reduce subsampling cost by default
         self.n_subsets = self.config.get("n_subsets", 3)
-        # Data profiling performance knobs
         self.profiling_max_pairs = self.config.get("profiling_max_pairs", 300)
-        self.profiling_parallelism = self.config.get("profiling_parallelism")  # None -> autoset
+        self.profiling_parallelism = self.config.get("profiling_parallelism")
         self.anm_rf_estimators = self.config.get("anm_rf_estimators", 100)
-        # Control: run all algorithms in selected tiers vs representatives only
         self.run_all_tier_algorithms = self.config.get("run_all_tier_algorithms", False)
+        
+        # Composite weights
         self.composite_weights = self.config.get("composite_weights", {
-            "statistical_fit": 0.3,
-            "global_consistency": 0.25,
-            "sampling_stability": 0.25,
-            "structural_stability": 0.2
+            "statistical_fit": 0.3, "global_consistency": 0.25,
+            "sampling_stability": 0.25, "structural_stability": 0.2
         })
-
-        # Store assumption-role mapping and algorithm priority in config for downstream nodes
+        
+        # Scoring configuration
+        scoring = self.config.get("scoring", {})
+        self.use_quantile_thresholds = scoring.get("use_quantile_thresholds", True)
+        self.min_pairs_for_quantile = scoring.get("min_pairs_for_quantile", 30)
+        self.penalty_weight = scoring.get("penalty_weight", 0.5)
+        
+        # Thresholds
+        thresholds = scoring.get("simple_thresholds", {})
+        self.threshold_high = thresholds.get("high", 0.66)
+        self.threshold_low = thresholds.get("low", 0.33)
+        self.min_confidence = thresholds.get("min_confidence", 0.05)
+        
+        # ANM thresholds
+        anm_config = scoring.get("anm_compatibility", {})
+        self.anm_mean_threshold = anm_config.get("mean_threshold", 0.5)
+        self.anm_pair_ratio_threshold = anm_config.get("pair_ratio_threshold", 0.6)
+        
+        # Store constants
         self.config.setdefault("ASSUMPTION_METHODS", ASSUMPTION_METHODS)
         self.config.setdefault("algorithm_list", ALGORITHM_LIST)
     
     def _register_specialist_tools(self) -> None:
         """Register causal discovery specific tools"""
-        # Statistical testing tools
-        self.register_tool(
-            "stats_tool",
-            self._stats_tool,
-            "Statistical testing: GLM/GAM, LRT/AIC/BIC, normality tests"
-        )
+        tools = [
+            # Statistical & Independence Testing
+            ("stats_tool", self._stats_tool, "Statistical testing: GLM/GAM, LRT/AIC/BIC, normality tests"),
+            ("independence_tool", self._independence_tool, "Independence testing: HSIC/KCI, non-parametric regression"),
+            
+            # Causal Discovery Algorithms
+            ("lingam_tool", self._lingam_tool, "LiNGAM algorithm: DirectLiNGAM order/weight estimation"),
+            ("anm_tool", self._anm_tool, "ANM algorithm: Additive Noise Model directionality testing"),
+            ("pc_tool", self._pc_tool, "PC algorithm via backend (default: causal-learn)"),
+            ("ges_tool", self._ges_tool, "GES algorithm via backend (default: causal-learn)"),
+            ("fci_tool", self._fci_tool, "FCI algorithm via backend (default: causal-learn)"),
+            ("cam_tool", self._cam_tool, "CAM algorithm (via CDT)"),
+            
+            # Evaluation & Analysis
+            ("bootstrapper", self._bootstrapper, "Bootstrap resampling and frequency aggregation"),
+            ("graph_evaluator", self._graph_evaluator, "Graph evaluation: BIC/MDL, CV, robustness, assumption scores"),
+            ("graph_ops", self._graph_ops, "Graph operations: DAG/PAG/AG conversion, merge, voting"),
+            
+            # Pipeline Tools
+            ("pruning_tool", self._pruning_tool, "CI testing and structural consistency"),
+            ("ensemble_tool", self._ensemble_tool, "Consensus skeleton and PAG construction"),
+        ]
         
-        # Independence testing tools
-        self.register_tool(
-            "independence_tool", 
-            self._independence_tool,
-            "Independence testing: HSIC/KCI, non-parametric regression"
-        )
-        
-        # Causal discovery algorithm tools
-        self.register_tool(
-            "lingam_tool",
-            self._lingam_tool,
-            "LiNGAM algorithm: DirectLiNGAM order/weight estimation"
-        )
-        
-        self.register_tool(
-            "anm_tool",
-            self._anm_tool,
-            "ANM algorithm: Additive Noise Model directionality testing"
-        )
-        # Evaluation and analysis tools
-        self.register_tool(
-            "bootstrapper",
-            self._bootstrapper,
-            "Bootstrap resampling and frequency aggregation"
-        )
-        
-        self.register_tool(
-            "graph_evaluator",
-            self._graph_evaluator,
-            "Graph evaluation: BIC/MDL, CV, robustness, assumption scores"
-        )
-        
-        self.register_tool(
-            "graph_ops",
-            self._graph_ops,
-            "Graph operations: DAG/PAG/AG conversion, merge, voting"
-        )
-        self.register_tool(
-            "pc_tool",
-            self._pc_tool,
-            "PC algorithm via backend (default: causal-learn)"
-        )
-        self.register_tool(
-            "ges_tool",
-            self._ges_tool,
-            "GES algorithm via backend (default: causal-learn)"
-        )
-        self.register_tool(
-            "fci_tool",
-            self._fci_tool,
-            "FCI algorithm via backend (default: causal-learn)"
-        )
-        self.register_tool(
-            "cam_tool",
-            self._cam_tool,
-            "CAM algorithm (via CDT)"
-        )
-        
-        # New tools for restructured pipeline
-        self.register_tool(
-            "pruning_tool",
-            self._pruning_tool,
-            "CI testing and structural consistency"
-        )
-        self.register_tool(
-            "ensemble_tool",
-            self._ensemble_tool,
-            "Consensus skeleton and PAG construction"
-        )
+        for tool_name, tool_method, description in tools:
+            self.register_tool(tool_name, tool_method, description)
     
     def step(self, state: AgentState) -> AgentState:
         """Execute causal discovery step"""
@@ -311,7 +277,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
             
             # Build all lower-triangle pairs
             pairs = [(variables[i], variables[j]) for i in range(len(variables)) for j in range(i+1, len(variables))]
-            # Optional sampling for very large pair sets
+            # Sampling for very large pair sets
             if self.profiling_max_pairs and len(pairs) > self.profiling_max_pairs:
                 rng = np.random.default_rng(42)
                 idx = rng.choice(len(pairs), size=self.profiling_max_pairs, replace=False)
@@ -319,7 +285,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 logger.info(f"Sampling pairwise tests: using {len(pairs)} pairs")
 
             # Determine parallelism
-            max_workers = self.profiling_parallelism or min(32, max(1, len(pairs)))
+            max_workers = self.profiling_parallelism or min(8, max(1, len(pairs)))
 
             def _eval_pair(var1: str, var2: str):
                 pair_key = f"{var1}_{var2}"
@@ -360,6 +326,40 @@ class CausalDiscoveryAgent(SpecialistAgent):
             state["error"] = f"Data profiling failed: {str(e)}"
             return state
     
+    def _classify_assumption_strength(self, scores_dict: Dict[str, float], 
+                                       n_pairs: int, 
+                                       use_quantile: bool = None) -> str:
+        """Classify assumption strength using adaptive thresholds"""
+        if use_quantile is None:
+            use_quantile = self.use_quantile_thresholds
+            
+        scores = np.array(list(scores_dict.values()))
+        mean = scores_dict["mean"]
+        std = scores_dict["std"]
+        
+        # Use quantile approach if enough pairs
+        if use_quantile and n_pairs >= self.min_pairs_for_quantile:
+            q1, q3 = np.quantile(scores, [0.25, 0.75])
+            if mean >= q3:
+                return "strong"
+            elif mean <= q1:
+                return "weak"
+            else:
+                return "moderate"
+        
+        # Fallback: simple approach with confidence
+        hi, lo, min_conf = self.threshold_high, self.threshold_low, self.min_confidence
+        
+        if std < min_conf:
+            return "strong" if mean >= hi else "weak" if mean <= lo else "moderate"
+        
+        if mean >= hi and std <= 0.15:
+            return "strong"
+        elif mean <= lo and std <= 0.15:
+            return "weak"
+        else:
+            return "moderate"
+
     def _generate_qualitative_profile(self, assumption_scores: Dict[str, Dict[str, float]], variables: List[str]) -> Dict[str, Any]:
         """Generate qualitative data profile from assumption scores"""
         try:
@@ -378,19 +378,22 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 else:
                     aggregated_scores[assumption_type] = {"mean": 0.5, "median": 0.5, "std": 0.0, "min": 0.5, "max": 0.5}
             
-            # Generate qualitative descriptions
-            linearity_mean = aggregated_scores["S_lin"]["mean"]
-            non_gaussian_mean = aggregated_scores["S_nG"]["mean"]
-            anm_mean = aggregated_scores["S_ANM"]["mean"]
-            gaussian_mean = aggregated_scores["S_Gauss"]["mean"]
-            eqvar_mean = aggregated_scores["S_EqVar"]["mean"]
+            # Generate qualitative descriptions using adaptive thresholds
+            n_pairs = len(variables) * (len(variables) - 1) // 2
             
-            # Qualitative profiling
-            linearity_desc = "strong" if linearity_mean > 0.7 else "weak" if linearity_mean < 0.3 else "moderate"
-            non_gaussian_desc = "strong" if non_gaussian_mean > 0.7 else "weak" if non_gaussian_mean < 0.3 else "moderate"
-            anm_compatible = anm_mean > 0.6
-            gaussian_desc = "strong" if gaussian_mean > 0.7 else "weak" if gaussian_mean < 0.3 else "moderate"
-            eqvar_desc = "strong" if eqvar_mean > 0.7 else "weak" if eqvar_mean < 0.3 else "moderate"
+            linearity_desc = self._classify_assumption_strength(
+                aggregated_scores["S_lin"], n_pairs)
+            non_gaussian_desc = self._classify_assumption_strength(
+                aggregated_scores["S_nG"], n_pairs)
+            gaussian_desc = self._classify_assumption_strength(
+                aggregated_scores["S_Gauss"], n_pairs)
+            eqvar_desc = self._classify_assumption_strength(
+                aggregated_scores["S_EqVar"], n_pairs)
+            
+            # ANM compatibility with dual check
+            anm_scores = np.array(list(assumption_scores["S_ANM"].values()))
+            anm_mean = aggregated_scores["S_ANM"]["mean"]
+            anm_compatible = (anm_mean >= self.anm_mean_threshold) and (np.mean(anm_scores >= self.anm_mean_threshold) >= self.anm_pair_ratio_threshold)
             
             data_profile = {
                 "linearity": linearity_desc,
@@ -420,6 +423,52 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 "summary": "Default profile due to generation error"
             }
     
+    def _calculate_family_score(self, data_profile: Dict[str, Any], 
+                                requirements: Dict[str, List[str]]) -> float:
+        """Calculate family score with penalties for opposite assumptions"""
+        
+        def desc_to_value(desc: str) -> float:
+            return {"strong": 1.0, "moderate": 0.6, "weak": 0.0}.get(desc, 0.5)
+        
+        def get_desc(assumption: str) -> str:
+            mapping = {
+                "linearity": data_profile["linearity"],
+                "non_gaussian": data_profile["non_gaussian"],
+                "anm_compatible": "strong" if data_profile["anm_compatible"] else "weak",
+                "gaussian": data_profile["gaussian"],
+                "equal_variance": data_profile["equal_variance"]
+            }
+            return mapping.get(assumption, "moderate")
+        
+        score, total = 0.0, 0.0
+        
+        # Required assumptions (weight = 1.0)
+        for req in requirements.get("required", []):
+            s = desc_to_value(get_desc(req))
+            score += s * 1.0
+            total += 1.0
+        
+        # Preferred assumptions (weight = 0.5)
+        for pref in requirements.get("preferred", []):
+            s = desc_to_value(get_desc(pref))
+            score += s * 0.5
+            total += 0.5
+        
+        # Opposite assumptions (penalty = configurable weight)
+        pen, pen_w = 0.0, 0.0
+        for opp in requirements.get("opposite", []):
+            s = desc_to_value(get_desc(opp))
+            pen += s * self.penalty_weight
+            pen_w += self.penalty_weight
+        
+        # Normalize with penalty and clip to [0, 1]
+        if total + pen_w > 0:
+            family_score = (score - pen + pen_w) / (total + pen_w)
+        else:
+            family_score = 0.5
+        
+        return np.clip(family_score, 0.0, 1.0)
+
     def _algorithm_tiering(self, state: AgentState) -> AgentState:
         """Stage 1: Algorithm tiering based on data profile"""
         logger.info("Performing algorithm tiering...")
@@ -468,40 +517,10 @@ class CausalDiscoveryAgent(SpecialistAgent):
             for family_name in ALGORITHM_FAMILIES_REP.keys():
                 if family_name not in family_requirements:
                     continue
-                    
+                
                 requirements = family_requirements[family_name]
-                score = 0.0
-                total_weight = 0.0
-                
-                # Required assumptions (must be satisfied)
-                for req in requirements["required"]:
-                    if req == "linearity":
-                        score += 1.0 if data_profile["linearity"] == "strong" else 0.5 if data_profile["linearity"] == "moderate" else 0.0
-                    elif req == "anm_compatible":
-                        score += 1.0 if data_profile["anm_compatible"] else 0.0
-                    elif req == "gaussian":
-                        score += 1.0 if data_profile["gaussian"] == "strong" else 0.5 if data_profile["gaussian"] == "moderate" else 0.0
-                    elif req == "equal_variance":
-                        score += 1.0 if data_profile["equal_variance"] == "strong" else 0.5 if data_profile["equal_variance"] == "moderate" else 0.0
-                    total_weight += 1.0
-                
-                # Preferred assumptions (bonus points)
-                for pref in requirements["preferred"]:
-                    if pref == "linearity":
-                        bonus = 0.3 if data_profile["linearity"] == "strong" else 0.1 if data_profile["linearity"] == "moderate" else 0.0
-                    elif pref == "non_gaussian":
-                        bonus = 0.3 if data_profile["non_gaussian"] == "strong" else 0.1 if data_profile["non_gaussian"] == "moderate" else 0.0
-                    elif pref == "gaussian":
-                        bonus = 0.3 if data_profile["gaussian"] == "strong" else 0.1 if data_profile["gaussian"] == "moderate" else 0.0
-                    else:
-                        bonus = 0.0
-                    score += bonus
-                    total_weight += 0.3
-                
-                if total_weight > 0:
-                    family_scores[family_name] = score / total_weight
-                else:
-                    family_scores[family_name] = 0.5
+                family_scores[family_name] = self._calculate_family_score(
+                    data_profile, requirements)
             
             # Build tier algorithms based on mode: representatives vs all family algorithms
             run_all = state.get("run_all_tier_algorithms", self.run_all_tier_algorithms)
@@ -753,6 +772,13 @@ class CausalDiscoveryAgent(SpecialistAgent):
                     self.composite_weights["sampling_stability"] * sampling_stability +
                     self.composite_weights["structural_stability"] * structural_stability
                 )
+                
+                # Apply edge count penalty to discourage empty graphs
+                n_edges = len(graph.get("graph", {}).get("edges", []))
+                if n_edges == 0:
+                    composite_score *= 0.1  # Heavy penalty for empty graphs
+                elif n_edges < 3:
+                    composite_score *= 0.5  # Moderate penalty for very sparse graphs
                 
                 scorecard.append({
                     "algorithm": alg_name,
@@ -1097,6 +1123,14 @@ class CausalDiscoveryAgent(SpecialistAgent):
     
     # === Tool Implementations ===
     
+    def _safe_execute(self, func, *args, default_return=None, error_msg="Operation failed", **kwargs):
+        """Common error handling pattern for tool execution"""
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            logger.warning(f"{error_msg}: {e}")
+            return default_return or {"error": str(e)}
+    
     def _stats_tool(self, test_type: str, *args, **kwargs) -> Dict[str, Any]:
         """Statistical testing tool implementation"""
         from .tools import StatsTool
@@ -1115,7 +1149,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
         from .tools import IndependenceTool
         
         if test_type == "anm_test":
-            return IndependenceTool.anm_test(args[0], args[1])
+            return IndependenceTool.anm_test(args[0], args[1], **kwargs)
         else:
             return {"error": f"Unknown test type: {test_type}"}
     
@@ -1136,7 +1170,6 @@ class CausalDiscoveryAgent(SpecialistAgent):
             return ANMTool.anm_discovery(args[0])
         else:
             return {"error": f"Unknown method: {method}"}
-    
     
     def _bootstrapper(self, method: str, *args, **kwargs) -> Dict[str, Any]:
         """Bootstrap tool implementation"""
@@ -1174,13 +1207,9 @@ class CausalDiscoveryAgent(SpecialistAgent):
         from .tools import PruningTool
         
         if method == "global_markov_test":
-            graph, df = args[0], args[1]
-            alpha = kwargs.get("alpha", self.ci_alpha)
-            return PruningTool.global_markov_test(graph, df, alpha)
+            return PruningTool.global_markov_test(args[0], args[1], kwargs.get("alpha", self.ci_alpha))
         elif method == "structural_consistency_test":
-            graph, df, algorithm_name = args[0], args[1], args[2]
-            n_subsets = kwargs.get("n_subsets", self.n_subsets)
-            return PruningTool.structural_consistency_test(graph, df, algorithm_name, n_subsets)
+            return PruningTool.structural_consistency_test(args[0], args[1], args[2], kwargs.get("n_subsets", self.n_subsets))
         else:
             return {"error": f"Unknown method: {method}"}
     
@@ -1189,17 +1218,48 @@ class CausalDiscoveryAgent(SpecialistAgent):
         from .tools import EnsembleTool
         
         if method == "build_consensus_skeleton":
-            graphs = args[0]
-            weights = kwargs.get("weights")
-            return EnsembleTool.build_consensus_skeleton(graphs, weights)
+            return EnsembleTool.build_consensus_skeleton(args[0], kwargs.get("weights"))
         elif method == "resolve_directions":
-            skeleton, graphs, data_profile = args[0], args[1], args[2]
-            return EnsembleTool.resolve_directions(skeleton, graphs, data_profile)
+            return EnsembleTool.resolve_directions(args[0], args[1], args[2])
         elif method == "construct_pag":
-            skeleton, directions = args[0], args[1]
-            return EnsembleTool.construct_pag(skeleton, directions)
+            return EnsembleTool.construct_pag(args[0], args[1])
         elif method == "construct_dag":
-            pag, data_profile, top_algorithm = args[0], args[1], args[2]
-            return EnsembleTool.construct_dag(pag, data_profile, top_algorithm)
+            return EnsembleTool.construct_dag(args[0], args[1], args[2])
+        else:
+            return {"error": f"Unknown method: {method}"}
+    
+    def _pc_tool(self, method: str, *args, **kwargs) -> Dict[str, Any]:
+        """PC algorithm tool implementation"""
+        from .tools import PCTool
+        
+        if method == "pc_discovery":
+            return PCTool.discover(args[0], **kwargs)
+        else:
+            return {"error": f"Unknown method: {method}"}
+    
+    def _ges_tool(self, method: str, *args, **kwargs) -> Dict[str, Any]:
+        """GES algorithm tool implementation"""
+        from .tools import GESTool
+        
+        if method == "ges_discovery":
+            return GESTool.discover(args[0], **kwargs)
+        else:
+            return {"error": f"Unknown method: {method}"}
+    
+    def _fci_tool(self, method: str, *args, **kwargs) -> Dict[str, Any]:
+        """FCI algorithm tool implementation"""
+        from .tools import FCITool
+        
+        if method == "fci_discovery":
+            return FCITool.discover(args[0], **kwargs)
+        else:
+            return {"error": f"Unknown method: {method}"}
+    
+    def _cam_tool(self, method: str, *args, **kwargs) -> Dict[str, Any]:
+        """CAM algorithm tool implementation"""
+        from .tools import CAMTool
+        
+        if method == "cam_discovery":
+            return CAMTool.discover(args[0], **kwargs)
         else:
             return {"error": f"Unknown method: {method}"}

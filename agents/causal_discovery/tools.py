@@ -67,6 +67,14 @@ warnings.filterwarnings('ignore')
 
 logger = logging.getLogger(__name__)
 
+def safe_execute(func, *args, default_return=None, error_msg="Operation failed", **kwargs):
+    """Common error handling pattern for tool execution"""
+    try:
+        return func(*args, **kwargs)
+    except Exception as e:
+        logger.warning(f"{error_msg}: {e}")
+        return default_return or {"error": str(e)}
+
 class StatsTool:
     """Statistical testing tools for assumption validation"""
     
@@ -177,40 +185,42 @@ class IndependenceTool:
     """Independence testing tools for ANM and other tests"""
     
     @staticmethod
+    def _fit_nonparametric_regression(x: np.ndarray, y: np.ndarray, n_estimators: int = 100) -> np.ndarray:
+        """Common ANM regression fitting logic"""
+        from sklearn.ensemble import RandomForestRegressor
+        rf = RandomForestRegressor(random_state=42, n_estimators=int(max(10, n_estimators)), 
+                                 max_depth=None, n_jobs=1)
+        rf.fit(x.reshape(-1, 1), y.ravel())
+        return y.ravel() - rf.predict(x.reshape(-1, 1))
+    
+    @staticmethod
+    def _test_residual_independence(x: np.ndarray, resid: np.ndarray) -> Tuple[Optional[float], bool]:
+        """Test independence between x and residuals with fallback"""
+        try:
+            from causallearn.utils.cit import hsic_test_gamma
+            pval = float(hsic_test_gamma(x, resid))
+            return pval, False
+        except Exception:
+            # Fallback: Spearman correlation
+            rho = abs(pd.Series(resid).corr(pd.Series(x), method='spearman'))
+            score = max(0.0, min(1.0, 1.0 - rho))
+            return score, True
+    
+    @staticmethod
     def anm_test(x: pd.Series, y: pd.Series, n_estimators: int = 100) -> Dict[str, Any]:
         """Test ANM assumption via residual independence using causal-learn KCI/HSIC.
         Returns anm_score in [0,1] where higher is more consistent with ANM X->Y.
         """
         try:
-            import numpy as np
-            from sklearn.ensemble import RandomForestRegressor
-            # Fit nonparametric regression y ~ f(x)
-            X = x.values.reshape(-1, 1)
-            Y = y.values.reshape(-1, 1)
-            rf = RandomForestRegressor(random_state=42, n_estimators=int(max(10, n_estimators)), max_depth=None)
-            rf.fit(X, Y.ravel())
-            resid = Y.ravel() - rf.predict(X)
-            # Independence test between x and residual
-            pval = None
-            try:
-                # Try HSIC gamma approximation
-                from causallearn.utils.cit import hsic_test_gamma
-                pval = float(hsic_test_gamma(X.ravel(), resid))
-            except Exception:
-                try:
-                    # Fallback: KCI (may require bandwidth selection)
-                    from causallearn.utils.cit import kci
-                    pval = float(kci(X.reshape(-1,1), resid.reshape(-1,1)))
-                except Exception:
-                    pass
-            if pval is None:
-                # Final fallback: absolute Spearman correlation
-                rho = abs(pd.Series(resid).corr(pd.Series(X.ravel()), method='spearman'))
-                score = max(0.0, min(1.0, 1.0 - rho))
-                return {"anm_score": score, "fallback": True}
-            # High p-value ⇒ fail to reject independence ⇒ ANM satisfied
-            score = float(max(0.0, min(1.0, pval)))
-            return {"anm_score": score, "p_value": pval}
+            X, Y = x.values, y.values
+            resid = IndependenceTool._fit_nonparametric_regression(X, Y, n_estimators)
+            pval, is_fallback = IndependenceTool._test_residual_independence(X, resid)
+            
+            if is_fallback:
+                return {"anm_score": pval, "fallback": True}
+            else:
+                score = float(max(0.0, min(1.0, pval)))
+                return {"anm_score": score, "p_value": pval}
         except Exception as e:
             logger.warning(f"ANM test failed: {e}")
             return {"anm_score": 0.5, "error": str(e)}
@@ -259,61 +269,53 @@ class ANMTool:
     """Additive Noise Model algorithm implementation"""
     
     @staticmethod
+    def _test_direction(x: np.ndarray, y: np.ndarray, n_estimators: int = 50) -> Optional[float]:
+        """Test ANM direction X->Y using common logic"""
+        try:
+            resid = IndependenceTool._fit_nonparametric_regression(x, y, n_estimators)
+            pval, _ = IndependenceTool._test_residual_independence(x, resid)
+            return pval
+        except Exception:
+            return None
+    
+    @staticmethod
     def anm_discovery(df: pd.DataFrame) -> Dict[str, Any]:
         import time
-        from sklearn.ensemble import RandomForestRegressor
         t0 = time.time()
         vars_ = list(df.columns)
         edges = []
-        delta = 0.05
-        tau = 0.10
+        delta, tau = 0.05, 0.10
+        
         for i, xi in enumerate(vars_):
             for j, yj in enumerate(vars_):
                 if i == j:
                     continue
-                X = df[xi].values.reshape(-1,1)
-                Y = df[yj].values.reshape(-1,1)
-                # X->Y
-                p_xy = None
-                try:
-                    rf = RandomForestRegressor(random_state=42, n_estimators=200)
-                    rf.fit(X, Y.ravel())
-                    resid_xy = Y.ravel() - rf.predict(X)
-                    try:
-                        from causallearn.utils.cit import hsic_test_gamma
-                        p_xy = float(hsic_test_gamma(X.ravel(), resid_xy))
-                    except Exception:
-                        from causallearn.utils.cit import kci
-                        p_xy = float(kci(X, resid_xy.reshape(-1,1)))
-                except Exception:
-                    p_xy = None
-                # Y->X
-                p_yx = None
-                try:
-                    rf = RandomForestRegressor(random_state=42, n_estimators=200)
-                    rf.fit(Y, X.ravel())
-                    resid_yx = X.ravel() - rf.predict(Y)
-                    try:
-                        from causallearn.utils.cit import hsic_test_gamma
-                        p_yx = float(hsic_test_gamma(Y.ravel(), resid_yx))
-                    except Exception:
-                        from causallearn.utils.cit import kci
-                        p_yx = float(kci(Y, resid_yx.reshape(-1,1)))
-                except Exception:
-                    p_yx = None
+                
+                X, Y = df[xi].values, df[yj].values
+                
+                # Test both directions
+                p_xy = ANMTool._test_direction(X, Y)
+                p_yx = ANMTool._test_direction(Y, X)
+                
                 if p_xy is None and p_yx is None:
                     continue
-                if p_xy is None: p_xy = 0.0
-                if p_yx is None: p_yx = 0.0
+                
+                p_xy = p_xy or 0.0
+                p_yx = p_yx or 0.0
                 best_p = max(p_xy, p_yx)
+                
                 if best_p < tau:
                     continue
+                
+                # Determine direction based on difference
                 if (p_xy - p_yx) >= delta:
                     edges.append({"from": xi, "to": yj, "weight": float(best_p)})
                 elif (p_yx - p_xy) >= delta:
                     edges.append({"from": yj, "to": xi, "weight": float(best_p)})
+        
         runtime = time.time() - t0
-        return normalize_graph_result("ANM", vars_, edges, {"delta": delta, "tau": tau, "backend": "causal-learn"}, runtime)
+        return normalize_graph_result("ANM", vars_, edges, 
+                                    {"delta": delta, "tau": tau, "backend": "causal-learn"}, runtime)
 
 
 # CAM tool
@@ -547,9 +549,18 @@ class PCTool:
             from causallearn.utils.cit import fisherz
             data = df.values
             cg = pc(data, alpha=alpha, indep_test=fisherz, verbose=False)
-            for (i, j), v in cg.G.graph.items():
-                if v != 0:
-                    edges.append((vars_[i], vars_[j]))
+            graph = cg.G.graph
+            if hasattr(graph, 'items'):
+                # Dictionary format
+                for (i, j), v in graph.items():
+                    if v != 0:
+                        edges.append((vars_[i], vars_[j]))
+            else:
+                # Numpy array format
+                for i in range(graph.shape[0]):
+                    for j in range(graph.shape[1]):
+                        if graph[i, j] != 0:
+                            edges.append((vars_[i], vars_[j]))
             runtime = time.time() - t0
             return normalize_graph_result("PC", vars_, edges, params, runtime)
         except Exception as e:
@@ -570,9 +581,18 @@ class GESTool:
             res = ges(data, score_func=score_func)
             G = getattr(res, 'G', None) or (res.get('G', None) if isinstance(res, dict) else None)
             if G is not None and hasattr(G, 'graph'):
-                for (i, j), v in G.graph.items():
-                    if v != 0:
-                        edges.append((vars_[i], vars_[j]))
+                graph = G.graph
+                if hasattr(graph, 'items'):
+                    # Dictionary format
+                    for (i, j), v in graph.items():
+                        if v != 0:
+                            edges.append((vars_[i], vars_[j]))
+                else:
+                    # Numpy array format
+                    for i in range(graph.shape[0]):
+                        for j in range(graph.shape[1]):
+                            if graph[i, j] != 0:
+                                edges.append((vars_[i], vars_[j]))
             runtime = time.time() - t0
             return normalize_graph_result("GES", vars_, edges, params, runtime)
         except Exception as e:
@@ -659,7 +679,7 @@ class PruningTool:
                     Y = df[to_var].values.reshape(-1, 1)
                     
                     # Use Fisher's Z test for Gaussian data
-                    p_value = fisherz(X, Y, alpha=alpha)
+                    p_value = fisherz(X.ravel(), Y.ravel())
                     
                     if p_value < alpha:
                         violations += 1

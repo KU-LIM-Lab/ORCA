@@ -37,8 +37,19 @@ agents:
     profiling_parallelism:
     anm_rf_estimators: 100
     composite_weights:
-      statistical_fit: 0.3
-      global_consistency: 0.25
+      statistical_fit: 0.20
+      global_consistency: 0.35
       sampling_stability: 0.25
-      structural_stability: 0.2
+      structural_stability: 0.20
     run_all_tier_algorithms: false
+    scoring:
+      use_quantile_thresholds: true # Use quantile vs fixed thresholds
+      min_pairs_for_quantile: 30
+      simple_thresholds:
+        high: 0.66
+        low: 0.33
+        min_confidence: 0.05
+      anm_compatibility:
+        mean_threshold: 0.5
+        pair_ratio_threshold: 0.6
+      penalty_weight: 0.5 # Weight for opposite assumptions
