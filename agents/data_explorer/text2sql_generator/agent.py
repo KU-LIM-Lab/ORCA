@@ -18,7 +18,7 @@ class Text2SQLGeneratorAgent(SubgraphAgent):
         self.llm = llm
 
     def get_required_state_keys(self):
-        return ["db_id", "query"]
+        return ["db_id", "query","evidence"]
 
     def compile_graph(self) -> None:
         """Override to use existing compiled graph factory.

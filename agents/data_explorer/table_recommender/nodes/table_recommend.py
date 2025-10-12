@@ -30,7 +30,10 @@ def recommend_tables(state, llm: BaseChatModel):
                 "format_instructions": parser.get_format_instructions()
             }, llm=llm
         )
-        state["recommended_tables"] = response.recommended_tables
+        recommended_tables_objects = response.recommended_tables
+        table_names_list = [rec.table for rec in recommended_tables_objects]
+            
+        state["recommended_tables"] = table_names_list
         state["recommended_method"] = response.analysis_method
     except Exception as e:
         print(f"Error: Failed to parse recommended tables: {e}")

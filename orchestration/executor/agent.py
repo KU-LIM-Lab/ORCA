@@ -8,6 +8,8 @@ import time
 import logging
 from datetime import datetime
 from langgraph.types import interrupt
+from utils.llm import get_llm
+from utils.settings import CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +24,22 @@ class ExecutorAgent(OrchestratorAgent):
         self.current_step = 0
         self.execution_log = []
         self.results = {}
+
+    @staticmethod
+    def create_llm_from_config():
+        """Create LLM instance from _config.yml settings."""
+        llm_config = CONFIG.get("llm", {})
+        provider = llm_config.get("provider", "openai")
+        model = llm_config.get("model", "gpt-4o-mini")
+        temperature = llm_config.get("temperature", 0.3)
         
-    async def execute_plan(self, state: AgentState) -> AgentResult:
+        try:
+            return get_llm(model=model, temperature=temperature, provider=provider)
+        except Exception as e:
+            print(f"[TEST] Failed to create LLM from config: {e}")
+            return None
+        
+    def execute_plan(self, state: AgentState) -> AgentResult:
         """Execute the plan. HITL is handled inside via interrupt gate."""
         plan = state.get("execution_plan", [])
         if not plan:
@@ -33,27 +49,41 @@ class ExecutorAgent(OrchestratorAgent):
                 metadata={"executor": self.name}
             )
         
-        try:
-            # Initialize execution state
-            self.current_step = 0
-            self.execution_log = []
-            self.results = {}
-            max_rerun = self.config.get("max_rerun_per_substep", 1) if self.config else 1
-            
-            # Execute each step in the plan
-            for step in plan:
-                # Check dependencies
-                if not self._check_dependencies(step, state):
-                    return AgentResult(
-                        success=False,
-                        error=f"Dependencies not met for {step['substep']}",
-                        metadata={"executor": self.name}
-                    )
+        # Initialize execution state
+        self.current_step = state.get("current_execute_step",0)
+        self.execution_log = []
+        self.results = {}
+        max_rerun = self.config.get("max_rerun_per_substep", 1) if self.config else 1
+        
+        llm = self.create_llm_from_config()
+        if llm is None:
+            return AgentResult(
+                    success=False,
+                    error=f"Failed to create LLM from config"
+                )
 
-                # Execute substep
-                result = await self._execute_step(step, state)
+        # Execute steps based on current_execute_step pointer
+        while True:
+            idx = state.get("current_execute_step", 0)
+            if idx >= len(plan):
+                state["executor_completed"] = True
+                break
+            step = plan[idx]
+
+            # Check dependencies
+            # if not self._check_dependencies(step, state):
+            #     return AgentResult(
+            #         success=False,
+            #         error=f"Dependencies not met for {step['substep']}",
+            #         metadata={"executor": self.name}
+            #     )
+
+            # Execute substep
+            if not state.get("current_state_executed"):
+                state["hitl_executed"]=False
+                result = self._execute_step(step, state, llm)
                 self.execution_log.append({
-                    "phase": step["phase"].value,
+                    "phase": step["phase"],
                     "substep": step["substep"],
                     "timestamp": datetime.now().isoformat(),
                     "success": result.success,
@@ -66,35 +96,39 @@ class ExecutorAgent(OrchestratorAgent):
                         error=f"Step {step['substep']} failed: {result.error}",
                         metadata={"execution_log": self.execution_log}
                     )
-                
+            
                 # Merge results
                 state.update(result.data or {})
                 self.results[step["substep"]] = result.data or {}
+                state["current_state_executed"] = True
 
-                # If no HITL, mark complete
-                if not step.get("hitl_required", False):
-                    state.setdefault("completed_substeps", []).append(step["substep"])
-                    continue
+                return AgentResult(
+                    success=True
+                )
 
-                # HITL gate
-                decision, edits, feedback = self._hitl_gate(step, state, self.results[step["substep"]])
+            # If no HITL, mark complete and advance pointer
+            if not step.get("hitl_required", False):
+                state.setdefault("completed_substeps", []).append(step["substep"])                
+                continue
 
-                if decision == "abort":
+            # HITL gate
+            if state.get("hitl_executed", False):
+                if state.get("hitl_decision") == "abort":
                     return AgentResult(
                         success=False,
                         error="Aborted by user",
                         metadata={"substep": step["substep"], "execution_log": self.execution_log}
                     )
 
-                if decision == "edit":
+                if state.get("hitl_decision") == "edit":
                     self._apply_edits(state, edits)
 
-                if decision == "rerun":
+                if state.get("hitl_decision") == "rerun":
                     rerun_ok = False
                     for _ in range(max_rerun):
-                        re = self._rerun_step(step, state, feedback)
+                        re = self._rerun_step(step, state, feedback, llm)
                         self.execution_log.append({
-                            "phase": step["phase"].value,
+                            "phase": step["phase"],
                             "substep": f"{step['substep']}_rerun",
                             "timestamp": datetime.now().isoformat(),
                             "success": re.success,
@@ -104,6 +138,7 @@ class ExecutorAgent(OrchestratorAgent):
                             state.update(re.data or {})
                             self.results[step["substep"]] = re.data or {}
                             rerun_ok = True
+                            state["current_state_executed"] = False
                             break
                     if not rerun_ok:
                         return AgentResult(
@@ -111,32 +146,33 @@ class ExecutorAgent(OrchestratorAgent):
                             error=f"Rerun failed at {step['substep']}",
                             metadata={"execution_log": self.execution_log}
                         )
+                    
 
-                # After approve/edit success
+                # If decision is approve or unset, wait for explicit advancement via HITL
                 state.setdefault("completed_substeps", []).append(step["substep"])
+                state["current_execute_step"] = idx + 1
+                state["current_state_executed"] = False
+                return AgentResult(
+                        success=True
+                    )
             
-            return AgentResult(
-                success=True,
-                data={
-                    "execution_completed": True,
-                    "total_steps": len(plan),
-                    "execution_log": self.execution_log,
-                    "results": self.results
-                },
-                metadata={"executor": self.name}
-            )
+            # First time HITL trigger for this step
+            decision, edits, feedback = self._hitl_gate(step, state)
             
-        except Exception as e:
-            return AgentResult(
-                success=False,
-                error=f"Execution failed: {str(e)}",
-                metadata={
-                    "execution_log": self.execution_log,
-                    "current_step": self.current_step
-                }
-            )
+        state["current_execute_step"] = idx + 1
+        state["current_state_executed"] = False
+        return AgentResult(
+            success=True,
+            data={
+                "execution_completed": True,
+                "total_steps": len(plan),
+                "execution_log": self.execution_log,
+                "results": self.results
+            },
+            metadata={"executor": self.name}
+        )
     
-    async def _execute_step(self, step: Dict[str, Any], state: AgentState) -> AgentResult:
+    def _execute_step(self, step: Dict[str, Any], state: AgentState, llm) -> AgentResult:
         """Execute a single step in the plan"""
         substep = step["substep"]
         agent_name = step["agent"]
@@ -147,12 +183,12 @@ class ExecutorAgent(OrchestratorAgent):
         
         try:
             # Check dependencies
-            if not self._check_dependencies(step, state):
-                return AgentResult(
-                    success=False,
-                    error=f"Dependencies not met for step {substep}",
-                    metadata={"substep": substep}
-                )
+            # if not self._check_dependencies(step, state):
+            #     return AgentResult(
+            #         success=False,
+            #         error=f"Dependencies not met for step {substep}",
+            #         metadata={"substep": substep}
+            #     )
 
             # Dispatch to specialist agents (minimal integration for causal_discovery)
             start_time = time.time()
@@ -183,7 +219,7 @@ class ExecutorAgent(OrchestratorAgent):
 
             if agent_name == "data_explorer":
                 from agents.data_explorer.agent import DataExplorerAgent
-                de_agent = DataExplorerAgent()
+                de_agent = DataExplorerAgent(llm=llm)
                 state_copy = dict(state)
                 state_copy["current_substep"] = substep
                 new_state = de_agent.step(state_copy)
@@ -203,6 +239,7 @@ class ExecutorAgent(OrchestratorAgent):
                     from agents.causal_analysis import generate_causal_analysis_graph
                     # Use a simple LLM callable if available, otherwise None
                     try:
+                        # 우선 놔두기는 했는데 이렇게 해서 안되면 위의 data analysis agent 참고
                         from utils.llm import call_llm as llm
                     except Exception:
                         llm = None
@@ -321,16 +358,15 @@ class ExecutorAgent(OrchestratorAgent):
         return True
 
 
-    def _hitl_gate(self, step: Dict[str, Any], state: AgentState, result_data: Dict[str, Any]) -> Tuple[str, Dict[str, Any], str]:
+    def _hitl_gate(self, step: Dict[str, Any], state: AgentState) -> Tuple[str, Dict[str, Any], str]:
         """HITL interrupt: returns (decision, edits, feedback)."""
         payload = {
             "question": "Choose: approve / edit / rerun / abort",
-            "phase": step["phase"].value,
+            "phase": step["phase"],
             "substep": step["substep"],
             "agent": step["agent"],
             "action": step["action"],
             "description": step.get("description", ""),
-            "step_result_keys": list((result_data or {}).keys())[:50],
             "choices": ["approve", "edit", "rerun", "abort"]
         }
         decision_payload = interrupt(payload)
@@ -358,11 +394,11 @@ class ExecutorAgent(OrchestratorAgent):
             if k in allowed:
                 state[k] = v
 
-    def _rerun_step(self, step: Dict[str, Any], state: AgentState, feedback: str) -> AgentResult:
+    def _rerun_step(self, step: Dict[str, Any], state: AgentState, feedback: str, llm) -> AgentResult:
         """Re-run the same substep; store feedback for agent consumption."""
         if feedback:
             state["user_feedback"] = feedback
-        return asyncio.run(self._execute_step(step, state))
+        return self._execute_step(step, state, llm)
 
     def get_execution_status(self) -> Dict[str, Any]:
         """Get current execution status"""
@@ -379,7 +415,7 @@ class ExecutorAgent(OrchestratorAgent):
         if state.get("execution_paused"):
             result = self.resume_execution(state)
         else:
-            result = asyncio.run(self.execute_plan(state))
+            result = self.execute_plan(state)
         
         # Update state with execution results
         if result.success:

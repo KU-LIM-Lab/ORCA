@@ -19,6 +19,7 @@ def main():
     
     # 3. Example 1: Full pipeline (default behavior)
     print("=== Example 1: Full Pipeline ===")
+    # execute할 때 config에서 db_id 받아와서 쓸 수 있도록 하기.. or main에서 미리 지정해주기 ..
     result1 = graph.execute("고객 이탈에 영향을 미치는 요인을 분석해줘")
     print(f"Status: {result1.get('execution_status')}")
     print(f"Steps completed: {len(result1.get('execution_log', []))}")

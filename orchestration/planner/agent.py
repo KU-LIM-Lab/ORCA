@@ -113,42 +113,47 @@ class PlannerAgent(OrchestratorAgent):
     def step(self, state: AgentState) -> AgentState:
         """Execute planning step with HITL for prerequisites and mode selection."""
         # If analysis_mode already provided, skip HITL prompts
-        if not state.get("analysis_mode"):
-            # a) Check required ground-truth inputs at the very first planning step
-            has_gt_df = state.get("ground_truth_dataframe_path") or state.get("ground_truth_dataframe")
-            has_gt_graph = state.get("ground_truth_causal_graph_path") or state.get("ground_truth_causal_graph")
-            
-            if not (has_gt_df and has_gt_graph):
-                payload = {
-                    "question": "Provide ground-truth inputs or skip",
-                    "required_fields": [
-                        {
-                            "key": "ground_truth_dataframe_path",
-                            "desc": "CSV/Parquet path or set allow_start_without_ground_truth=True"
-                        },
-                        {
-                            "key": "ground_truth_causal_graph_path",
-                            "desc": "Graph JSON path (e.g., DoWhy graph) or skip"
-                        }
-                    ],
-                    "examples": {
-                        "ground_truth_dataframe_path": "/path/to/data.csv",
-                        "ground_truth_causal_graph_path": "/path/to/graph.json"
-                    }
-                }
-                decision = interrupt(payload)
-                for k, v in (decision or {}).items():
-                    state[k] = v
+        if state.get("analysis_mode") is None:
+            state["plan_created"] = False
 
-            # b) Ask user to choose mode if not specified
-            if not state.get("analysis_mode"):
-                decision = interrupt({
-                    "question": "Select analysis mode",
-                    "options": ["full_pipeline", "data_exploration"],
-                    "edit_hint": "Set analysis_mode to 'full_pipeline' or 'data_exploration'"
-                })
-                if isinstance(decision, dict) and "analysis_mode" in decision:
-                    state["analysis_mode"] = decision["analysis_mode"]
+            state["analysis_mode"] = "full_pipeline"
+            # decision = interrupt({
+            #     "question": "Select analysis mode",
+            #     "options": ["full_pipeline", "data_exploration"],
+            #     "edit_hint": "Set analysis_mode to 'full_pipeline' or 'data_exploration'"
+            # })
+
+        else :
+            if state.get("allow_start_without_ground_truth") is None :
+                # a) Check required ground-truth inputs at the very first planning step
+                has_gt_df = state.get("ground_truth_dataframe_path") or state.get("ground_truth_dataframe")
+                has_gt_graph = state.get("ground_truth_causal_graph_path") or state.get("ground_truth_causal_graph")
+                
+                if not (has_gt_df and has_gt_graph):
+                    state["allow_start_without_ground_truth"] = True
+                
+                # Original interrupt-based approach (commented out)
+                # if not (has_gt_df and has_gt_graph):
+                #     payload = {
+                #         "question": "Provide ground-truth inputs or skip",
+                #         "required_fields": [
+                #             {
+                #                 "key": "ground_truth_dataframe_path",
+                #                 "desc": "CSV/Parquet path or set allow_start_without_ground_truth=True"
+                #             },
+                #             {
+                #                 "key": "ground_truth_causal_graph_path",
+                #                 "desc": "Graph JSON path (e.g., DoWhy graph) or skip"
+                #             }
+                #         ],
+                #         "examples": {
+                #             "ground_truth_dataframe_path": "/path/to/data.csv",
+                #             "ground_truth_causal_graph_path": "/path/to/graph.json"
+                #         }
+                #     }
+                #     state["check_gt"]=True
+                #     decision = interrupt(payload)
+                        
         
         # c) Build plan according to the chosen mode (no query analysis)
         plan = self.create_execution_plan(state.get("initial_query", ""), state)

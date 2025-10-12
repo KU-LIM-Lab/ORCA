@@ -252,76 +252,83 @@ class OrchestratorAgent(BaseAgent):
         return [
             # Data Exploration Phase
             {
-                "phase": PipelinePhase.DATA_EXPLORATION,
+                "phase": PipelinePhase.DATA_EXPLORATION.value,
                 "substep": "table_selection",
                 "agent": "data_explorer",
                 "action": "select_tables",
                 "description": "Select relevant tables for analysis",
                 "required_state_keys": ["schema_info", "table_metadata"],
                 "timeout": 120,
-                "hitl_required": True
+                "hitl_required": True,
+                "hitl_executed": False
             },
             {
-                "phase": PipelinePhase.DATA_EXPLORATION,
+                "phase": PipelinePhase.DATA_EXPLORATION.value,
                 "substep": "table_retrieval",
                 "agent": "data_explorer",
                 "action": "retrieve_data",
                 "description": "Retrieve data via text2sql",
                 "required_state_keys": ["selected_tables"],
                 "timeout": 180,
-                "hitl_required": True
+                "hitl_required": True,
+                "hitl_executed": False
             },
             {
-                "phase": PipelinePhase.DATA_EXPLORATION,
+                "phase": PipelinePhase.DATA_EXPLORATION.value,
                 "substep": "schema_analysis",
                 "agent": "data_explorer",
                 "action": "analyze_schema",
                 "description": "Analyze schema and relationships",
                 "required_state_keys": ["selected_tables"],
                 "timeout": 120,
-                "hitl_required": True
+                "hitl_required": True,
+                "hitl_executed": False
             },
             
             # Causal Discovery Phase
             {
-                "phase": PipelinePhase.CAUSAL_DISCOVERY,
+                "phase": PipelinePhase.CAUSAL_DISCOVERY.value,
                 "substep": "data_profiling",
                 "agent": "causal_discovery",
                 "action": "profile_data",
                 "description": "Profile data characteristics and generate qualitative summary",
                 "required_state_keys": ["df_preprocessed"],
                 "timeout": 300,
-                "hitl_required": True
+                "hitl_required": True,
+                "hitl_executed": False
             },
             {
-                "phase": PipelinePhase.CAUSAL_DISCOVERY,
+                "phase": PipelinePhase.CAUSAL_DISCOVERY.value,
                 "substep": "algorithm_tiering",
                 "agent": "causal_discovery",
                 "action": "tier_algorithms",
                 "description": "Tier algorithms based on data profile compatibility",
                 "required_state_keys": ["data_profiling_completed", "data_profile"],
                 "timeout": 60,
-                "hitl_required": True
+                "hitl_required": True,
+                "hitl_executed": False
             },
             {
-                "phase": PipelinePhase.CAUSAL_DISCOVERY,
+                "phase": PipelinePhase.CAUSAL_DISCOVERY.value,
                 "substep": "run_algorithms_portfolio",
                 "agent": "causal_discovery",
                 "action": "run_algorithm_portfolio",
                 "description": "Run algorithms from all tiers in parallel",
                 "required_state_keys": ["algorithm_tiering_completed", "algorithm_tiers"],
                 "timeout": 600,
-                "hitl_required": True
+                "hitl_required": True,
+                "hitl_executed": False
             },
             {
-                "phase": PipelinePhase.CAUSAL_DISCOVERY,
+                "phase": PipelinePhase.CAUSAL_DISCOVERY.value,
                 "substep": "candidate_pruning",
                 "agent": "causal_discovery",
                 "action": "prune_candidates",
                 "description": "Prune candidates using CI testing and structural consistency",
                 "required_state_keys": ["run_algorithms_portfolio_completed", "algorithm_results"],
                 "timeout": 180,
-                "hitl_required": True
+                "hitl_required": True,
+                "hitl_executed": False
             },
             {
                 "phase": PipelinePhase.CAUSAL_DISCOVERY,
@@ -331,32 +338,35 @@ class OrchestratorAgent(BaseAgent):
                 "description": "Evaluate candidates using composite scorecard",
                 "required_state_keys": ["candidate_pruning_completed", "pruned_candidates"],
                 "timeout": 120,
-                "hitl_required": True
+                "hitl_required": True,
+                "hitl_executed": False
             },
             {
-                "phase": PipelinePhase.CAUSAL_DISCOVERY,
+                "phase": PipelinePhase.CAUSAL_DISCOVERY.value,
                 "substep": "ensemble_synthesis",
                 "agent": "causal_discovery",
                 "action": "synthesize_ensemble",
                 "description": "Synthesize ensemble with PAG-like and DAG outputs",
                 "required_state_keys": ["scorecard_evaluation_completed", "top_candidates"],
                 "timeout": 180,
-                "hitl_required": True
+                "hitl_required": True,
+                "hitl_executed": False
             },
             
             # Causal Inference Phase
             {
-                "phase": PipelinePhase.CAUSAL_INFERENCE,
+                "phase": PipelinePhase.CAUSAL_INFERENCE.value,
                 "substep": "select_configuration",
                 "agent": "causal_inference",
                 "action": "select_config",
                 "description": "Select inference configuration",
                 "required_state_keys": ["selected_graph", "df_preprocessed"],
                 "timeout": 120,
-                "hitl_required": True
+                "hitl_required": True,
+                "hitl_executed": False
             },
             {
-                "phase": PipelinePhase.CAUSAL_INFERENCE,
+                "phase": PipelinePhase.CAUSAL_INFERENCE.value,
                 "substep": "effect_estimation",
                 "agent": "causal_inference",
                 "action": "estimate_effects",
@@ -366,26 +376,28 @@ class OrchestratorAgent(BaseAgent):
                 "hitl_required": False
             },
             {
-                "phase": PipelinePhase.CAUSAL_INFERENCE,
+                "phase": PipelinePhase.CAUSAL_INFERENCE.value,
                 "substep": "interpretation",
                 "agent": "causal_inference",
                 "action": "interpret_results",
                 "description": "Interpret and validate results",
                 "required_state_keys": ["causal_estimates"],
                 "timeout": 180,
-                "hitl_required": True
+                "hitl_required": True,
+                "hitl_executed": False
             },
             
             # Report Generation
             {
-                "phase": PipelinePhase.REPORT_GENERATION,
+                "phase": PipelinePhase.REPORT_GENERATION.value,
                 "substep": "generate_report",
                 "agent": "report_generator",
                 "action": "generate_report",
                 "description": "Generate final analysis report",
                 "required_state_keys": [],
                 "timeout": 240,
-                "hitl_required": True
+                "hitl_required": True,
+                "hitl_executed": False
             }
         ]
 

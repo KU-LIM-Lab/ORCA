@@ -6,6 +6,7 @@ This agent orchestrates data exploration tasks by leveraging
 subgraph agents for table recommendation, text2sql generation, and table exploration.
 """
 
+import json
 from typing import Dict, Any, Optional
 from core.base import SpecialistAgent, AgentType, AgentState
 from monitoring.metrics.collector import MetricsCollector
@@ -136,7 +137,7 @@ class DataExplorerAgent(SpecialistAgent):
                 raise ValueError("LLM is required for table recommendation")
             
             # Ensure required fields
-            if not state.get("input"):
+            if not state.get("initial_query"):
                 raise ValueError("Input query is required for table recommendation")
             if not state.get("db_id"):
                 raise ValueError("Database ID is required for table recommendation")
@@ -147,7 +148,7 @@ class DataExplorerAgent(SpecialistAgent):
             # Prepare state for table recommender
             recommender_state = {
                 "db_id": state.get("db_id"),
-                "input": state.get("input"),
+                "input": state.get("initial_query"),
                 "input_type": "text"
             }
             
@@ -178,8 +179,8 @@ class DataExplorerAgent(SpecialistAgent):
                 raise ValueError("LLM is required for text2sql generation")
             
             # Ensure required fields
-            if not state.get("input"):
-                raise ValueError("Input query is required for text2sql generation")
+            if not state.get("initial_query"):
+                raise ValueError("Input query are required for text2sql generation")
             if not state.get("db_id"):
                 raise ValueError("Database ID is required for text2sql generation")
             
@@ -190,9 +191,8 @@ class DataExplorerAgent(SpecialistAgent):
             selected_tables = self._normalize_table_list(state.get("selected_tables", []))
             text2sql_state = {
                 "db_id": state.get("db_id"),
-                "query": state.get("input"),
+                "query": state.get("initial_query"),
                 "messages": [],
-                # "evidence": f"Selected tables: {', '.join(state.get('selected_tables', []))}"
                 "evidence": f"Selected tables: {', '.join(selected_tables)}"
             }
             
@@ -311,11 +311,11 @@ class DataExplorerAgent(SpecialistAgent):
         print("[DATA_EXPLORER] Step: Table recommendation...")
         
         # 커스텀 도구 사용
-        result = self.use_tool("table_recommendation", state)
+        result = self.use_tool("table_selection", state)
         
         if result.get("success"):
             # 상태 업데이트
-            state["selected_tables"] = result.get("recommended_tables", [])
+            state["selected_tables"] = result.get("recommended_tables", "")
             state["objective_summary"] = result.get("objective_summary", "")
             state["erd_image_path"] = result.get("erd_image_path", "")
             state["table_recommendation_completed"] = True
@@ -329,7 +329,7 @@ class DataExplorerAgent(SpecialistAgent):
         print("[DATA_EXPLORER] Step: Text2SQL generation...")
         
         # 커스텀 도구 사용
-        result = self.use_tool("text2sql_generation", state)
+        result = self.use_tool("table_retrieval", state)
         
         if result.get("success"):
             # 상태 업데이트
@@ -440,8 +440,8 @@ class DataExplorerAgent(SpecialistAgent):
     def get_capabilities(self) -> list:
         """Return data exploration capabilities."""
         return [
-            "table_recommendation",
-            "text2sql_generation",
+            "table_selection",
+            "table_retrieval",
             "table_exploration",
             "data_preprocessing",
             "schema_analysis",

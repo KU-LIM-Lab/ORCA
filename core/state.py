@@ -37,6 +37,12 @@ class AgentState(TypedDict, total=False):
     completed_phases: List[PipelinePhase]
     completed_substeps: List[str]
     error_log: List[Dict[str, Any]]
+
+    # === Optional Input ===
+    ground_truth_dataframe_path: str
+    ground_truth_causal_graph_path: str
+    ground_truth_dataframe: Dict[str, Any]
+    ground_truth_causal_graph: Dict[str, Any]
     
     # === HITL State ===
     user_edits: Dict[str, Any]
@@ -45,6 +51,9 @@ class AgentState(TypedDict, total=False):
     # === User Interaction ===
     user_constraints: Dict[str, Any]  # User-provided constraints for causal discovery
     user_preferences: Dict[str, Any]  # User preferences for analysis
+    hitl_decision: str
+    hitl_executed: bool
+    
     
     # === Database Connection Phase Outputs ===
     db_id: str  # Database identifier
@@ -56,11 +65,36 @@ class AgentState(TypedDict, total=False):
     table_metadata: Dict[str, Any]  # generate_metadata() result
     table_relations: Dict[str, Any]  # update_table_relations() result
     metadata_creation_status: str  # "completed", "failed", "pending"
+
+    # === Planning & execution Phase Outputs ===
+    error: str
+    error_type: str
+    execution_plan: Dict[str, Any]
+
+    allow_start_without_ground_truth: bool
+    analysis_mode: str
+    plan_created: bool
+    total_steps: int
+    estimated_duration: float
+    current_state_executed: bool
+
+    recovery_strategy: str
+    planner_completed: bool
+    executor_completed: bool
+    error_handler_completed: bool
+    finalizer_completed: bool
+
+    current_execute_step: int
+
+
     
     # === Data Exploration Phase Outputs ===
     # A.1 Table Selection
     candidate_tables: List[str]
     selected_tables: List[str]
+    objective_summary: str
+    erd_image_path: str
+    table_recommendation_completed: bool
     
     # A.2 Table Retrieval (via text2sql)
     sql_query: str
@@ -158,7 +192,7 @@ class OrchestratorState(TypedDict, total=False):
     resource_usage: Dict[str, Any]
     error_recovery_actions: List[Dict[str, Any]]
 
-def create_initial_state(query: str, db_id: str = "daa", session_id: str = None) -> AgentState:
+def create_initial_state(query: str, db_id: str = "reef_db", session_id: str = None) -> AgentState:
     """Create initial state for a new analysis session"""
     if session_id is None:
         session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
