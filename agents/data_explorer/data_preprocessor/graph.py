@@ -29,7 +29,11 @@ def generate_preprocess_graph(llm=None):
     graph.set_entry_point("fetch_node")
 
     # Conditional routing chaining
-    graph.add_edge("fetch_node", "clean_nulls_node")
+    # If fetch_only flag is set, finish after fetch
+    graph.add_conditional_edges("fetch_node", lambda s: "END" if s.get("fetch_only") else "NEXT", {
+        "END": END,
+        "NEXT": "clean_nulls_node",
+    })
     graph.add_edge("clean_nulls_node", "type_cast_node")
     graph.add_edge("type_cast_node", "derive_features_node")
     graph.add_edge("derive_features_node", "impute_node")

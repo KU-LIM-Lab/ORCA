@@ -79,8 +79,7 @@ def show_execution_flow(result):
     checks = [
         ("data_exploration", result.get("data_exploration_status") == "completed" \
             or bool(result.get("df_preprocessed")) or bool(result.get("selected_tables"))),
-        ("schema_metadata", bool(result.get("schema_info")) or bool(result.get("table_metadata"))),
-        ("candidate_tables", bool(result.get("candidate_tables"))),
+        ("selected_tables", bool(result.get("selected_tables"))),
         ("causal_graph", bool(result.get("selected_graph"))),
         ("algorithm_scores", bool(result.get("algorithm_scores"))),
         ("causal_estimates", bool(result.get("causal_estimates"))),

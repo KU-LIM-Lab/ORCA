@@ -23,7 +23,7 @@ fi
 echo "📋 2단계: 서버 연결 테스트"
 echo "PostgreSQL과 Redis 서버에 연결을 테스트합니다..."
 
-python3 -c "
+${PYTHON:-python} -c "
 import sys
 sys.path.append('.')
 from utils.settings import POSTGRES_CONFIG, REDIS_CONFIG

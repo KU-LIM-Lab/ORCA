@@ -69,6 +69,7 @@ traces/
 tmp/
 temp/
 *.tmp
+*.png
 
 # Node.js (for seed data)
 node_modules/

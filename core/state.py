@@ -122,6 +122,9 @@ class AgentState(TypedDict, total=False):
     sql_query: str
     df_raw: Optional[Any]  # pandas DataFrame
     df_preprocessed: Optional[Any]  # pandas DataFrame
+    # Redis persistence for dataframes
+    df_redis_key: Optional[str]
+    df_shape: Optional[Any]
     variable_info: Dict[str, Any]
     text2sql_generation_completed: bool
     

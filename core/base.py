@@ -275,12 +275,12 @@ class OrchestratorAgent(BaseAgent):
             },
             {
                 "phase": PipelinePhase.DATA_EXPLORATION.value,
-                "substep": "schema_analysis",
+                "substep": "data_preprocessing",
                 "agent": "data_explorer",
-                "action": "analyze_schema",
-                "description": "Analyze schema and relationships",
-                "required_state_keys": ["selected_tables"],
-                "timeout": 120,
+                "action": "data_preprocessing",
+                "description": "Fetch data (via SQL) and preprocess into df_preprocessed",
+                "required_state_keys": ["sql_query"],
+                "timeout": 300,
                 "hitl_required": True,
                 "hitl_executed": False
             },

@@ -880,18 +880,18 @@ class CausalDiscoveryAgent(SpecialistAgent):
         df = state.get("df_preprocessed")
         if df is not None:
             return df
-        if state.get("df_preprocessed_key"):
+
+        redis_key = state.get("df_redis_key")
+        if redis_key:
             try:
-                from utils.redis_client import redis_client
-                import pandas as pd
-                import io
-                df_bytes = redis_client.get(state["df_preprocessed_key"])
-                if df_bytes:
-                    df = pd.read_parquet(io.BytesIO(df_bytes))
+                from utils.redis_df import load_df_parquet
+                df = load_df_parquet(redis_key)
+                if df is not None:
                     state["df_preprocessed"] = df
                     return df
             except Exception:
                 return None
+
         return None
 
     def _load_algorithm_results_from_state(self, state: AgentState) -> Dict[str, Any]:

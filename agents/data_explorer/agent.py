@@ -200,12 +200,16 @@ class DataExplorerAgent(SpecialistAgent):
             result = text2sql_agent.execute(text2sql_state)
             
             if result.success and result.data:
-                return {
+                # Try to propagate columns for proper DataFrame construction downstream
+                out = {
                     "final_sql": result.data.get("final_sql", ""),
                     "result": result.data.get("result", []),
                     "llm_review": result.data.get("llm_review", ""),
                     "success": True
                 }
+                if result.data.get("columns"):
+                    out["columns"] = result.data.get("columns")
+                return out
             else:
                 return {"error": result.error or "Text2SQL generation failed", "success": False}
             
@@ -272,8 +276,8 @@ class DataExplorerAgent(SpecialistAgent):
         try:
             # Ensure required fields
             df_raw = state.get("df_raw")
-            if df_raw is None:
-                raise ValueError("Raw data is required for preprocessing")
+            if df_raw is None and not state.get("sql_query"):
+                raise ValueError("Raw data or sql_query is required for preprocessing")
             
             # Initialize DataPreprocessorAgent
             preprocessor = DataPreprocessorAgent(name="data_preprocessor_internal")
@@ -283,6 +287,8 @@ class DataExplorerAgent(SpecialistAgent):
                 "db_id": state.get("db_id"),
                 "final_sql": state.get("sql_query", ""),
                 "df_raw": df_raw,
+                "persist_to_redis": state.get("persist_to_redis", True),
+                "fetch_only": state.get("fetch_only", True),
                 "steps": ["fetch", "clean_nulls", "type_cast", "derive_features", "impute", "encode", "scale", "split", "report"]
             }
             
@@ -290,14 +296,19 @@ class DataExplorerAgent(SpecialistAgent):
             result = preprocessor.execute(preprocessor_state)
             
             if result.success and result.data:
-                return {
-                    "df_preprocessed": result.data.get("df_preprocessed"),
-                    "preprocess_report": result.data.get("preprocess_report", ""),
+                response = {
+                    "preprocess_report": result.data.get("preprocess_report", {}),
                     "column_stats": result.data.get("column_stats", {}),
                     "feature_map": result.data.get("feature_map", {}),
                     "warnings": result.data.get("warnings", []),
+                    "df_redis_key": result.data.get("df_redis_key"),
+                    "df_shape": result.data.get("df_shape"),
                     "success": True
                 }
+                # Only include df_preprocessed if it exists and fetch_only is False
+                if not state.get("fetch_only", True) and result.data.get("df_preprocessed") is not None:
+                    response["df_preprocessed"] = result.data.get("df_preprocessed")
+                return response
             else:
                 return {"error": result.error or "Data preprocessing failed", "success": False}
             
@@ -335,6 +346,9 @@ class DataExplorerAgent(SpecialistAgent):
             # 상태 업데이트
             state["sql_query"] = result.get("final_sql", "")
             state["df_raw"] = result.get("result", [])
+            # Keep columns if provided for DataFrame coercion in fetch_node
+            if result.get("columns"):
+                state["columns"] = result.get("columns")
             state["llm_review"] = result.get("llm_review", "")
             state["text2sql_generation_completed"] = True
         else:
@@ -379,12 +393,18 @@ class DataExplorerAgent(SpecialistAgent):
         result = self.use_tool("data_preprocessing", state)
         
         if result.get("success"):
-            # 상태 업데이트
-            state["df_preprocessed"] = result.get("df_preprocessed")
+            # 상태 업데이트 - only set non-DataFrame fields to avoid serialization issues
+            if result.get("df_preprocessed") is not None:
+                state["df_preprocessed"] = result.get("df_preprocessed")
             state["preprocess_report"] = result.get("preprocess_report", "")
             state["column_stats"] = result.get("column_stats", {})
             state["feature_map"] = result.get("feature_map", {})
             state["warnings"] = result.get("warnings", [])
+            # New Redis-based fields
+            if result.get("df_redis_key"):
+                state["df_redis_key"] = result.get("df_redis_key")
+            if result.get("df_shape"):
+                state["df_shape"] = result.get("df_shape")
             state["data_preprocessing_completed"] = True
         else:
             state["error"] = result.get("error", "Data preprocessing failed")

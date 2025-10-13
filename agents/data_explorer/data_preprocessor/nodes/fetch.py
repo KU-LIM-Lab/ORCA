@@ -1,10 +1,30 @@
 from typing import Dict
 from utils.database import Database
+from utils.redis_client import redis_client
 import pandas as pd
+import io
 
 def fetch_node(state: Dict) -> Dict:
-    """Fetch df_raw by executing final_sql if df_raw is not provided."""
-    if state.get("df_raw") is None:
+    """Fetch/coerce to DataFrame; optionally persist to Redis; support fetch_only mode."""
+    fetch_only = bool(state.get("fetch_only"))
+    local_df = None
+    # If df_raw exists but is not a DataFrame, coerce using optional columns
+    if state.get("df_raw") is not None and not hasattr(state.get("df_raw"), "shape"):
+        try:
+            columns = state.get("columns")
+            local_df = pd.DataFrame(state.get("df_raw"), columns=columns if columns else None)
+            print(f"[FETCH] Coerced df_raw to DataFrame with shape: {local_df.shape}")
+            # Avoid storing DataFrame in state when fetch_only to prevent msgpack errors
+            if not fetch_only:
+                state["df_raw"] = local_df
+            else:
+                state["df_raw"] = None
+        except Exception as e:
+            print(f"[FETCH] ERROR converting df_raw to DataFrame: {e}")
+
+    if (state.get("df_raw") is None and local_df is None) or (
+        state.get("df_raw") is not None and not hasattr(state.get("df_raw"), "shape")
+    ):
         final_sql = state.get("final_sql")
         if not final_sql:
             state.setdefault("warnings", []).append("No df_raw or final_sql provided; fetch skipped.")
@@ -41,7 +61,13 @@ def fetch_node(state: Dict) -> Dict:
                 state["df_raw"] = None
                 return state
 
-            state["df_raw"] = df
+            local_df = df
+            state["columns"] = columns
+            state["df_shape"] = getattr(df, "shape", None)
+            if not fetch_only:
+                state["df_raw"] = df
+            else:
+                state["df_raw"] = None
             print(f"[FETCH] Successfully loaded dataframe with shape: {df.shape}")
 
         except Exception as e:
@@ -52,6 +78,25 @@ def fetch_node(state: Dict) -> Dict:
             state["df_raw"] = None
             return state
     
+    # Persist to Redis if requested
+    try:
+        df = local_df if local_df is not None else state.get("df_raw")
+        if state.get("persist_to_redis") and df is not None and hasattr(df, "to_parquet"):
+            sql = state.get("final_sql", "")
+            db_id = state.get("db_id", "default")
+            key = f"{db_id}:df:{abs(hash(sql))}"
+            buf = io.BytesIO()
+            df.to_parquet(buf, index=False)
+            redis_client.set(key, buf.getvalue())
+            state["df_redis_key"] = key
+            # If fetch_only, do not keep full df in state
+            if state.get("fetch_only"):
+                state["df_raw"] = None
+                state["df_preprocessed"] = None
+                print(f"[FETCH] Stored DataFrame in Redis and cleared in-memory copy. Key: {key}")
+    except Exception as e:
+        state.setdefault("warnings", []).append(f"Persist to Redis failed: {e}")
+
     return state
 
 

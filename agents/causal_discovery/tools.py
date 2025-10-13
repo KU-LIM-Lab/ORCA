@@ -869,30 +869,40 @@ class PruningTool:
             if not subset_results:
                 return {"instability_score": 1.0, "error": "All subsets failed"}
             
-            # Compute Structural Hamming Distance between graphs
-            shd_scores = []
+            # Compute normalized SHD: compare G|Vi with Gi for each subset
+            normalized_shd_scores = []
             
-            for i, result1 in enumerate(subset_results):
-                for j, result2 in enumerate(subset_results):
-                    if i >= j:
-                        continue
+            for subset_info in subset_results:
+                try:
+                    subset_vars = subset_info["subset"]
+                    subset_graph = subset_info["result"]
                     
-                    try:
-                        shd = PruningTool._compute_shd(result1["result"], result2["result"])
-                        shd_scores.append(shd)
-                    except Exception as e:
-                        logger.warning(f"SHD computation failed: {e}")
-                        continue
+                    # Restrict original graph to this subset
+                    original_restricted = PruningTool._restrict_graph_to_subset(graph, subset_vars)
+                    
+                    # Compute normalized SHD between G|Vi and Gi
+                    normalized_shd = PruningTool._compute_shd(
+                        original_restricted, 
+                        subset_graph, 
+                        normalize=True
+                    )
+                    
+                    normalized_shd_scores.append(normalized_shd)
+                    
+                except Exception as e:
+                    logger.warning(f"SHD computation failed for subset: {e}")
+                    continue
             
-            if not shd_scores:
+            if not normalized_shd_scores:
                 return {"instability_score": 0.0, "message": "No SHD scores computed"}
             
-            instability_score = np.mean(shd_scores)
+            # Average normalized SHD is the final instability score [0, 1]
+            instability_score = np.mean(normalized_shd_scores)
             
             return {
                 "instability_score": instability_score,
                 "n_subsets": len(subset_results),
-                "shd_scores": shd_scores,
+                "normalized_shd_scores": normalized_shd_scores,
                 "subset_results": subset_results
             }
             
@@ -901,38 +911,71 @@ class PruningTool:
             return {"instability_score": 1.0, "error": str(e)}
     
     @staticmethod
-    def _compute_shd(graph1: Dict[str, Any], graph2: Dict[str, Any]) -> float:
-        """Compute Structural Hamming Distance between two graphs"""
+    def _compute_shd(graph1: Dict[str, Any], graph2: Dict[str, Any], normalize: bool = True) -> float:
+        """Compute raw or normalized Structural Hamming Distance based on common variables."""
         try:
-            edges1 = set()
-            edges2 = set()
+            vars1 = set(graph1.get("graph", {}).get("variables", []))
+            vars2 = set(graph2.get("graph", {}).get("variables", []))
+            common_vars = vars1.intersection(vars2)
             
-            if "graph" in graph1 and "edges" in graph1["graph"]:
-                for edge in graph1["graph"]["edges"]:
-                    edges1.add((edge["from"], edge["to"]))
+            if not common_vars:
+                return 1.0 if normalize else 0.0
             
-            if "graph" in graph2 and "edges" in graph2["graph"]:
-                for edge in graph2["graph"]["edges"]:
-                    edges2.add((edge["from"], edge["to"]))
+            # Extract edges within common variables only
+            edges1 = {
+                (e["from"], e["to"]) for e in graph1.get("graph", {}).get("edges", [])
+                if e["from"] in common_vars and e["to"] in common_vars
+            }
+            edges2 = {
+                (e["from"], e["to"]) for e in graph2.get("graph", {}).get("edges", [])
+                if e["from"] in common_vars and e["to"] in common_vars
+            }
             
-            # SHD = |E1 - E2| + |E2 - E1|
-            shd = len(edges1 - edges2) + len(edges2 - edges1)
+            raw_shd = len(edges1.symmetric_difference(edges2))
             
-            # Normalize by maximum possible edges
-            all_vars = set()
-            if "graph" in graph1 and "variables" in graph1["graph"]:
-                all_vars.update(graph1["graph"]["variables"])
-            if "graph" in graph2 and "variables" in graph2["graph"]:
-                all_vars.update(graph2["graph"]["variables"])
+            if not normalize:
+                return float(raw_shd)
             
-            max_edges = len(all_vars) * (len(all_vars) - 1)
-            normalized_shd = shd / max_edges if max_edges > 0 else 0.0
+            n = len(common_vars)
+            if n < 2:
+                return 0.0
             
+            max_edges = n * (n - 1)  # For directed graphs
+            normalized_shd = raw_shd / max_edges if max_edges > 0 else 0.0
             return normalized_shd
             
+        except Exception:
+            return 1.0  # Return max instability on failure
+
+    @staticmethod
+    def _restrict_graph_to_subset(graph: Dict[str, Any], subset_vars: List[str]) -> Dict[str, Any]:
+        """Restrict graph to a subset of variables.
+        
+        Args:
+            graph: Original graph dictionary
+            subset_vars: List of variable names to keep
+        
+        Returns:
+            New graph containing only edges between subset_vars
+        """
+        try:
+            subset_set = set(subset_vars)
+            
+            restricted_edges = []
+            if "graph" in graph and "edges" in graph["graph"]:
+                for edge in graph["graph"]["edges"]:
+                    if edge["from"] in subset_set and edge["to"] in subset_set:
+                        restricted_edges.append(edge.copy())
+            
+            return {
+                "graph": {
+                    "variables": list(subset_vars),
+                    "edges": restricted_edges
+                }
+            }
         except Exception as e:
-            logger.warning(f"SHD computation failed: {e}")
-            return 1.0
+            logger.warning(f"Graph restriction failed: {e}")
+            return {"graph": {"variables": list(subset_vars), "edges": []}}
 
 class EnsembleTool:
     """Ensemble tools for consensus skeleton and PAG construction"""

@@ -1,5 +1,4 @@
 import os
-import psycopg2
 import sqlite3
 from .settings import POSTGRES_CONFIG, SQLITE_CONFIG
 
@@ -18,12 +17,22 @@ class Database:
         else:
             raise ValueError(f"Unsupported db_type: {self.db_type}")
 
+    def _get_psycopg2(self):
+        try:
+            import psycopg2  # Lazy import
+            return psycopg2
+        except ImportError as e:
+            raise ImportError(
+                "psycopg2 is required for PostgreSQL operations. Install psycopg2-binary."
+            ) from e
+
     def get_dbtype(self):
         return self.db_type
     
     def list_databases(self):
         if self.db_type == "postgresql":
             try:
+                psycopg2 = self._get_psycopg2()
                 conn = psycopg2.connect(
                     host=self.config["host"],
                     port=self.config["port"],
@@ -63,6 +72,7 @@ class Database:
             raise ValueError(f"Unsupported db_type: {self.db_type}")
 
     def get_pg_conn(self, db_id=None):
+        psycopg2 = self._get_psycopg2()
         return psycopg2.connect(
             host=self.config["host"],
             port=self.config["port"],
