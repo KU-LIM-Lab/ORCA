@@ -70,6 +70,9 @@ def run_full_pipeline(
     logger.info("Selected graph edges: %d", len(result_state.get("selected_graph", {}).get("edges", [])))
     if result_state.get("final_report"):
         logger.info("Report sections: %s", list(result_state["final_report"].get("sections", {}).keys()))
+        fr = result_state.get("final_report", {})
+        print("\n=== Final Report (Markdown) ===")
+        print(fr.get("markdown", ""))
 
     return {
         "success": not bool(result_state.get("error")),

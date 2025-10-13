@@ -186,7 +186,7 @@ class IndependenceTool:
     """Independence testing tools for ANM and other tests"""
     
     @staticmethod
-    def _fit_nonparametric_regression(x: np.ndarray, y: np.ndarray, n_estimators: int = 100) -> np.ndarray:
+    def _fit_nonparametric_regression(x: np.ndarray, y: np.ndarray, n_estimators: int = 20) -> np.ndarray:
         """Common ANM regression fitting logic"""
         from sklearn.ensemble import RandomForestRegressor
         rf = RandomForestRegressor(random_state=42, n_estimators=int(max(10, n_estimators)), 
@@ -208,7 +208,7 @@ class IndependenceTool:
             return score, True
     
     @staticmethod
-    def anm_test(x: pd.Series, y: pd.Series, n_estimators: int = 100) -> Dict[str, Any]:
+    def anm_test(x: pd.Series, y: pd.Series, n_estimators: int = 20) -> Dict[str, Any]:
         """Test ANM assumption via residual independence using causal-learn KCI/HSIC.
         Returns anm_score in [0,1] where higher is more consistent with ANM X->Y.
         """
@@ -270,7 +270,7 @@ class ANMTool:
     """Additive Noise Model algorithm implementation"""
     
     @staticmethod
-    def _test_direction(x: np.ndarray, y: np.ndarray, n_estimators: int = 50) -> Optional[float]:
+    def _test_direction(x: np.ndarray, y: np.ndarray, n_estimators: int = 20) -> Optional[float]:
         """Test ANM direction X->Y using common logic"""
         try:
             resid = IndependenceTool._fit_nonparametric_regression(x, y, n_estimators)

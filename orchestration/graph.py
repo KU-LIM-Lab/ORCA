@@ -14,8 +14,11 @@ class OrchestrationGraph:
     def __init__(self, 
                  planner_config: Optional[Dict[str, Any]] = None,
                  executor_config: Optional[Dict[str, Any]] = None,
-                 metrics_collector: Optional[MetricsCollector] = None):
+                 metrics_collector: Optional[MetricsCollector] = None,
+                 orchestration_config: Optional[Dict[str, Any]] = None):
         self.metrics_collector = metrics_collector
+        self.orchestration_config = orchestration_config or {}
+        self.interactive = bool(self.orchestration_config.get("interactive", False))
         
         # Initialize agents
         self.planner = PlannerAgent(
@@ -32,7 +35,7 @@ class OrchestrationGraph:
         
         # Build the graph
         self.graph = self._build_graph()
-        self.compiled_graph = None # Q. compiled_graph는 무엇인가?
+        self.compiled_graph = None 
 
     
     def _build_graph(self) -> StateGraph:
@@ -42,20 +45,18 @@ class OrchestrationGraph:
         # Add nodes
         graph.add_node("planner", self._planner_node)
         graph.add_node("executor", self._executor_node)
-        graph.add_node("error_handler", self._error_handler_node)
-        graph.add_node("finalizer", self._finalizer_node)
         
         # Set entry point
         graph.set_entry_point("planner")
         
         # Add edges
-        # graph.add_edge("planner", "executor")
         graph.add_conditional_edges(
             "executor",
             self._route_after_execution,
             {
-                "success": "finalizer",
-                "error": "error_handler",
+                # terminate graph on success or error
+                "success": END,
+                "error": END,
                 "continue": "executor"
             }
         )
@@ -69,10 +70,6 @@ class OrchestrationGraph:
             }
         )
 
-
-        
-        #graph.add_edge("error_handler", "planner")
-        graph.add_edge("finalizer", END)
         
         return graph
     
@@ -84,7 +81,6 @@ class OrchestrationGraph:
         return state
 
     
-    
     def _executor_node(self, state: AgentState) -> AgentState:
         """Executor node execution"""
         result = self.executor.step(state)
@@ -92,58 +88,14 @@ class OrchestrationGraph:
         # state["executor_completed"] = True
         return state
     
-    def _error_handler_node(self, state: AgentState) -> AgentState:
-        """Error handling node"""
-        print(state)
-        error_type = state.get("error_type", "unknown")
-        error_message = state.get("error", "Unknown error")
-        
-        # Log error
-        if self.metrics_collector:
-            self.metrics_collector.record_error(
-                "orchestration", error_type, 
-                {"error_message": error_message, "state": state}
-            )
-        
-        # Determine recovery strategy -> 수정
-        if error_type == "planner_error":
-            state["recovery_strategy"] = "retry_planner"
-        elif error_type == "executor_error":
-            state["recovery_strategy"] = "retry_executor"
-        else:
-            state["recovery_strategy"] = "replan"
-        
-        # Clear error state for retry
-        state.pop("error", None)
-        state.pop("error_type", None)
-        
-        return state
-    
-    def _finalizer_node(self, state: AgentState) -> AgentState:
-        """Finalization node"""
-        # Generate final report
-        final_report = self._generate_final_report(state)
-        state["final_report"] = final_report
-        state["execution_status"] = ExecutionStatus.COMPLETED.value
-        
-        # Record completion metrics
-        if self.metrics_collector:
-            total_time = state.get("total_execution_time", 0)
-            self.metrics_collector.record_execution_time(
-                "orchestration", total_time,
-                {"status": "completed", "steps": len(state.get("execution_plan", []))}
-            )
-        
-        return state
     
     def _route_after_execution(self, state: AgentState) -> str:
         """Route after executor execution"""
         if state.get("error"):
             return "error"
-        elif state.get("executor_completed") is None:
-            return "continue"
-        else:
+        if state.get("executor_completed"):
             return "success"
+        return "continue"
     
     def _generate_final_report(self, state: AgentState) -> Dict[str, Any]:
         """Generate final analysis report"""
@@ -171,22 +123,28 @@ class OrchestrationGraph:
         return self.compiled_graph
     
     def execute(self, query: str, context: Optional[Dict[str, Any]] = None, session_id: Optional[str] = None) -> AgentState:
-        """Execute the orchestration with a user query. Uses thread_id for resumable interrupts."""
+        """Execute the orchestration with a user query.
+        If interactive is False, run non-interactively and return final state via invoke.
+        If interactive is True, stream with HITL prompts and return the last known state.
+        Uses thread_id for resumable interrupts.
+        """
         if not self.compiled_graph:
             self.compile()
         
         # Create initial state
         initial_state = create_initial_state(query)
+        initial_state["interactive"] = self.interactive
         if context:
             initial_state.update(context)
         
         # Execute the graph
         config = {"configurable": {"thread_id": session_id or "default_session"}}
-        # result = self.compiled_graph.invoke(initial_state, config=config)
         
-        # return result
+        if not self.interactive:
+            result = self.compiled_graph.invoke(initial_state, config=config)
+            return result
 
-        print("\n--- Graph Execution Stream 시작 ---")
+        print("\n--- Graph Execution Stream Starts ---")
         final_state = None
         current_input = initial_state
         interrupt_count = 0
@@ -246,6 +204,7 @@ class OrchestrationGraph:
                     if isinstance(node_state, dict):
                         print(f"📊 Current state:")
                         print(f"   - planner_completed: {node_state.get(f'{step_name}_completed', 'N/A')}")
+                        final_state = node_state
             
             # Stream이 정상 완료되었는지 확인 (interrupt 없이 끝났는지)
             if not found_interrupt:
@@ -258,8 +217,7 @@ class OrchestrationGraph:
             current_input = None
             print(f"\n🔄 Resuming from checkpoint after interrupt #{interrupt_count}...")
             
-        
-
+    
         print("\n--- Graph Execution Stream 종료 ---\n")
         return final_state
     
@@ -274,7 +232,13 @@ class OrchestrationGraph:
 def create_orchestration_graph(
     planner_config: Optional[Dict[str, Any]] = None,
     executor_config: Optional[Dict[str, Any]] = None,
-    metrics_collector: Optional[MetricsCollector] = None
+    metrics_collector: Optional[MetricsCollector] = None,
+    orchestration_config: Optional[Dict[str, Any]] = None
 ) -> OrchestrationGraph:
     """Create and return an orchestration graph"""
-    return OrchestrationGraph(planner_config, executor_config, metrics_collector)
+    return OrchestrationGraph(
+        planner_config=planner_config,
+        executor_config=executor_config,
+        metrics_collector=metrics_collector,
+        orchestration_config=orchestration_config,
+    )

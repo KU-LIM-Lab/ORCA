@@ -1,5 +1,5 @@
 # core/state.py
-from typing import TypedDict, Optional, Any, Dict, List, Union
+from typing import TypedDict, Optional, Any, Dict, List, Annotated
 from datetime import datetime
 from enum import Enum
 
@@ -86,24 +86,54 @@ class AgentState(TypedDict, total=False):
 
     current_execute_step: int
 
-
-    
     # === Data Exploration Phase Outputs ===
     # A.1 Table Selection
     candidate_tables: List[str]
     selected_tables: List[str]
-    objective_summary: str
-    erd_image_path: str
+
     table_recommendation_completed: bool
+    
+    objective_summary: Annotated[str, None]
+    recommended_tables: Annotated[list, None]
+    recommended_method: Annotated[str, None]
+    erd_image_path: Annotated[str, None]
+    final_output: Annotated[str, None]
+    
+    # Some modules refer to schema-level analysis as 'schema_analysis'
+    schema_analysis: Dict[str, Any]
+    # For compatibility with modules using 'table_analysis' and 'related_tables'
+    table_analysis: Annotated[dict, None]
+    related_tables: Annotated[dict, None]
+
+    table_exploration_completed: bool
+    
+    # Aggregated related tables and analysis hints
+    all_related_tables: Dict[str, Any]
+    analysis_recommendations: Dict[str, Any]
+    
+    final_sql: Optional[str]
+    columns: Optional[List[str]]
+    result: Optional[List]
+    error: Optional[str]
+    llm_review: Optional[str]
+    output: Optional[dict]
     
     # A.2 Table Retrieval (via text2sql)
     sql_query: str
     df_raw: Optional[Any]  # pandas DataFrame
     df_preprocessed: Optional[Any]  # pandas DataFrame
     variable_info: Dict[str, Any]
+    text2sql_generation_completed: bool
     
     # Data Exploration Phase Status
     data_exploration_status: str  # "completed", "failed", "pending"
+    
+    # Data preprocessing artifacts
+    preprocess_report: str
+    column_stats: Dict[str, Any]
+    feature_map: Dict[str, Any]
+    warnings: List[str]
+    data_preprocessing_completed: bool
     
     # === Causal Discovery Phase Outputs ===
     # 1. Assumption-method compatibility matrix
@@ -114,12 +144,32 @@ class AgentState(TypedDict, total=False):
     algorithm_scores: Dict[str, float]  # Algorithm scores
     selected_algorithms: List[str]  # Selected algorithms
     
+    # Profiling & tiering
+    data_profile: Dict[str, Any]
+    data_profiling_completed: bool
+    algorithm_tiers: Dict[str, Any]
+    tiering_reasoning: str
+    algorithm_tiering_completed: bool
+    
     # 3. Algorithm execution
     algorithm_results: Dict[str, Any]  # Algorithm execution results
     candidate_graphs: List[Dict[str, Any]]  # Generated candidate graphs
+    algorithm_results_key: str
+    run_algorithms_portfolio_completed: bool
     
     # 4. Intermediate scores
     intermediate_scores: Dict[str, Dict[str, float]]  # Intermediate scores
+    
+    # Pruning & evaluation & ensemble
+    pruned_candidates: List[Dict[str, Any]]
+    pruning_log: List[Dict[str, Any]]
+    candidate_pruning_completed: bool
+    scorecard: Dict[str, Any]
+    top_candidates: List[Dict[str, Any]]
+    scorecard_evaluation_completed: bool
+    consensus_pag: Dict[str, Any]
+    synthesis_reasoning: str
+    ensemble_synthesis_completed: bool
     
     # 5. Final graph decision
     selected_graph: Dict[str, Any]  # Final selected causal graph
@@ -147,6 +197,16 @@ class AgentState(TypedDict, total=False):
     # Causal Inference Phase Status
     causal_inference_status: str  # "completed", "failed", "pending"
     
+    # === Causal Analysis (pipeline variant) ===
+    parsed_query: Dict[str, Any]
+    table_schema_str: str
+    strategy: Any
+    final_answer: str
+    parse_question_completed: bool
+    config_selection_completed: bool
+    dowhy_analysis_completed: bool
+    generate_answer_completed: bool
+    
     # === Final Outputs ===
     final_report: Dict[str, Any]
     recommendations: List[str]
@@ -156,6 +216,10 @@ class AgentState(TypedDict, total=False):
     timestamp: datetime
     agent_execution_log: List[Dict[str, Any]]
     performance_metrics: Dict[str, Any]
+    
+    # Orchestration execution artifacts
+    execution_log: List[Dict[str, Any]]
+    results: Dict[str, Any]
 
 class DataExplorerState(TypedDict, total=False):
     """State specific to Data Explorer Agent"""

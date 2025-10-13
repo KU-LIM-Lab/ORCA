@@ -40,7 +40,7 @@ class ExecutorAgent(OrchestratorAgent):
             return None
         
     def execute_plan(self, state: AgentState) -> AgentResult:
-        """Execute the plan. HITL is handled inside via interrupt gate."""
+        """Execute the plan end-to-end. HITL is handled inside via interrupt gate or auto-approved when non-interactive."""
         plan = state.get("execution_plan", [])
         if not plan:
             return AgentResult(
@@ -50,10 +50,11 @@ class ExecutorAgent(OrchestratorAgent):
             )
         
         # Initialize execution state
-        self.current_step = state.get("current_execute_step",0)
+        self.current_step = state.get("current_execute_step", 0)
         self.execution_log = []
         self.results = {}
         max_rerun = self.config.get("max_rerun_per_substep", 1) if self.config else 1
+        interactive = bool(state.get("interactive", False))
         
         llm = self.create_llm_from_config()
         if llm is None:
@@ -66,6 +67,7 @@ class ExecutorAgent(OrchestratorAgent):
         while True:
             idx = state.get("current_execute_step", 0)
             if idx >= len(plan):
+                # Completed all steps
                 state["executor_completed"] = True
                 break
             step = plan[idx]
@@ -78,9 +80,9 @@ class ExecutorAgent(OrchestratorAgent):
             #         metadata={"executor": self.name}
             #     )
 
-            # Execute substep
+            # Execute substep (first-time execution for this step)
             if not state.get("current_state_executed"):
-                state["hitl_executed"]=False
+                state["hitl_executed"] = False
                 result = self._execute_step(step, state, llm)
                 self.execution_log.append({
                     "phase": step["phase"],
@@ -89,26 +91,31 @@ class ExecutorAgent(OrchestratorAgent):
                     "success": result.success,
                     "duration": result.execution_time
                 })
-                
                 if not result.success:
                     return AgentResult(
                         success=False,
                         error=f"Step {step['substep']} failed: {result.error}",
                         metadata={"execution_log": self.execution_log}
                     )
-            
+
                 # Merge results
                 state.update(result.data or {})
                 self.results[step["substep"]] = result.data or {}
                 state["current_state_executed"] = True
 
-                return AgentResult(
-                    success=True
-                )
+                # If the step does not require HITL or we're in non-interactive mode, mark complete and advance
+                if not step.get("hitl_required", False) or not interactive:
+                    state.setdefault("completed_substeps", []).append(step["substep"])
+                    state["current_execute_step"] = idx + 1
+                    state["current_state_executed"] = False
+                    continue
+                # Otherwise, fall through to HITL gate logic below
 
             # If no HITL, mark complete and advance pointer
             if not step.get("hitl_required", False):
-                state.setdefault("completed_substeps", []).append(step["substep"])                
+                state.setdefault("completed_substeps", []).append(step["substep"])
+                state["current_execute_step"] = idx + 1
+                state["current_state_executed"] = False
                 continue
 
             # HITL gate
@@ -152,15 +159,13 @@ class ExecutorAgent(OrchestratorAgent):
                 state.setdefault("completed_substeps", []).append(step["substep"])
                 state["current_execute_step"] = idx + 1
                 state["current_state_executed"] = False
-                return AgentResult(
-                        success=True
-                    )
+                continue
             
             # First time HITL trigger for this step
             decision, edits, feedback = self._hitl_gate(step, state)
+            # After HITL decision, loop will re-evaluate this step and advance accordingly
             
-        state["current_execute_step"] = idx + 1
-        state["current_state_executed"] = False
+        # Finalize result after completing or erroring out earlier
         return AgentResult(
             success=True,
             data={
