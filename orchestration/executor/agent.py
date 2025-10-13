@@ -66,8 +66,7 @@ class ExecutorAgent(OrchestratorAgent):
         # Execute steps based on current_execute_step pointer
         while True:
             idx = state.get("current_execute_step", 0)
-            if idx >= len(plan):
-                # Completed all steps
+            if idx >= len(plan)-1:
                 state["executor_completed"] = True
                 break
             step = plan[idx]
