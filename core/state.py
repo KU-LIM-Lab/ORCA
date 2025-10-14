@@ -70,6 +70,8 @@ class AgentState(TypedDict, total=False):
     error: str
     error_type: str
     execution_plan: Dict[str, Any]
+    # Runtime orchestration controls
+    skip_steps: List[str]
 
     allow_start_without_ground_truth: bool
     analysis_mode: str
@@ -137,6 +139,14 @@ class AgentState(TypedDict, total=False):
     feature_map: Dict[str, Any]
     warnings: List[str]
     data_preprocessing_completed: bool
+    
+    # Data preprocessor configuration options
+    steps: Optional[List[str]]  # List of preprocessing steps to execute
+    impute_strategy: Optional[str]  # Strategy for imputing missing values
+    scaling: Optional[str]  # Scaling method (standard, minmax, none)
+    one_hot_threshold: Optional[int]  # Threshold for one-hot encoding
+    persist_to_redis: Optional[bool]  # Whether to persist dataframes to Redis
+    fetch_only: Optional[bool]  # Whether to only fetch data without full preprocessing
     
     # === Causal Discovery Phase Outputs ===
     # 1. Assumption-method compatibility matrix

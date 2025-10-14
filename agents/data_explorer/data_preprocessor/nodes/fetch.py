@@ -7,13 +7,15 @@ import io
 def fetch_node(state: Dict) -> Dict:
     """Fetch/coerce to DataFrame; optionally persist to Redis; support fetch_only mode."""
     fetch_only = bool(state.get("fetch_only"))
+    print(f"[FETCH] fetch_only flag: {fetch_only}")
+    print(f"[FETCH] persist_to_redis: {state.get('persist_to_redis', False)}")
     local_df = None
     # If df_raw exists but is not a DataFrame, coerce using optional columns
     if state.get("df_raw") is not None and not hasattr(state.get("df_raw"), "shape"):
         try:
             columns = state.get("columns")
             local_df = pd.DataFrame(state.get("df_raw"), columns=columns if columns else None)
-            print(f"[FETCH] Coerced df_raw to DataFrame with shape: {local_df.shape}")
+            # print(f"[FETCH] df_raw to DataFrame with shape: {local_df.shape}")
             # Avoid storing DataFrame in state when fetch_only to prevent msgpack errors
             if not fetch_only:
                 state["df_raw"] = local_df
@@ -34,8 +36,8 @@ def fetch_node(state: Dict) -> Dict:
             # DEBUG: expose final_sql and db_id to help identify which database and query are being executed
             final_sql = state.get("final_sql")
             db_id = state.get("db_id")
-            print(f"[FETCH] Running final_sql: {final_sql}")
-            print(f"[FETCH] Using db_id: {db_id}")
+            # print(f"[FETCH] Running final_sql: {final_sql}")
+            # print(f"[FETCH] Using db_id: {db_id}")
 
             db = Database()
             rows, columns = db.run_query(sql=final_sql, db_id=db_id)
@@ -81,6 +83,7 @@ def fetch_node(state: Dict) -> Dict:
     # Persist to Redis if requested
     try:
         df = local_df if local_df is not None else state.get("df_raw")
+        print(f"[FETCH] About to persist to Redis. df is None: {df is None}, has to_parquet: {hasattr(df, 'to_parquet') if df is not None else False}")
         if state.get("persist_to_redis") and df is not None and hasattr(df, "to_parquet"):
             sql = state.get("final_sql", "")
             db_id = state.get("db_id", "default")
@@ -89,12 +92,17 @@ def fetch_node(state: Dict) -> Dict:
             df.to_parquet(buf, index=False)
             redis_client.set(key, buf.getvalue())
             state["df_redis_key"] = key
-            # If fetch_only, do not keep full df in state
+            print(f"[FETCH] Stored DataFrame in Redis. Key: {key}")
+            # If fetch_only, do not keep full df in state but save Redis key
             if state.get("fetch_only"):
                 state["df_raw"] = None
-                state["df_preprocessed"] = None
-                print(f"[FETCH] Stored DataFrame in Redis and cleared in-memory copy. Key: {key}")
+                print(f"[FETCH] Cleared df_raw from state due to fetch_only=True")
+            else:
+                print(f"[FETCH] Keeping df_raw in state due to fetch_only=False")
+        else:
+            print(f"[FETCH] Not persisting to Redis. persist_to_redis: {state.get('persist_to_redis')}, df is None: {df is None}")
     except Exception as e:
+        print(f"[FETCH] Redis persistence failed: {e}")
         state.setdefault("warnings", []).append(f"Persist to Redis failed: {e}")
 
     return state

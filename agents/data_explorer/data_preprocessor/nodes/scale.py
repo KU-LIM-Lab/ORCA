@@ -21,7 +21,9 @@ def scale_node(state: Dict) -> Dict:
                 mx = df[c].max()
                 rng = (mx - mn) or 1.0
                 df[c] = (df[c] - mn) / rng
-        state["df_raw"] = df
+        # Only store df_raw if not in fetch_only mode to avoid msgpack serialization errors
+        if not state.get("fetch_only", False):
+            state["df_raw"] = df
         state["_done_scale"] = True
     except Exception as e:
         state.setdefault("warnings", []).append(f"scale failed: {e}")

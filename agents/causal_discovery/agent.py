@@ -16,6 +16,7 @@ from typing import Dict, Any, Optional, List, Tuple
 import numpy as np
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 
 from core.base import SpecialistAgent, AgentType
 from core.state import AgentState
@@ -23,6 +24,24 @@ from monitoring.metrics.collector import MetricsCollector
 
 
 logger = logging.getLogger(__name__)
+
+
+def _convert_numpy_types(obj):
+    """Convert numpy types to Python native types for msgpack serialization."""
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {key: _convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return type(obj)(_convert_numpy_types(item) for item in obj)
+    else:
+        return obj
 
 """Algorithm cheatsheet (assumptions → brief)  [근거/References in brackets]
 
@@ -140,6 +159,22 @@ class CausalDiscoveryAgent(SpecialistAgent):
         
         # Load configuration
         self._load_configuration(config)
+    
+    def on_event(self, event: str, **kwargs) -> None:
+        """Override to reduce verbose logging for causal discovery"""
+        if self.logger:
+            # Skip verbose tool events for cleaner output
+            if event in ["tool_used", "tool_success", "tool_registered"]:
+                return
+                
+            self.logger({
+                "agent": self.name, 
+                "type": self.agent_type.value,
+                "status": self.status.value,
+                "event": event, 
+                "timestamp": datetime.now().isoformat(),
+                **kwargs
+            })
     
     def _load_configuration(self, config: Optional[Dict[str, Any]]) -> None:
         """Load and validate configuration parameters"""
@@ -636,6 +671,9 @@ class CausalDiscoveryAgent(SpecialistAgent):
                         logger.error(f"Algorithm {alg_name} failed: {str(e)}")
                         algorithm_results[alg_name] = {"error": str(e)}
             
+            # Convert numpy types to Python native types for msgpack serialization
+            algorithm_results = _convert_numpy_types(algorithm_results)
+            
             # Store results in Redis if large
             if len(algorithm_results) > 5:  # threshold
                 try:
@@ -716,6 +754,10 @@ class CausalDiscoveryAgent(SpecialistAgent):
                     "consistency_result": consistency_result
                 })
             
+            # Convert numpy types to Python native types for msgpack serialization
+            pruned_candidates = _convert_numpy_types(pruned_candidates)
+            pruning_log = _convert_numpy_types(pruning_log)
+            
             # Update state
             state["pruned_candidates"] = pruned_candidates
             state["pruning_log"] = pruning_log
@@ -735,7 +777,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
         
         try:
             pruned_candidates = state.get("pruned_candidates", [])
-            df = state.get("df_preprocessed")
+            df = self._load_dataframe_from_state(state)
             
             if not pruned_candidates:
                 raise ValueError("No pruned candidates available")
@@ -819,6 +861,10 @@ class CausalDiscoveryAgent(SpecialistAgent):
             scorecard.sort(key=lambda x: x["composite_score"], reverse=True)
             top_candidates = scorecard[:3]  # Top 3 graphs
             
+            # Convert numpy types to Python native types for msgpack serialization
+            scorecard = _convert_numpy_types(scorecard)
+            top_candidates = _convert_numpy_types(top_candidates)
+            
             # Update state
             state["scorecard"] = scorecard
             state["top_candidates"] = top_candidates
@@ -877,19 +923,21 @@ class CausalDiscoveryAgent(SpecialistAgent):
         return "fisherz"
 
     def _load_dataframe_from_state(self, state: AgentState) -> Optional[pd.DataFrame]:
+        # First, try to get DataFrame directly from df_preprocessed
         df = state.get("df_preprocessed")
-        if df is not None:
+        if isinstance(df, pd.DataFrame):
             return df
-
+        
+        # If no DataFrame, load from df_redis_key
         redis_key = state.get("df_redis_key")
         if redis_key:
             try:
                 from utils.redis_df import load_df_parquet
                 df = load_df_parquet(redis_key)
                 if df is not None:
-                    state["df_preprocessed"] = df
                     return df
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Failed to load DataFrame from Redis key {redis_key}: {e}")
                 return None
 
         return None
@@ -969,6 +1017,11 @@ class CausalDiscoveryAgent(SpecialistAgent):
             
             # Generate synthesis reasoning
             reasoning = self._generate_synthesis_reasoning(top_candidates, pag_result, dag_result, data_profile)
+            
+            # Convert numpy types to Python native types for msgpack serialization
+            pag_result = _convert_numpy_types(pag_result)
+            dag_result = _convert_numpy_types(dag_result)
+            reasoning = _convert_numpy_types(reasoning)
             
             # Update state
             state["consensus_pag"] = pag_result

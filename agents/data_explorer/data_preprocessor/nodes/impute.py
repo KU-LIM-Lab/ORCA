@@ -12,7 +12,9 @@ def impute_node(state: Dict) -> Dict:
                 df[col] = df[col].fillna(df[col].median())
             else:
                 df[col] = df[col].fillna("__MISSING__")
-        state["df_raw"] = df
+        # Only store df_raw if not in fetch_only mode to avoid msgpack serialization errors
+        if not state.get("fetch_only", False):
+            state["df_raw"] = df
         state["_done_impute"] = True
     except Exception as e:
         state.setdefault("warnings", []).append(f"impute failed: {e}")

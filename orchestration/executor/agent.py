@@ -63,6 +63,27 @@ class ExecutorAgent(OrchestratorAgent):
                     error=f"Failed to create LLM from config"
                 )
 
+        def _convert_numpy_types(obj):
+            try:
+                import numpy as _np
+            except Exception:
+                _np = None
+            if _np is not None:
+                if isinstance(obj, _np.bool_):
+                    return bool(obj)
+                if isinstance(obj, _np.integer):
+                    return int(obj)
+                if isinstance(obj, _np.floating):
+                    return float(obj)
+                if isinstance(obj, _np.ndarray):
+                    return obj.tolist()
+            if isinstance(obj, dict):
+                return {k: _convert_numpy_types(v) for k, v in obj.items()}
+            if isinstance(obj, (list, tuple)):
+                t = type(obj)
+                return t(_convert_numpy_types(v) for v in obj)
+            return obj
+
         # Execute steps based on current_execute_step pointer
         while True:
             idx = state.get("current_execute_step", 0)
@@ -71,13 +92,23 @@ class ExecutorAgent(OrchestratorAgent):
                 break
             step = plan[idx]
 
-            # Check dependencies
-            # if not self._check_dependencies(step, state):
-            #     return AgentResult(
-            #         success=False,
-            #         error=f"Dependencies not met for {step['substep']}",
-            #         metadata={"executor": self.name}
-            #     )
+            # runtime skip flags for substeps
+            skip_list = state.get("skip_steps", []) or []
+            if step.get("substep") in skip_list:
+                # Mark as completed and advance pointer without executing
+                state.setdefault("completed_substeps", []).append(step["substep"])
+                state["current_execute_step"] = idx + 1
+                state["current_state_executed"] = False
+                # Best-effort phase status updates
+                phase = step.get("phase")
+                if isinstance(phase, str):
+                    if phase == "data_exploration":
+                        state["data_exploration_status"] = state.get("data_exploration_status", "skipped")
+                    elif phase == "causal_discovery":
+                        state["causal_discovery_status"] = state.get("causal_discovery_status", "skipped")
+                    elif phase == "causal_inference":
+                        state["causal_inference_status"] = state.get("causal_inference_status", "skipped")
+                continue
 
             # Execute substep (first-time execution for this step)
             if not state.get("current_state_executed"):
@@ -97,9 +128,10 @@ class ExecutorAgent(OrchestratorAgent):
                         metadata={"execution_log": self.execution_log}
                     )
 
-                # Merge results
-                state.update(result.data or {})
-                self.results[step["substep"]] = result.data or {}
+                # Merge results (convert numpy types to Python natives to avoid msgpack errors)
+                safe_data = _convert_numpy_types(result.data or {})
+                state.update(safe_data)
+                self.results[step["substep"]] = safe_data
                 state["current_state_executed"] = True
 
                 # If the step does not require HITL or we're in non-interactive mode, mark complete and advance

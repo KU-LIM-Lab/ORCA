@@ -83,6 +83,10 @@ class BaseAgent(ABC):
     def on_event(self, event: str, **kwargs) -> None:
         """before/after/error/retry hooks. Default is logger call"""
         if self.logger:
+            # Skip verbose tool events for cleaner output
+            # if event in ["tool_used", "tool_success"]:
+                # return
+                
             self.logger({
                 "agent": self.name, 
                 "type": self.agent_type.value,

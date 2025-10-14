@@ -126,11 +126,34 @@ class PlannerAgent(OrchestratorAgent):
         else :
             if state.get("allow_start_without_ground_truth") is None :
                 # a) Check required ground-truth inputs at the very first planning step
-                has_gt_df = state.get("ground_truth_dataframe_path") or state.get("ground_truth_dataframe")
-                has_gt_graph = state.get("ground_truth_causal_graph_path") or state.get("ground_truth_causal_graph")
+                has_gt_df = state.get("ground_truth_dataframe_path") or state.get("ground_truth_dataframe") or state.get("gt_df") or state.get("df_preprocessed")
+                has_gt_graph = state.get("ground_truth_causal_graph_path") or state.get("ground_truth_causal_graph") or state.get("gt_graph") or state.get("selected_graph")
                 
                 if not (has_gt_df and has_gt_graph):
                     state["allow_start_without_ground_truth"] = True
+
+                # If GT df provided, mark exploration as skippable (non-interruptive)
+                if has_gt_df:
+                    state["data_exploration_status"] = state.get("data_exploration_status", "skipped")
+                    for s in ["table_selection", "table_retrieval", "data_preprocessing"]:
+                        state.setdefault("skip_steps", [])
+                        if s not in state["skip_steps"]:
+                            state["skip_steps"].append(s)
+                            
+                # If GT graph provided, mark discovery as skippable
+                if has_gt_graph:
+                    state["causal_discovery_status"] = state.get("causal_discovery_status", "skipped")
+                    for s in [
+                        "data_profiling",
+                        "algorithm_tiering",
+                        "run_algorithms_portfolio",
+                        "candidate_pruning",
+                        "scorecard_evaluation",
+                        "ensemble_synthesis",
+                    ]:
+                        state.setdefault("skip_steps", [])
+                        if s not in state["skip_steps"]:
+                            state["skip_steps"].append(s)
                 
                 # Original interrupt-based approach (commented out)
                 # if not (has_gt_df and has_gt_graph):

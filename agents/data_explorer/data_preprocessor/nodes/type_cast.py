@@ -48,7 +48,9 @@ def type_cast_node(state: Dict) -> Dict:
                 else:
                     print(f"[TYPE_CAST] Skipping column '{col}' - no date patterns detected")
         
-        state["df_raw"] = df
+        # Only store df_raw if not in fetch_only mode to avoid msgpack serialization errors
+        if not state.get("fetch_only", False):
+            state["df_raw"] = df
         state["_done_type_cast"] = True
     except Exception as e:
         state.setdefault("warnings", []).append(f"type_cast failed: {e}")

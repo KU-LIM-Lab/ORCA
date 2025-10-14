@@ -136,6 +136,59 @@ class OrchestrationGraph:
         initial_state["interactive"] = self.interactive
         if context:
             initial_state.update(context)
+            # Runtime ground-truth inputs and skip flags
+            skip_steps = list(context.get("skip", []) or [])
+            # If gt_df provided, persist to Redis and avoid keeping DF in state
+            if context.get("gt_df") is not None:
+                try:
+                    from utils.redis_df import save_df_parquet
+                    import numpy as _np  # avoid polluting global namespace
+                    df = context.get("gt_df")
+                    # Create a session-specific key
+                    sid = session_id or "default_session"
+                    key = f"{initial_state.get('db_id','default')}:df:{sid}"
+                    save_df_parquet(key, df)
+                    initial_state["df_redis_key"] = key
+                    try:
+                        initial_state["df_shape"] = tuple(df.shape) if hasattr(df, "shape") else None
+                        initial_state["columns"] = list(df.columns) if hasattr(df, "columns") else None
+                    except Exception:
+                        pass
+                except Exception:
+                    # If Redis unavailable, fallback to placing DF directly (may serialize error)
+                    initial_state["df_preprocessed"] = context.get("gt_df")
+                # Ensure raw gt_df object is not kept in state to avoid msgpack errors
+                if "gt_df" in initial_state:
+                    try:
+                        del initial_state["gt_df"]
+                    except Exception:
+                        initial_state["gt_df"] = None
+                initial_state["data_exploration_status"] = "skipped"
+                # Mark common exploration substeps as skippable
+                for s in ["table_selection", "table_retrieval", "data_preprocessing"]:
+                    if s not in skip_steps:
+                        skip_steps.append(s)
+            # If gt_graph provided, inject selected graph and allow skipping discovery
+            if context.get("gt_graph") is not None:
+                initial_state["selected_graph"] = context.get("gt_graph")
+                initial_state["causal_discovery_status"] = "skipped"
+                for s in [
+                    "data_profiling",
+                    "algorithm_tiering",
+                    "run_algorithms_portfolio",
+                    "candidate_pruning",
+                    "scorecard_evaluation",
+                    "ensemble_synthesis",
+                ]:
+                    if s not in skip_steps:
+                        skip_steps.append(s)
+            # Pass treatment/outcome if provided
+            if context.get("treatment"):
+                initial_state["treatment_variable"] = context.get("treatment")
+            if context.get("outcome"):
+                initial_state["outcome_variable"] = context.get("outcome")
+            if skip_steps:
+                initial_state["skip_steps"] = skip_steps
         
         # Execute the graph
         config = {"configurable": {"thread_id": session_id or "default_session"}}
@@ -190,7 +243,7 @@ class OrchestrationGraph:
                     self.compiled_graph.update_state(config, user_data)
 
                     updated_state = self.compiled_graph.update_state(config, user_data)
-                    print(updated_state)
+                    # print(updated_state) # disable when not needed
                     
                     found_interrupt = True
                     # stream이 자연스럽게 종료되므로 break 불필요

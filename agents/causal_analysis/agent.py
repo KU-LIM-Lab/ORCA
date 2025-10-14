@@ -132,8 +132,8 @@ class CausalAnalysisAgent(SpecialistAgent):
             if df_preprocessed is None:
                 raise ValueError("Preprocessed data is required for config selection")
             
-            # Use df_preprocessed as df_raw for config selection
-            state["df_raw"] = state["df_preprocessed"]
+            # Avoid copying DataFrame into state to prevent msgpack errors
+            # Downstream nodes should load from df_preprocessed/df_redis_key as needed
             
             # Build and invoke config_selection node
             config_selection_node = build_config_selection_node(self.llm)

@@ -57,7 +57,9 @@ def get_schema_summary(db_id, table_names: List[str]) -> tuple[str, str, List[Di
 
     for table in table_names:
         meta_raw = redis_client.get(f"{db_id}:metadata:{table}")
-        meta = json.loads(meta_raw)
+        if meta_raw is None:
+            continue
+        meta = json.loads(meta_raw.decode('utf-8'))
         schema = extract_metadata(table, meta)
         schema_tables.append(schema)
 

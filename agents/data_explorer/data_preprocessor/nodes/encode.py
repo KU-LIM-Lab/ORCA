@@ -12,7 +12,9 @@ def encode_node(state: Dict) -> Dict:
         low_card = [c for c in cat_cols if df[c].nunique(dropna=True) <= (state.get("one_hot_threshold") or 20)]
         if low_card:
             df = pd.get_dummies(df, columns=low_card, dummy_na=False)
-        state["df_raw"] = df
+        # Only store df_raw if not in fetch_only mode to avoid msgpack serialization errors
+        if not state.get("fetch_only", False):
+            state["df_raw"] = df
         state["_done_encode"] = True
     except Exception as e:
         state.setdefault("warnings", []).append(f"encode failed: {e}")

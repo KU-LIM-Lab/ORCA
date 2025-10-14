@@ -12,6 +12,8 @@ class PreprocessState(TypedDict):
     impute_strategy: Annotated[Optional[str], None]
     scaling: Annotated[Optional[str], None]
     one_hot_threshold: Annotated[Optional[int], None]
+    fetch_only: Annotated[Optional[bool], None]
+    persist_to_redis: Annotated[Optional[bool], None]
 
     # Outputs
     df_preprocessed: Annotated[Optional[object], None]
@@ -19,5 +21,8 @@ class PreprocessState(TypedDict):
     column_stats: Annotated[Optional[Dict[str, Any]], None]
     feature_map: Annotated[Optional[Dict[str, Any]], None]
     warnings: Annotated[Optional[List[str]], None]
+    df_redis_key: Annotated[Optional[str], None]
+    df_shape: Annotated[Optional[tuple], None]
+    columns: Annotated[Optional[List[str]], None]
 
 

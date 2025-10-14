@@ -180,7 +180,7 @@ class DataExplorerAgent(SpecialistAgent):
             
             # Ensure required fields
             if not state.get("initial_query"):
-                raise ValueError("Input query are required for text2sql generation")
+                raise ValueError("Input query is required for text2sql generation")
             if not state.get("db_id"):
                 raise ValueError("Database ID is required for text2sql generation")
             
@@ -286,9 +286,9 @@ class DataExplorerAgent(SpecialistAgent):
             preprocessor_state = {
                 "db_id": state.get("db_id"),
                 "final_sql": state.get("sql_query", ""),
-                "df_raw": df_raw,
+                "df_raw": None,  # Set to None when fetch_only=True to avoid serialization issues
                 "persist_to_redis": state.get("persist_to_redis", True),
-                "fetch_only": state.get("fetch_only", True),
+                "fetch_only": True,  # Use fetch_only to store in Redis and avoid serialization issues
                 "steps": ["fetch", "clean_nulls", "type_cast", "derive_features", "impute", "encode", "scale", "split", "report"]
             }
             
@@ -305,8 +305,8 @@ class DataExplorerAgent(SpecialistAgent):
                     "df_shape": result.data.get("df_shape"),
                     "success": True
                 }
-                # Only include df_preprocessed if it exists and fetch_only is False
-                if not state.get("fetch_only", True) and result.data.get("df_preprocessed") is not None:
+                # Include df_preprocessed only if it's a DataFrame (not fetch_only mode)
+                if result.data.get("df_preprocessed") is not None and not isinstance(result.data.get("df_preprocessed"), str):
                     response["df_preprocessed"] = result.data.get("df_preprocessed")
                 return response
             else:
@@ -326,7 +326,7 @@ class DataExplorerAgent(SpecialistAgent):
         
         if result.get("success"):
             # 상태 업데이트
-            state["selected_tables"] = result.get("recommended_tables", "")
+            state["selected_tables"] = result.get("recommended_tables", [])
             state["objective_summary"] = result.get("objective_summary", "")
             state["erd_image_path"] = result.get("erd_image_path", "")
             state["table_recommendation_completed"] = True

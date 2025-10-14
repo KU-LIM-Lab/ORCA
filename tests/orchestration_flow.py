@@ -24,7 +24,7 @@ def main():
     # 3. Example 1: Full pipeline (default behavior)
     print("=== Example: Full Pipeline ===")
     # execute할 때 config에서 db_id 받아와서 쓸 수 있도록 하기.. or main에서 미리 지정해주기 ..
-    result1 = graph.execute("What is the causal effect of signup_days_ago on is_active?")
+    result1 = graph.execute("What is the causal effect of gender on used_coupon?")
     print(f"Status: {result1.get('execution_status')}")
     print(f"Steps completed: {len(result1.get('execution_log', []))}")
     
