@@ -15,7 +15,6 @@ from agents.data_explorer.text2sql_generator.agent import Text2SQLGeneratorAgent
 from agents.data_explorer.table_explorer.agent import TableExplorerAgent
 from agents.data_explorer.data_preprocessor.agent import DataPreprocessorAgent
 
-
 class DataExplorerAgent(SpecialistAgent):
     """Specialist agent for data exploration and analysis."""
     
