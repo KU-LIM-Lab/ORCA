@@ -323,38 +323,38 @@ class ExecutorAgent(OrchestratorAgent):
                 metadata={"substep": substep, "agent": agent_name}
             )
 
-            # Execute the agent with timeout
-            start_time = time.time()
+            # # Execute the agent with timeout
+            # start_time = time.time()
             
-            if asyncio.iscoroutinefunction(agent.execute_async):
-                result = asyncio.run(self._execute_with_timeout(
-                    agent.execute_async(state), timeout
-                ))
-            else:
-                result = self._execute_with_timeout_sync(
-                    lambda: agent.execute(state), timeout
-                )
+            # if asyncio.iscoroutinefunction(agent.execute_async):
+            #     result = asyncio.run(self._execute_with_timeout(
+            #         agent.execute_async(state), timeout
+            #     ))
+            # else:
+            #     result = self._execute_with_timeout_sync(
+            #         lambda: agent.execute(state), timeout
+            #     )
             
-            execution_time = time.time() - start_time
+            # execution_time = time.time() - start_time
             
-            # Record metrics
-            if self.metrics_collector:
-                self.metrics_collector.record_execution_time(
-                    f"{self.name}.{substep}", execution_time,
-                    {"agent": agent_name, "action": action}
-                )
+            # # Record metrics
+            # if self.metrics_collector:
+            #     self.metrics_collector.record_execution_time(
+            #         f"{self.name}.{substep}", execution_time,
+            #         {"agent": agent_name, "action": action}
+            #     )
             
-            return AgentResult(
-                success=result.success,
-                data=result.data,
-                error=result.error,
-                execution_time=execution_time,
-                metadata={
-                    "substep": substep,
-                    "agent": agent_name,
-                    "action": action
-                }
-            )
+            # return AgentResult(
+            #     success=result.success,
+            #     data=result.data,
+            #     error=result.error,
+            #     execution_time=execution_time,
+            #     metadata={
+            #         "substep": substep,
+            #         "agent": agent_name,
+            #         "action": action
+            #     }
+            # )
             
         except asyncio.TimeoutError:
             return AgentResult(

@@ -51,9 +51,6 @@ LiNGAM  — Required: linear relations + non‑Gaussian noise.
 ANM     — Required: additive noise model + noise ⟂ cause (residual independence).
           Nonlinear, identifies direction by testing residual–input independence.  
           [Hoyer et al., NIPS 2009]
-PNL     — Required: post‑nonlinear transform around additive noise.
-          Extends ANM with outer nonlinearity; direction identifiable under mild conds.  
-          [Zhang & Hyvärinen, UAI 2009]
 GES     — Required: (typically) linear‑Gaussian likelihood; equal‑variance often assumed.
           Score‑based DAG search optimizing BIC/MDL over equivalence classes.  
           [Chickering, JMLR 2002]
@@ -71,7 +68,6 @@ FCI     — Required: CI tests valid; allows latent confounders (outputs PAG).
 ALGORITHM_LIST = [
     "LiNGAM",     # linear + non-Gaussian (fully identifiable)
     "ANM",        # additive noise (fully identifiable)
-    "PNL",        # post-nonlinear (fully identifiable)
     "GES",        # score-based (BIC/generalized)
     "PC",         # constraint-based
     "CAM",        # additive models
@@ -222,6 +218,8 @@ class CausalDiscoveryAgent(SpecialistAgent):
     
     def _register_specialist_tools(self) -> None:
         """Register causal discovery specific tools"""
+        # skip tools that are already present in the global registry
+        from utils.tools import tool_registry
         tools = [
             # Statistical & Independence Testing
             ("stats_tool", self._stats_tool, "Statistical testing: GLM/GAM, LRT/AIC/BIC, normality tests"),
@@ -246,6 +244,9 @@ class CausalDiscoveryAgent(SpecialistAgent):
         ]
         
         for tool_name, tool_method, description in tools:
+            # If tool already exists, skip registration (idempotent)
+            if tool_registry.get(tool_name):
+                continue
             self.register_tool(tool_name, tool_method, description)
     
     def step(self, state: AgentState) -> AgentState:
@@ -631,16 +632,26 @@ class CausalDiscoveryAgent(SpecialistAgent):
             df = self._load_dataframe_from_state(state)
             data_profile = state.get("data_profile", {})
             
-            if not algorithm_tiers:
-                raise ValueError("No algorithm tiers available")
+            # Allow explicit user override of algorithms via executor edits
+            user_selected = state.get("selected_algorithms") or []
+            if not isinstance(user_selected, list):
+                user_selected = []
+            user_selected = [str(a) for a in user_selected]
             if df is None:
                 raise ValueError("No preprocessed data available")
             
             # Collect all algorithms from all tiers
             all_algorithms = []
-            all_algorithms.extend(algorithm_tiers.get("tier1", []))
-            all_algorithms.extend(algorithm_tiers.get("tier2", []))
-            all_algorithms.extend(algorithm_tiers.get("tier3", []))
+            if user_selected:
+                # Filter to known algorithms only
+                all_algorithms = [a for a in user_selected if a in ALGORITHM_LIST]
+                logger.info(f"Using user-selected algorithms override: {all_algorithms}")
+            else:
+                if not algorithm_tiers:
+                    raise ValueError("No algorithm tiers available")
+                all_algorithms.extend(algorithm_tiers.get("tier1", []))
+                all_algorithms.extend(algorithm_tiers.get("tier2", []))
+                all_algorithms.extend(algorithm_tiers.get("tier3", []))
             
             # Remove duplicates
             all_algorithms = list(set(all_algorithms))
@@ -689,6 +700,8 @@ class CausalDiscoveryAgent(SpecialistAgent):
             
             # Update state
             state["algorithm_results"] = algorithm_results
+            # Echo which algorithms were executed for verification in tests
+            state["executed_algorithms"] = list(algorithm_results.keys())
             state["run_algorithms_portfolio_completed"] = True
             
             logger.info("Algorithm portfolio execution completed")

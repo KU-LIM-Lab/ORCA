@@ -387,7 +387,7 @@ def main():
     
     # Save detailed results to file
     import json
-    output_file = f"causal_discovery_batch_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    output_file = f"results/run_causal_discovery/causal_discovery_batch_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with open(output_file, 'w') as f:
         json.dump(analysis, f, indent=2, default=str)
     print(f"\nDetailed results saved to: {output_file}")
@@ -442,7 +442,7 @@ def run_custom_batch(n_experiments: int = 100,
     # Save results if requested
     if save_results:
         import json
-        output_file = f"causal_discovery_batch_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        output_file = f"results/run_causal_discovery/causal_discovery_batch_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         with open(output_file, 'w') as f:
             json.dump(analysis, f, indent=2, default=str)
         print(f"\nDetailed results saved to: {output_file}")

@@ -100,3 +100,5 @@ dmypy.json
 
 # files
 outputs/
+data/raw/
+tests/results/
