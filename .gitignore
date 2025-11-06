@@ -101,4 +101,6 @@ dmypy.json
 # files
 outputs/
 data/raw/
+data/synthetic_cd/
+data/synthetic_ci/
 tests/results/
