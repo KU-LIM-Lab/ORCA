@@ -128,6 +128,7 @@ class AgentState(TypedDict, total=False):
     df_redis_key: Optional[str]
     df_shape: Optional[Any]
     variable_info: Dict[str, Any]
+    variable_schema: Dict[str, Any]  # Comprehensive schema with types and cardinality
     text2sql_generation_completed: bool
     
     # Data Exploration Phase Status
@@ -299,6 +300,7 @@ def create_initial_state(query: str, db_id: str = "reef_db", session_id: str = N
         df_raw=None,
         df_preprocessed=None,
         variable_info={},
+        variable_schema={},
         data_exploration_status="pending",
         data_assumptions={},
         assumption_method_scores={},
@@ -353,10 +355,10 @@ def get_agent_specific_state(state: AgentState, agent_type: str) -> Dict[str, An
     """
     agent_states = {
         "data_explorer": ["db_id", "schema_info", "table_metadata", "candidate_tables", 
-                         "selected_tables", "sql_query", "df_raw", "df_preprocessed"],
+                         "selected_tables", "sql_query", "df_raw", "df_preprocessed", "variable_schema"],
         "causal_discovery": ["data_assumptions", "assumption_method_scores", "algorithm_scores", 
                             "selected_algorithms", "algorithm_results", "candidate_graphs",
-                            "intermediate_scores", "selected_graph"],
+                            "intermediate_scores", "selected_graph", "variable_schema"],
         "causal_inference": ["treatment_variable", "outcome_variable", "confounders",
                             "inference_method", "causal_estimates", "confidence_intervals",
                             "interpretation_results", "sensitivity_analysis"],

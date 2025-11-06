@@ -274,8 +274,9 @@ class DataExplorerAgent(SpecialistAgent):
         """Preprocess raw data for analysis"""
         try:
             # Ensure required fields
+            final_sql = state.get("final_sql") or state.get("sql_query")
             df_raw = state.get("df_raw")
-            if df_raw is None and not state.get("sql_query"):
+            if df_raw is None and not final_sql:
                 raise ValueError("Raw data or sql_query is required for preprocessing")
             
             # Initialize DataPreprocessorAgent
@@ -284,32 +285,40 @@ class DataExplorerAgent(SpecialistAgent):
             # Prepare state for data preprocessor
             preprocessor_state = {
                 "db_id": state.get("db_id"),
-                "final_sql": state.get("sql_query", ""),
-                "df_raw": None,  # Set to None when fetch_only=True to avoid serialization issues
+                "final_sql": final_sql,
+                "df_raw": None,  # Don't pass DataFrame to avoid serialization
+                "df_redis_key": state.get("df_redis_key"),  # Reuse if available
+                "session_id": state.get("session_id", "default_session"),
                 "persist_to_redis": state.get("persist_to_redis", True),
-                "fetch_only": True,  # Use fetch_only to store in Redis and avoid serialization issues
-                "steps": ["fetch", "clean_nulls", "type_cast", "derive_features", "impute", "encode", "scale", "split", "report"]
+                "clean_nulls_ratio": state.get("clean_nulls_ratio", 0.95),
+                "one_hot_threshold": state.get("one_hot_threshold", 20),
+                "high_cardinality_threshold": state.get("high_cardinality_threshold", 50),
+                "interactive": state.get("interactive", True),
+                "force_refresh": state.get("force_refresh", False),
+                "current_substep": state.get("preprocessing_substep", "full_pipeline"),
             }
             
-            # Execute data preprocessing
-            result = preprocessor.execute(preprocessor_state)
+            # Execute data preprocessing using step() method
+            updated_state = preprocessor.step(preprocessor_state)
             
-            if result.success and result.data:
-                response = {
-                    "preprocess_report": result.data.get("preprocess_report", {}),
-                    "column_stats": result.data.get("column_stats", {}),
-                    "feature_map": result.data.get("feature_map", {}),
-                    "warnings": result.data.get("warnings", []),
-                    "df_redis_key": result.data.get("df_redis_key"),
-                    "df_shape": result.data.get("df_shape"),
-                    "success": True
-                }
-                # Include df_preprocessed only if it's a DataFrame (not fetch_only mode)
-                if result.data.get("df_preprocessed") is not None and not isinstance(result.data.get("df_preprocessed"), str):
-                    response["df_preprocessed"] = result.data.get("df_preprocessed")
-                return response
-            else:
-                return {"error": result.error or "Data preprocessing failed", "success": False}
+            # Extract results
+            if updated_state.get("error"):
+                return {"error": updated_state.get("error"), "success": False}
+            
+            response = {
+                "warnings": updated_state.get("warnings", []),
+                "df_redis_key": updated_state.get("df_redis_key"),
+                "df_shape": updated_state.get("df_shape"),
+                "columns": updated_state.get("columns"),
+                "variable_schema": updated_state.get("variable_schema"),
+                "variable_info": updated_state.get("variable_info", updated_state.get("variable_schema")),
+                "dropped_null_columns": updated_state.get("dropped_null_columns", []),
+                "encoded_columns": updated_state.get("encoded_columns", []),
+                "data_preprocessing_completed": updated_state.get("data_preprocessing_completed", False),
+                "success": True
+            }
+            
+            return response
             
         except Exception as e:
             self.on_event("data_preprocessing_error", error=str(e))
@@ -395,15 +404,24 @@ class DataExplorerAgent(SpecialistAgent):
             # 상태 업데이트 - only set non-DataFrame fields to avoid serialization issues
             if result.get("df_preprocessed") is not None:
                 state["df_preprocessed"] = result.get("df_preprocessed")
-            state["preprocess_report"] = result.get("preprocess_report", "")
-            state["column_stats"] = result.get("column_stats", {})
-            state["feature_map"] = result.get("feature_map", {})
             state["warnings"] = result.get("warnings", [])
             # New Redis-based fields
             if result.get("df_redis_key"):
                 state["df_redis_key"] = result.get("df_redis_key")
             if result.get("df_shape"):
                 state["df_shape"] = result.get("df_shape")
+            if result.get("columns"):
+                state["columns"] = result.get("columns")
+            # Schema information
+            if result.get("variable_schema"):
+                state["variable_schema"] = result.get("variable_schema")
+            if result.get("variable_info"):
+                state["variable_info"] = result.get("variable_info")
+            # Preprocessing metadata
+            if result.get("dropped_null_columns"):
+                state["dropped_null_columns"] = result.get("dropped_null_columns")
+            if result.get("encoded_columns"):
+                state["encoded_columns"] = result.get("encoded_columns")
             state["data_preprocessing_completed"] = True
         else:
             state["error"] = result.get("error", "Data preprocessing failed")

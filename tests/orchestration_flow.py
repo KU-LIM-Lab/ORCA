@@ -1,4 +1,4 @@
-# examples/orchestration_flow.py
+# tests/orchestration_flow.py
 """
 Complete orchestration flow example showing how the system works
 """
@@ -6,118 +6,68 @@ from orchestration.graph import create_orchestration_graph
 from monitoring.metrics.collector import MetricsCollector, set_metrics_collector
 from core.state import create_initial_state
 import os
+import argparse
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Orchestration flow demo (step visibility)")
+    parser.add_argument("--query", default="What is the causal effect of gender on used_coupon?", help="Query to run")
+    parser.add_argument("--interactive", action="store_true", help="Run with HITL prompts enabled")
+    parser.add_argument("--verbose", action="store_true", help="Show detailed execution flow and report")
+    return parser.parse_args()
+
 
 def main():
     """Demonstrate the complete orchestration flow"""
+    args = _parse_args()
     
-    # 1. Initialize metrics collector
     collector = MetricsCollector("orchestration_demo")
     set_metrics_collector(collector)
     collector.start_monitoring()
     
-    # 2. Create orchestration graph
     graph = create_orchestration_graph(
         metrics_collector=collector,
-        orchestration_config={"interactive": False}
+        orchestration_config={"interactive": bool(args.interactive)}
     )
     
-    # 3. Example 1: Full pipeline (default behavior)
-    print("=== Example: Full Pipeline ===")
-    # execute할 때 config에서 db_id 받아와서 쓸 수 있도록 하기.. or main에서 미리 지정해주기 ..
-    result1 = graph.execute("What is the causal effect of gender on used_coupon?")
-    print(f"Status: {result1.get('execution_status')}")
-    print(f"Steps completed: {len(result1.get('execution_log', []))}")
+    result = graph.execute(args.query)
+    print(f"Status: {result.get('execution_status')}")
+    print(f"Steps completed: {len(result.get('execution_log', []))}")
     
-    fr = result1.get("final_report", {})
+    fr = result.get("final_report", {}) or {}
     print("\n=== Final Report Summary ===")
     print(f"query: {fr.get('query')}")
     print(f"status: {fr.get('status')}")
-    print(f"total_steps: {fr.get('total_steps')}")
-
-    print("\n=== Final Report (Markdown) ===")
-    print(fr.get("markdown", ""))
+    if args.verbose:
+        print(f"total_steps: {fr.get('total_steps')}")
+        print("\n=== Final Report (Markdown) ===")
+        print(fr.get("markdown", ""))
     
+    if args.verbose:
+        print("\n=== Execution Flow ===")
+        show_execution_flow(result)
     
-    # 6. Show execution flow
-    print("\n=== Execution Flow Analysis ===")
-    show_execution_flow(result1)
-    
-    # 7. Stop monitoring and show metrics
     collector.stop_monitoring()
     show_metrics_summary(collector)
 
-    # 8. Optional: Interactive mode demo (set ORCA_DEMO_INTERACTIVE=1 to enable)
-    if os.environ.get("ORCA_DEMO_INTERACTIVE") == "1":
-        print("\n=== Example: Interactive Mode (will prompt) ===")
-        collector2 = MetricsCollector("orchestration_demo_interactive")
-        set_metrics_collector(collector2)
-        collector2.start_monitoring()
-        graph_interactive = create_orchestration_graph(
-            metrics_collector=collector2,
-            orchestration_config={"interactive": True}
-        )
-        try:
-            result_int = graph_interactive.execute("Run interactive causal pipeline demo")
-            print(f"Interactive Status: {result_int.get('execution_status')}")
-            print(f"Interactive Final report generated: {'final_report' in result_int}")
-        finally:
-            collector2.stop_monitoring()
-            show_metrics_summary(collector2)
-
 def show_execution_flow(result):
-    """Show the execution flow from the result"""
+    """Show the execution flow from the result (concise)."""
     execution_log = result.get("execution_log", [])
-    
-    print("Execution Flow:")
     for i, log in enumerate(execution_log, 1):
-        status = "✅" if log.get("success", False) else "❌"
-        duration = log.get("duration", 0)
-        print(f"  {i}. {log.get('step_id', 'unknown')} - {status} ({duration:.2f}s)")
-    
-    # Show state progression
-    print("\nState Progression:")
-    checks = [
-        ("data_exploration", result.get("data_exploration_status") == "completed" \
-            or bool(result.get("df_preprocessed")) or bool(result.get("selected_tables"))),
-        ("selected_tables", bool(result.get("selected_tables"))),
-        ("causal_graph", bool(result.get("selected_graph"))),
-        ("algorithm_scores", bool(result.get("algorithm_scores"))),
-        ("causal_estimates", bool(result.get("causal_estimates"))),
-        ("confidence_intervals", bool(result.get("confidence_intervals"))),
-        ("final_report", bool(result.get("final_report"))),
-    ]
-    for label, ok in checks:
-        print(f"  {'✓' if ok else '✗'} {label}: {'Available' if ok else 'Not available'}")
-
-    # Planned vs completed steps
-    print("\nPlan Status:")
-    total_steps = len(result.get("execution_plan", [])) if isinstance(result.get("execution_plan"), list) else result.get("total_steps", 0)
-    completed_substeps = result.get("completed_substeps", []) or []
-    current_idx = result.get("current_execute_step", 0)
-    print(f"  planned steps: {total_steps}")
-    print(f"  completed substeps: {len(completed_substeps)}")
-    print(f"  current pointer: {current_idx}")
-    if result.get("executor_completed"):
-        print("  ✅ executor: completed")
-    else:
-        print("  ⏳ executor: in progress")
+        status = "ok" if log.get("success", False) else "fail"
+        duration = float(log.get("duration", 0) or 0)
+        step_id = log.get("step_id") or f"{log.get('phase','?')}/{log.get('substep','?')}"
+        print(f"{i:02d}. {step_id}: {status} ({duration:.2f}s)")
 
 def show_metrics_summary(collector):
-    """Show metrics summary"""
+    """Show metrics summary (concise)."""
     summary = collector.get_metrics_summary()
-    
     print("\n=== Metrics Summary ===")
-    print(f"Total metrics: {summary['total_metrics']}")
-    print(f"Session duration: {summary['session_duration']:.2f}s")
-    
-    if 'execution_time' in summary['by_type']:
+    print(f"metrics: {summary.get('total_metrics', 0)}")
+    print(f"session_sec: {summary.get('session_duration', 0.0):.2f}")
+    if 'execution_time' in summary.get('by_type', {}):
         exec_time = summary['by_type']['execution_time']
-        print(f"Average execution time: {exec_time['average']:.2f}s")
-        print(f"Total execution time: {exec_time['total']:.2f}s")
-    
-    if 'token_count' in summary['by_type']:
-        tokens = summary['by_type']['token_count']
-        print(f"Total tokens used: {tokens['total']:.0f}")
+        print(f"exec_avg_sec: {exec_time.get('average', 0.0):.2f}")
+        print(f"exec_total_sec: {exec_time.get('total', 0.0):.2f}")
 
 if __name__ == "__main__":
     main()

@@ -93,10 +93,6 @@ def generate_er_synthetic(
 
     return df, meta
 
-
-
-
-
 # Convenience batch generator for multiple ER datasets
 def generate_er_synthetic_batch(configs: List[Dict[str, Any]]) -> List[Tuple[pd.DataFrame, Dict[str, Any]]]:
     """Generate multiple ER synthetic datasets. Each config can override n_nodes, edge_prob, n_samples, seed."""

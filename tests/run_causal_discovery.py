@@ -9,7 +9,7 @@ from datetime import datetime
 
 from utils.settings import CONFIG
 from agents.causal_discovery.agent import CausalDiscoveryAgent
-from tests.synthetic_data import generate_er_synthetic
+from utils.synthetic_data import generate_er_synthetic
 
 """
 This script runs multiple synthetic datasets to evaluate causal discovery performance:

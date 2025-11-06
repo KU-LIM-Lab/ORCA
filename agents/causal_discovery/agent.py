@@ -302,6 +302,21 @@ class CausalDiscoveryAgent(SpecialistAgent):
             variables = list(df.columns)
             logger.info(f"Profiling data for variables: {variables}")
             
+            # Check for variable schema from preprocessing
+            variable_schema = state.get("variable_schema", {})
+            if variable_schema:
+                mixed_types = variable_schema.get("mixed_data_types", False)
+                statistics = variable_schema.get("statistics", {})
+                if mixed_types:
+                    logger.info(
+                        f"Mixed data types detected: {statistics.get('n_continuous', 0)} continuous, "
+                        f"{statistics.get('n_categorical', 0)} categorical, "
+                        f"{statistics.get('n_binary', 0)} binary variables"
+                    )
+                high_card_vars = variable_schema.get("high_cardinality_vars", [])
+                if high_card_vars:
+                    logger.warning(f"High cardinality variables detected: {high_card_vars[:5]}")
+            
             # Initialize assumption scores
             assumption_scores = {
                 "S_lin": {},      # Linearity scores
@@ -353,6 +368,10 @@ class CausalDiscoveryAgent(SpecialistAgent):
             state["assumption_method_scores"] = assumption_scores
             state["data_profile"] = data_profile
             state["data_profiling_completed"] = True
+            
+            # Store variable_schema if available (for use in algorithm selection)
+            if variable_schema:
+                state["variable_schema"] = variable_schema
             
             logger.info("Data profiling completed")
             return state
@@ -631,6 +650,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
             algorithm_tiers = state.get("algorithm_tiers", {})
             df = self._load_dataframe_from_state(state)
             data_profile = state.get("data_profile", {})
+            variable_schema = state.get("variable_schema", {})
             
             # Allow explicit user override of algorithms via executor edits
             user_selected = state.get("selected_algorithms") or []
@@ -669,7 +689,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 # Per-algorithm timeouts (seconds)
                 timeout_map = {"LiNGAM": 120, "ANM": 180, "PC": 180, "GES": 300, "FCI": 300, "CAM": 300}
                 for alg_name in all_algorithms:
-                    future = executor.submit(self._dispatch_algorithm, alg_name, df, data_profile)
+                    future = executor.submit(self._dispatch_algorithm, alg_name, df, data_profile, variable_schema)
                     futures[alg_name] = future
                 
                 # Collect results
@@ -921,8 +941,28 @@ class CausalDiscoveryAgent(SpecialistAgent):
 
     # === Helpers and dispatch ===
 
-    def _select_ci_test(self, data_profile: Dict) -> str:
-        """Select appropriate CI test based on data characteristics"""
+    def _select_ci_test(self, data_profile: Dict, variable_schema: Dict = None) -> str:
+        """Select appropriate CI test based on data characteristics and variable schema"""
+        if variable_schema is None:
+            variable_schema = {}
+        
+        # Check for mixed data types
+        mixed_data_types = variable_schema.get("mixed_data_types", False)
+        statistics = variable_schema.get("statistics", {})
+        n_categorical = statistics.get("n_categorical", 0)
+        n_continuous = statistics.get("n_continuous", 0)
+        
+        # If mixed data types, prefer KCI (handles mixed types)
+        if mixed_data_types or (n_categorical > 0 and n_continuous > 0):
+            logger.info(f"Mixed data types detected (continuous: {n_continuous}, categorical: {n_categorical}), using KCI test")
+            return "kci"
+        
+        # If only categorical data, use Chi-square test
+        if n_categorical > 0 and n_continuous == 0:
+            logger.info("Categorical data detected, using Chi-square (gsq) test")
+            return "gsq"
+        
+        # For continuous data, check linearity
         linearity = data_profile.get("linearity", "moderate")
         
         # Non-linear data needs kernel-based test
@@ -930,9 +970,8 @@ class CausalDiscoveryAgent(SpecialistAgent):
             logger.info("Non-linear data detected, using KCI test")
             return "kci"
         
-        # For now, default to fisherz for linear data
-        # Future: add checks for categorical data → "gsq"
-        logger.info("Linear data detected, using Fisher-Z test")
+        # Default: Fisher-Z for linear continuous data
+        logger.info("Linear continuous data detected, using Fisher-Z test")
         return "fisherz"
 
     def _load_dataframe_from_state(self, state: AgentState) -> Optional[pd.DataFrame]:
@@ -977,17 +1016,17 @@ class CausalDiscoveryAgent(SpecialistAgent):
         except Exception:
             return False
 
-    def _dispatch_algorithm(self, alg_name: str, df: pd.DataFrame, data_profile: Dict = None) -> Dict[str, Any]:
+    def _dispatch_algorithm(self, alg_name: str, df: pd.DataFrame, data_profile: Dict = None, variable_schema: Dict = None) -> Dict[str, Any]:
         if alg_name == "LiNGAM":
             return self._run_lingam(df)
         if alg_name == "ANM":
             return self._run_anm(df)
         if alg_name == "PC":
-            return self._run_pc(df, data_profile=data_profile)
+            return self._run_pc(df, data_profile=data_profile, variable_schema=variable_schema)
         if alg_name == "GES":
             return self._run_ges(df)
         if alg_name == "FCI":
-            return self._run_fci(df, data_profile=data_profile)
+            return self._run_fci(df, data_profile=data_profile, variable_schema=variable_schema)
         if alg_name == "CAM":
             return self._run_cam(df)
         return {"error": f"Unknown algorithm: {alg_name}"}
@@ -1173,13 +1212,15 @@ class CausalDiscoveryAgent(SpecialistAgent):
             return CAMTool.discover(df, **kwargs)
         return {"error": f"Unknown method: {method}"}
 
-    def _run_pc(self, df: pd.DataFrame, data_profile: Dict = None, **kwargs) -> Dict[str, Any]:
+    def _run_pc(self, df: pd.DataFrame, data_profile: Dict = None, variable_schema: Dict = None, **kwargs) -> Dict[str, Any]:
         """Run PC algorithm (backend default: causal-learn)"""
         try:
-            # Select appropriate CI test based on data profile
+            # Select appropriate CI test based on data profile and variable schema
             if data_profile is None:
                 data_profile = {}
-            indep_test = self._select_ci_test(data_profile)
+            if variable_schema is None:
+                variable_schema = {}
+            indep_test = self._select_ci_test(data_profile, variable_schema)
             
             # Pass alpha and indep_test
             kwargs['alpha'] = kwargs.get('alpha', self.ci_alpha)
@@ -1199,13 +1240,15 @@ class CausalDiscoveryAgent(SpecialistAgent):
         except Exception as e:
             logger.error(f"GES execution failed: {e}")
             return {"error": str(e)}
-    def _run_fci(self, df: pd.DataFrame, data_profile: Dict = None, **kwargs) -> Dict[str, Any]:
+    def _run_fci(self, df: pd.DataFrame, data_profile: Dict = None, variable_schema: Dict = None, **kwargs) -> Dict[str, Any]:
         """Run FCI algorithm (backend default: causal-learn)"""
         try:
-            # Select appropriate CI test based on data profile
+            # Select appropriate CI test based on data profile and variable schema
             if data_profile is None:
                 data_profile = {}
-            indep_test = self._select_ci_test(data_profile)
+            if variable_schema is None:
+                variable_schema = {}
+            indep_test = self._select_ci_test(data_profile, variable_schema)
             
             # Pass alpha and indep_test
             kwargs['alpha'] = kwargs.get('alpha', self.ci_alpha)
