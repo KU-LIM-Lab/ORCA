@@ -4,8 +4,8 @@ Causal Discovery Agent implementation using tool registry pattern.
 
 This agent implements the complete causal discovery pipeline:
 1. data_profiling - Profile data characteristics and generate qualitative summary
-2. algorithm_tiering - Tier algorithms based on data profile compatibility
-3. run_algorithms_portfolio - Execute algorithms from all tiers in parallel
+2. algorithm_configuration - Configure algorithms based on data profile (replaces algorithm_tiering)
+3. run_algorithms_portfolio - Execute algorithms from execution_plan in parallel
 4. candidate_pruning - Prune candidates using CI testing and structural consistency
 5. scorecard_evaluation - Evaluate candidates using composite scorecard
 6. ensemble_synthesis - Synthesize ensemble with PAG-like and DAG outputs
@@ -71,7 +71,9 @@ ALGORITHM_LIST = [
     "GES",        # score-based (BIC/generalized)
     "PC",         # constraint-based
     "CAM",        # additive models
-    "FCI"         # allows latent confounders (PAG)
+    "FCI",        # allows latent confounders (PAG)
+    "LiM",        # Linear Mixed model for mixed data
+    "TSCM"        # Tree-Structured Causal Model for mixed data
 ]
 
 # === Algorithm Family Classification ===
@@ -232,6 +234,8 @@ class CausalDiscoveryAgent(SpecialistAgent):
             ("ges_tool", self._ges_tool, "GES algorithm via backend (default: causal-learn)"),
             ("fci_tool", self._fci_tool, "FCI algorithm via backend (default: causal-learn)"),
             ("cam_tool", self._cam_tool, "CAM algorithm (via CDT)"),
+            ("lim_tool", self._lim_tool, "LiM algorithm: Linear Mixed model for mixed data"),
+            ("tscm_tool", self._tscm_tool, "TSCM algorithm: Tree-Structured Causal Model for mixed data"),
             
             # Evaluation & Analysis
             ("bootstrapper", self._bootstrapper, "Bootstrap resampling and frequency aggregation"),
@@ -258,8 +262,8 @@ class CausalDiscoveryAgent(SpecialistAgent):
         try:
             if substep == "data_profiling":
                 return self._data_profiling(state)
-            elif substep == "algorithm_tiering":
-                return self._algorithm_tiering(state)
+            elif substep == "algorithm_configuration":
+                return self._algorithm_configuration(state)
             elif substep == "run_algorithms_portfolio":
                 return self._run_algorithms_portfolio(state)
             elif substep == "candidate_pruning":
@@ -362,7 +366,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
                     assumption_scores["S_EqVar"][pair_key] = ev_s
             
             # Generate qualitative data profile
-            data_profile = self._generate_qualitative_profile(assumption_scores, variables)
+            data_profile = self._generate_qualitative_profile(assumption_scores, variables, variable_schema, df)
             
             # Update state
             state["assumption_method_scores"] = assumption_scores
@@ -415,8 +419,11 @@ class CausalDiscoveryAgent(SpecialistAgent):
         else:
             return "moderate"
 
-    def _generate_qualitative_profile(self, assumption_scores: Dict[str, Dict[str, float]], variables: List[str]) -> Dict[str, Any]:
-        """Generate qualitative data profile from assumption scores"""
+    def _generate_qualitative_profile(self, assumption_scores: Dict[str, Dict[str, float]], 
+                                     variables: List[str], 
+                                     variable_schema: Dict[str, Any] = None,
+                                     df: pd.DataFrame = None) -> Dict[str, Any]:
+        """Generate qualitative data profile from assumption scores with enhanced pairwise and global properties"""
         try:
             # Aggregate scores across all pairs
             aggregated_scores = {}
@@ -450,14 +457,32 @@ class CausalDiscoveryAgent(SpecialistAgent):
             anm_mean = aggregated_scores["S_ANM"]["mean"]
             anm_compatible = (anm_mean >= self.anm_mean_threshold) and (np.mean(anm_scores >= self.anm_mean_threshold) >= self.anm_pair_ratio_threshold)
             
+            # Per-variable properties (from variable_schema)
+            per_variable = {}
+            if variable_schema:
+                per_variable = {
+                    "statistics": variable_schema.get("statistics", {}),
+                    "variables": variable_schema.get("variables", {}),
+                    "high_cardinality_vars": variable_schema.get("high_cardinality_vars", [])
+                }
+            
+            # Pairwise propertie
+            pairwise = self._compute_pairwise_properties(variables, variable_schema, df)
+            
+            # Global properties
+            global_props = self._compute_global_properties(variable_schema, pairwise, aggregated_scores)
+            
             data_profile = {
+                "per_variable": per_variable,
+                "pairwise": pairwise,
+                "global": global_props,
                 "linearity": linearity_desc,
                 "non_gaussian": non_gaussian_desc,
                 "anm_compatible": anm_compatible,
                 "gaussian": gaussian_desc,
                 "equal_variance": eqvar_desc,
                 "n_variables": len(variables),
-                "n_pairs": len(variables) * (len(variables) - 1) // 2,
+                "n_pairs": n_pairs,
                 "aggregated_scores": aggregated_scores,
                 "summary": f"Data shows {linearity_desc} linearity, {non_gaussian_desc} non-Gaussianity, "
                           f"{'ANM-compatible' if anm_compatible else 'ANM-incompatible'} patterns"
@@ -468,6 +493,9 @@ class CausalDiscoveryAgent(SpecialistAgent):
         except Exception as e:
             logger.warning(f"Qualitative profile generation failed: {e}")
             return {
+                "per_variable": {},
+                "pairwise": {},
+                "global": {"is_mixed": False, "is_mostly_linear": True, "has_high_cardinality": False},
                 "linearity": "moderate",
                 "non_gaussian": "moderate", 
                 "anm_compatible": False,
@@ -477,6 +505,87 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 "n_pairs": len(variables) * (len(variables) - 1) // 2,
                 "summary": "Default profile due to generation error"
             }
+    
+    def _compute_pairwise_properties(self, variables: List[str], 
+                                    variable_schema: Dict[str, Any] = None,
+                                    df: pd.DataFrame = None) -> Dict[str, Any]:
+        """Compute pairwise properties for Cont-Cont, Cont-Cat, Cat-Cat pairs"""
+        from .tools import StatsTool
+        
+        pairwise = {
+            "cont_cont": {},
+            "cont_cat": {},
+            "cat_cat": {}
+        }
+        
+        if df is None or variable_schema is None:
+            return pairwise
+        
+        # Get variable types from schema
+        var_types = {}
+        schema_vars = variable_schema.get("variables", {})
+        for var in variables:
+            var_info = schema_vars.get(var, {})
+            var_types[var] = var_info.get("data_type", "Continuous")
+        
+        # Classify pairs and compute properties
+        pairs = [(variables[i], variables[j]) for i in range(len(variables)) for j in range(i+1, len(variables))]
+        
+        for var1, var2 in pairs:
+            if var1 not in df.columns or var2 not in df.columns:
+                continue
+            
+            type1 = var_types.get(var1, "Continuous")
+            type2 = var_types.get(var2, "Continuous")
+            
+            pair_key = f"{var1}_{var2}"
+            
+            # Classify pair type
+            is_cont1 = type1 in ["Continuous"]
+            is_cont2 = type2 in ["Continuous"]
+            is_cat1 = type1 in ["Nominal", "Binary", "Ordinal"]
+            is_cat2 = type2 in ["Nominal", "Binary", "Ordinal"]
+            
+            if is_cont1 and is_cont2:
+                # Cont-Cont pair
+                result = StatsTool.pairwise_cont_cont_test(df[var1], df[var2])
+                pairwise["cont_cont"][pair_key] = result
+            elif (is_cont1 and is_cat2) or (is_cat1 and is_cont2):
+                # Cont-Cat pair
+                result = StatsTool.pairwise_cont_cat_test(df[var1], df[var2])
+                pairwise["cont_cat"][pair_key] = result
+            elif is_cat1 and is_cat2:
+                # Cat-Cat pair
+                result = StatsTool.pairwise_cat_cat_test(df[var1], df[var2])
+                pairwise["cat_cat"][pair_key] = result
+        
+        return pairwise
+    
+    def _compute_global_properties(self, variable_schema: Dict[str, Any] = None,
+                                   pairwise: Dict[str, Any] = None,
+                                   aggregated_scores: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Compute global properties summary"""
+        global_props = {
+            "is_mixed": False,
+            "is_mostly_linear": True,
+            "has_high_cardinality": False,
+            "n_continuous": 0,
+            "n_categorical": 0
+        }
+        
+        if variable_schema:
+            stats = variable_schema.get("statistics", {})
+            global_props["n_continuous"] = stats.get("n_continuous", 0)
+            global_props["n_categorical"] = stats.get("n_categorical", 0) + stats.get("n_binary", 0)
+            global_props["is_mixed"] = variable_schema.get("mixed_data_types", False)
+            global_props["has_high_cardinality"] = len(variable_schema.get("high_cardinality_vars", [])) > 0
+        
+        # Determine if mostly linear from aggregated scores
+        if aggregated_scores and "S_lin" in aggregated_scores:
+            linearity_mean = aggregated_scores["S_lin"].get("mean", 0.5)
+            global_props["is_mostly_linear"] = linearity_mean >= 0.6
+        
+        return global_props
     
     def _calculate_family_score(self, data_profile: Dict[str, Any], 
                                 requirements: Dict[str, List[str]]) -> float:
@@ -524,97 +633,120 @@ class CausalDiscoveryAgent(SpecialistAgent):
         
         return np.clip(family_score, 0.0, 1.0)
 
-    def _algorithm_tiering(self, state: AgentState) -> AgentState:
-        """Stage 1: Algorithm tiering based on data profile"""
-        logger.info("Performing algorithm tiering...")
+    def _algorithm_configuration(self, state: AgentState) -> AgentState:
+        """Stage 2: Algorithm configuration based on data profile - generates execution_plan"""
+        logger.info("Performing algorithm configuration...")
         
         try:
             data_profile = state.get("data_profile", {})
+            variable_schema = state.get("variable_schema", {})
+            
             if not data_profile:
                 raise ValueError("No data profile available")
-                        
-            # Match data profile to family requirements
-            tier1_algorithms = []  # Best match algorithms
-            tier2_algorithms = []  # Partial match algorithms  
-            tier3_algorithms = []  # Opposite assumption algorithms (for exploration)
             
-            # Define family requirements based on data profile
-            family_requirements = {
-                "Linear": {
-                    "required": ["linearity"],
-                    "preferred": ["non_gaussian"],
-                    "opposite": ["anm_compatible"]
-                },
-                "Nonlinear-FCM": {
-                    "required": ["anm_compatible"],
-                    "preferred": ["linearity"],  # prefer nonlinearity
-                    "opposite": ["gaussian"]
-                },
-                "Constraint-based": {
-                    "required": ["linearity"],
-                    "preferred": ["gaussian"],
-                    "opposite": ["non_gaussian"]
-                },
-                "Score-based": {
-                    "required": ["linearity", "gaussian", "equal_variance"],
-                    "preferred": [],
-                    "opposite": ["non_gaussian", "anm_compatible"]
-                },
-                "Latent-robust": {
-                    "required": ["linearity"],
-                    "preferred": ["gaussian"],
-                    "opposite": ["non_gaussian"]
-                }
-            }
-            
-            # Score each family
-            family_scores = {}
-            for family_name in ALGORITHM_FAMILIES_REP.keys():
-                if family_name not in family_requirements:
-                    continue
-                
-                requirements = family_requirements[family_name]
-                family_scores[family_name] = self._calculate_family_score(
-                    data_profile, requirements)
-            
-            # Build tier algorithms based on mode: representatives vs all family algorithms
-            run_all = state.get("run_all_tier_algorithms", self.run_all_tier_algorithms)
-            family_source = ALGORITHM_FAMILIES_ALL if run_all else ALGORITHM_FAMILIES_REP
-            for family_name, alg_list in family_source.items():
-                if family_name not in family_scores:
-                    continue
-                score = family_scores[family_name]
-                target = tier1_algorithms if score >= 0.7 else tier2_algorithms if score >= 0.4 else tier3_algorithms
-                target.extend(alg_list)
-            
-            # FCI always included (latent-robust)
-            if "FCI" not in tier1_algorithms and "FCI" not in tier2_algorithms and "FCI" not in tier3_algorithms:
-                tier1_algorithms.append("FCI")
-            
-            # Remove duplicates
-            tier1_algorithms = list(set(tier1_algorithms))
-            tier2_algorithms = list(set(tier2_algorithms))
-            tier3_algorithms = list(set(tier3_algorithms))
-            
-            # Generate tiering reasoning
-            reasoning = self._generate_tiering_reasoning(data_profile, family_scores, tier1_algorithms, tier2_algorithms, tier3_algorithms)
+            # Generate execution plan based on 6 scenario matrix
+            execution_plan = self._generate_execution_plan(data_profile, variable_schema)
             
             # Update state
-            state["algorithm_tiers"] = {
-                "tier1": tier1_algorithms,
-                "tier2": tier2_algorithms, 
-                "tier3": tier3_algorithms
-            }
-            state["tiering_reasoning"] = reasoning
-            state["algorithm_tiering_completed"] = True
+            state["execution_plan"] = execution_plan
+            state["algorithm_configuration_completed"] = True
             
-            logger.info(f"Algorithm tiering completed. Tier1: {tier1_algorithms}, Tier2: {tier2_algorithms}, Tier3: {tier3_algorithms}")
+            # Backward compatibility: also set algorithm_tiers for legacy code
+            all_algorithms = [config["alg"] for config in execution_plan]
+            state["algorithm_tiers"] = {
+                "tier1": all_algorithms, 
+                "tier2": [],
+                "tier3": []
+            }
+            state["algorithm_tiering_completed"] = True  # For backward compatibility
+            
+            logger.info(f"Algorithm configuration completed. Execution plan: {len(execution_plan)} algorithms")
             return state
             
         except Exception as e:
-            logger.error(f"Algorithm tiering failed: {str(e)}")
-            state["error"] = f"Algorithm tiering failed: {str(e)}"
+            logger.error(f"Algorithm configuration failed: {str(e)}")
+            state["error"] = f"Algorithm configuration failed: {str(e)}"
             return state
+    
+    def _generate_execution_plan(self, data_profile: Dict[str, Any], 
+                                 variable_schema: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Generate execution plan based on 6 scenario matrix logic"""
+        execution_plan = []
+        
+        global_props = data_profile.get("global", {})
+        is_mixed = global_props.get("is_mixed", False)
+        is_mostly_linear = global_props.get("is_mostly_linear", True)
+        has_high_cardinality = global_props.get("has_high_cardinality", False)
+        n_continuous = global_props.get("n_continuous", 0)
+        n_categorical = global_props.get("n_categorical", 0)
+        
+        # Scenario 1: Pure Continuous, Linear
+        if not is_mixed and n_continuous > 0 and n_categorical == 0 and is_mostly_linear:
+            execution_plan.extend([
+                {"alg": "PC", "ci_test": "fisherz", "priority": 1},
+                {"alg": "GES", "score": "bic", "priority": 1},
+                {"alg": "LiNGAM", "priority": 1}
+            ])
+        
+        # Scenario 2: Pure Continuous, Nonlinear
+        elif not is_mixed and n_continuous > 0 and n_categorical == 0 and not is_mostly_linear:
+            execution_plan.extend([
+                {"alg": "PC", "ci_test": "kernel_kcit", "priority": 1},
+                {"alg": "GES", "score": "generalized_rkhs", "priority": 1},
+                {"alg": "ANM", "priority": 1},
+                {"alg": "TSCM", "priority": 1}
+            ])
+        
+        # Scenario 3: Mixed Data, Linear
+        elif is_mixed and is_mostly_linear and not has_high_cardinality:
+            execution_plan.extend([
+                {"alg": "PC", "ci_test": "lrt", "priority": 1},
+                {"alg": "GES", "score": "bic-cg", "priority": 1},
+                {"alg": "LiM", "priority": 1}
+            ])
+        
+        # Scenario 4: Mixed Data, Nonlinear
+        elif is_mixed and not is_mostly_linear:
+            execution_plan.extend([
+                {"alg": "PC", "ci_test": "kernel_kcit", "priority": 1},
+                {"alg": "GES", "score": "generalized_rkhs", "priority": 1},
+                {"alg": "TSCM", "priority": 1}
+            ])
+        
+        # Scenario 5: Pure Categorical
+        elif not is_mixed and n_continuous == 0 and n_categorical > 0:
+            execution_plan.extend([
+                {"alg": "PC", "ci_test": "gsq", "priority": 1},
+                {"alg": "FCI", "ci_test": "gsq", "priority": 1}
+            ])
+        
+        # Scenario 6: High Cardinality
+        elif has_high_cardinality:
+            execution_plan.extend([
+                {"alg": "PC", "ci_test": "kernel_kcit", "priority": 1},
+                {"alg": "FCI", "ci_test": "kernel_kcit", "priority": 1},
+                {"alg": "TSCM", "priority": 1}
+            ])
+        
+        # Default execution plan
+        if not execution_plan:
+            logger.warning("No scenario matched, using default execution plan")
+            execution_plan.extend([
+                {"alg": "PC", "ci_test": "fisherz", "priority": 1},
+                {"alg": "GES", "score": "bic", "priority": 1},
+                {"alg": "FCI", "ci_test": "fisherz", "priority": 1}
+            ])
+        
+        # Always include FCI for latent robustness
+        has_fci = any(config["alg"] == "FCI" for config in execution_plan)
+        if not has_fci:
+            execution_plan.append({"alg": "FCI", "ci_test": "fisherz", "priority": 2})
+        
+        return execution_plan
+    
+    def _algorithm_tiering(self, state: AgentState) -> AgentState:
+        """Legacy method: redirects to algorithm_configuration for backward compatibility"""
+        return self._algorithm_configuration(state)
     
     def _generate_tiering_reasoning(self, data_profile: Dict[str, Any], family_scores: Dict[str, float], 
                                    tier1: List[str], tier2: List[str], tier3: List[str]) -> str:
@@ -643,53 +775,35 @@ class CausalDiscoveryAgent(SpecialistAgent):
     
     
     def _run_algorithms_portfolio(self, state: AgentState) -> AgentState:
-        """Stage 2: Run algorithms from all tiers in parallel"""
+        """Stage 3: Run algorithms from execution_plan in parallel"""
         logger.info("Running algorithm portfolio in parallel...")
         
         try:
-            algorithm_tiers = state.get("algorithm_tiers", {})
+            execution_plan = state.get("execution_plan", [])
             df = self._load_dataframe_from_state(state)
             data_profile = state.get("data_profile", {})
             variable_schema = state.get("variable_schema", {})
             
-            # Allow explicit user override of algorithms via executor edits
-            user_selected = state.get("selected_algorithms") or []
-            if not isinstance(user_selected, list):
-                user_selected = []
-            user_selected = [str(a) for a in user_selected]
             if df is None:
                 raise ValueError("No preprocessed data available")
             
-            # Collect all algorithms from all tiers
-            all_algorithms = []
-            if user_selected:
-                # Filter to known algorithms only
-                all_algorithms = [a for a in user_selected if a in ALGORITHM_LIST]
-                logger.info(f"Using user-selected algorithms override: {all_algorithms}")
-            else:
-                if not algorithm_tiers:
-                    raise ValueError("No algorithm tiers available")
-                all_algorithms.extend(algorithm_tiers.get("tier1", []))
-                all_algorithms.extend(algorithm_tiers.get("tier2", []))
-                all_algorithms.extend(algorithm_tiers.get("tier3", []))
+            algorithm_configs = execution_plan
             
-            # Remove duplicates
-            all_algorithms = list(set(all_algorithms))
-            
-            if not all_algorithms:
+            if not algorithm_configs:
                 raise ValueError("No algorithms to execute")
             
-            logger.info(f"Executing algorithms: {all_algorithms}")
+            logger.info(f"Executing {len(algorithm_configs)} algorithms from execution plan")
             
             # Run algorithms in parallel
             algorithm_results = {}
             
-            with ThreadPoolExecutor(max_workers=len(all_algorithms)) as executor:
+            with ThreadPoolExecutor(max_workers=len(algorithm_configs)) as executor:
                 futures = {}
                 # Per-algorithm timeouts (seconds)
-                timeout_map = {"LiNGAM": 120, "ANM": 180, "PC": 180, "GES": 300, "FCI": 300, "CAM": 300}
-                for alg_name in all_algorithms:
-                    future = executor.submit(self._dispatch_algorithm, alg_name, df, data_profile, variable_schema)
+                timeout_map = {"LiNGAM": 120, "ANM": 180, "PC": 180, "GES": 300, "FCI": 300, "CAM": 300, "LiM": 300, "TSCM": 300}
+                for config in algorithm_configs:
+                    alg_name = config["alg"]
+                    future = executor.submit(self._dispatch_algorithm, config, df, data_profile, variable_schema)
                     futures[alg_name] = future
                 
                 # Collect results
@@ -805,17 +919,23 @@ class CausalDiscoveryAgent(SpecialistAgent):
             return state
     
     def _scorecard_evaluation(self, state: AgentState) -> AgentState:
-        """Stage 4: Scorecard evaluation with composite scoring"""
+        """Stage 4: Scorecard evaluation with composite scoring or sequential pruning"""
         logger.info("Performing scorecard evaluation...")
         
         try:
             pruned_candidates = state.get("pruned_candidates", [])
             df = self._load_dataframe_from_state(state)
+            execution_plan = state.get("execution_plan", [])
+            user_params = state.get("user_params", {})
+            ranking_mode = user_params.get("ranking_mode", "composite_score")
             
             if not pruned_candidates:
                 raise ValueError("No pruned candidates available")
             if df is None:
                 raise ValueError("No preprocessed data available")
+            
+            # Get dynamic metric functions based on execution_plan
+            metric_functions = self._get_dynamic_metric_functions(execution_plan)
             
             scorecard = []
             
@@ -825,59 +945,34 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 
                 logger.info(f"Evaluating {alg_name} for scorecard...")
                 
-                # 1. Statistical fit (BIC/AIC) - use algorithm-native score if available
-                statistical_fit = self._compute_algorithm_native_score(graph, alg_name)
-                if statistical_fit is None:
-                    # Fallback to GraphEvaluator
-                    fidelity_result = self.use_tool("graph_evaluator", "fidelity_evaluation", df, graph)
-                    statistical_fit = fidelity_result.get("fidelity_score", 0.5)
+                # 1. Statistical fit
+                statistical_fit_func = metric_functions.get("statistical_fit")
+                if statistical_fit_func:
+                    statistical_fit = statistical_fit_func(graph, alg_name, df)
+                else:
+                    # Fallback to default
+                    statistical_fit = self._compute_algorithm_native_score(graph, alg_name)
+                    if statistical_fit is None:
+                        fidelity_result = self.use_tool("graph_evaluator", "fidelity_evaluation", df, graph)
+                        statistical_fit = fidelity_result.get("fidelity_score", 0.5)
                 
-                # 2. Global consistency - use CI violation ratio from pruning
-                # For PAG (FCI), skip global consistency as d-separation doesn't apply
+                # 2. Global consistency - use dynamic function if available
+                global_consistency_func = metric_functions.get("global_consistency")
                 is_pag = graph.get("metadata", {}).get("graph_type") == "PAG"
                 
                 if is_pag:
                     global_consistency = 0.0  # Not applicable for PAG
-                    # Normalize remaining weights to sum to 1.0
-                    w_stat = self.composite_weights["statistical_fit"]
-                    w_samp = self.composite_weights["sampling_stability"]
-                    w_struct = self.composite_weights["structural_stability"]
-                    weight_sum = w_stat + w_samp + w_struct
-                    
-                    # 3. Sampling stability - use existing Bootstrapper
-                    sampling_stability = self._evaluate_robustness(df, graph, alg_name)
-                    
-                    # 4. Structural stability - use instability score from pruning
-                    structural_stability = 1.0 - candidate["instability_score"]
-                    
-                    composite_score = (
-                        (w_stat / weight_sum) * statistical_fit +
-                        (w_samp / weight_sum) * sampling_stability +
-                        (w_struct / weight_sum) * structural_stability
-                    )
                 else:
-                    global_consistency = 1.0 - candidate["violation_ratio"]
-                    
-                    # 3. Sampling stability - use existing Bootstrapper
-                    sampling_stability = self._evaluate_robustness(df, graph, alg_name)
-                    
-                    # 4. Structural stability - use instability score from pruning
-                    structural_stability = 1.0 - candidate["instability_score"]
-                    
-                    # Use standard weights
-                    composite_score = (
-                        self.composite_weights["statistical_fit"] * statistical_fit +
-                        self.composite_weights["global_consistency"] * global_consistency +
-                        self.composite_weights["sampling_stability"] * sampling_stability +
-                        self.composite_weights["structural_stability"] * structural_stability
-                    )
+                    if global_consistency_func:
+                        global_consistency = global_consistency_func(graph, candidate, df)
+                    else:
+                        global_consistency = 1.0 - candidate["violation_ratio"]
                 
-                # Apply edge count penalty to discourage empty graphs
-                n_edges = len(graph.get("graph", {}).get("edges", []))
-                if n_edges == 0:
-                    composite_score *= 0.1  # Heavy penalty for empty graphs
-                elif n_edges < 3:
-                    composite_score *= 0.5  # Moderate penalty for very sparse graphs
+                # 3. Sampling stability
+                sampling_stability = self._evaluate_robustness(df, graph, alg_name)
+                
+                # 4. Structural stability
+                structural_stability = 1.0 - candidate["instability_score"]
                 
                 scorecard.append({
                     "algorithm": alg_name,
@@ -886,20 +981,27 @@ class CausalDiscoveryAgent(SpecialistAgent):
                     "global_consistency": global_consistency,
                     "sampling_stability": sampling_stability,
                     "structural_stability": structural_stability,
-                    "composite_score": composite_score,
                     "graph": graph
                 })
             
-            # Sort by composite score and select top candidates
-            scorecard.sort(key=lambda x: x["composite_score"], reverse=True)
-            top_candidates = scorecard[:3]  # Top 3 graphs
+            # Apply ranking mode
+            if ranking_mode == "sequential_pruning":
+                ranked_graphs = self._sequential_pruning(scorecard, user_params)
+            else:
+                # Default: composite_score
+                ranked_graphs = self._composite_score_ranking(scorecard)
+            
+            # Select top candidates
+            top_candidates = ranked_graphs[:3]  # Top 3 graphs
             
             # Convert numpy types to Python native types for msgpack serialization
             scorecard = _convert_numpy_types(scorecard)
+            ranked_graphs = _convert_numpy_types(ranked_graphs)
             top_candidates = _convert_numpy_types(top_candidates)
             
             # Update state
             state["scorecard"] = scorecard
+            state["ranked_graphs"] = ranked_graphs
             state["top_candidates"] = top_candidates
             state["scorecard_evaluation_completed"] = True
             
@@ -910,6 +1012,91 @@ class CausalDiscoveryAgent(SpecialistAgent):
             logger.error(f"Scorecard evaluation failed: {str(e)}")
             state["error"] = f"Scorecard evaluation failed: {str(e)}"
             return state
+    
+    def _get_dynamic_metric_functions(self, execution_plan: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Get appropriate metric functions for each algorithm in execution_plan"""
+        metric_functions = {}
+        
+        ges_config = next((c for c in execution_plan if c["alg"] == "GES"), None)
+        if ges_config and ges_config.get("score") == "bic-cg":
+            def bic_cg_fit(graph, alg_name, df):
+                # PLACEHOLDER: Calculate BIC-CG score
+                # For now, use default
+                return self._compute_algorithm_native_score(graph, alg_name) or 0.5
+            metric_functions["statistical_fit"] = bic_cg_fit
+        
+        # Find PC/FCI config to determine global_consistency function
+        pc_config = next((c for c in execution_plan if c["alg"] in ["PC", "FCI"]), None)
+        if pc_config and pc_config.get("ci_test") == "lrt":
+            def lrt_consistency(graph, candidate, df):
+                # Use LRT-based consistency (1 - violation_ratio)
+                return 1.0 - candidate.get("violation_ratio", 1.0)
+            metric_functions["global_consistency"] = lrt_consistency
+        
+        return metric_functions
+    
+    def _composite_score_ranking(self, scorecard: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Rank graphs using composite score"""
+        for item in scorecard:
+            is_pag = item["graph"].get("metadata", {}).get("graph_type") == "PAG"
+            
+            if is_pag:
+                w_stat = self.composite_weights["statistical_fit"]
+                w_samp = self.composite_weights["sampling_stability"]
+                w_struct = self.composite_weights["structural_stability"]
+                weight_sum = w_stat + w_samp + w_struct
+                composite_score = (
+                    (w_stat / weight_sum) * item["statistical_fit"] +
+                    (w_samp / weight_sum) * item["sampling_stability"] +
+                    (w_struct / weight_sum) * item["structural_stability"]
+                )
+            else:
+                composite_score = (
+                    self.composite_weights["statistical_fit"] * item["statistical_fit"] +
+                    self.composite_weights["global_consistency"] * item["global_consistency"] +
+                    self.composite_weights["sampling_stability"] * item["sampling_stability"] +
+                    self.composite_weights["structural_stability"] * item["structural_stability"]
+                )
+            
+            # Penalty for low edge count
+            n_edges = len(item["graph"].get("graph", {}).get("edges", []))
+            if n_edges == 0:
+                composite_score *= 0.1
+            elif n_edges < 3:
+                composite_score *= 0.5 
+            
+            item["composite_score"] = composite_score
+        
+        # Sort by composite score
+        ranked = sorted(scorecard, key=lambda x: x["composite_score"], reverse=True)
+        return ranked
+    
+    def _sequential_pruning(self, scorecard: List[Dict[str, Any]], 
+                           user_params: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Rank graphs using sequential pruning with thresholds"""
+        pruning_thresholds = user_params.get("pruning_thresholds", {
+            "fit": 0.3,
+            "consistency": 0.05,
+            "sampling": 0.2
+        })
+        
+        # Step 1: Filter by statistical_fit
+        step1 = [g for g in scorecard if g["statistical_fit"] >= pruning_thresholds["fit"]]
+        
+        # Step 2: Filter by global_consistency (skip for PAG)
+        step2 = []
+        for g in step1:
+            is_pag = g["graph"].get("metadata", {}).get("graph_type") == "PAG"
+            if is_pag or g["global_consistency"] >= pruning_thresholds["consistency"]:
+                step2.append(g)
+        
+        # Step 3: Filter by sampling_stability
+        step3 = [g for g in step2 if g["sampling_stability"] >= pruning_thresholds["sampling"]]
+        
+        # Step 4: Sort by structural_stability
+        final_ranked = sorted(step3, key=lambda x: x["structural_stability"], reverse=True)
+        
+        return final_ranked
     
     def _compute_algorithm_native_score(self, graph: Dict[str, Any], algorithm_name: str) -> Optional[float]:
         """Extract algorithm-native BIC/AIC score from metadata if available"""
@@ -1016,24 +1203,33 @@ class CausalDiscoveryAgent(SpecialistAgent):
         except Exception:
             return False
 
-    def _dispatch_algorithm(self, alg_name: str, df: pd.DataFrame, data_profile: Dict = None, variable_schema: Dict = None) -> Dict[str, Any]:
+    def _dispatch_algorithm(self, config: Dict[str, Any], df: pd.DataFrame, 
+                                       data_profile: Dict = None, variable_schema: Dict = None) -> Dict[str, Any]:
+        """Dispatch algorithm with configuration from execution_plan"""
+        alg_name = config["alg"]
+        ci_test = config.get("ci_test")
+        score = config.get("score")
+        
         if alg_name == "LiNGAM":
             return self._run_lingam(df)
         if alg_name == "ANM":
             return self._run_anm(df)
         if alg_name == "PC":
-            return self._run_pc(df, data_profile=data_profile, variable_schema=variable_schema)
+            return self._run_pc(df, data_profile=data_profile, variable_schema=variable_schema, 
+                              indep_test=ci_test)
         if alg_name == "GES":
-            return self._run_ges(df)
+            return self._run_ges(df, score_func=score)
         if alg_name == "FCI":
-            return self._run_fci(df, data_profile=data_profile, variable_schema=variable_schema)
+            return self._run_fci(df, data_profile=data_profile, variable_schema=variable_schema,
+                              indep_test=ci_test)
         if alg_name == "CAM":
             return self._run_cam(df)
+        if alg_name == "LiM":
+            return self._run_lim(df, variable_schema=variable_schema)
+        if alg_name == "TSCM":
+            return self._run_tscm(df, variable_schema=variable_schema)
         return {"error": f"Unknown algorithm: {alg_name}"}
     
-    def _intermediate_scoring(self, state: AgentState) -> AgentState:
-        """Legacy method for backward compatibility"""
-        return self._scorecard_evaluation(state)
     
     def _ensemble_synthesis(self, state: AgentState) -> AgentState:
         """Stage 5: Ensemble synthesis with PAG-like and DAG outputs"""
@@ -1065,7 +1261,12 @@ class CausalDiscoveryAgent(SpecialistAgent):
             
             # 4. Construct single DAG with tie-breaking
             top_algorithm = top_candidates[0]["algorithm"]
-            dag_result = self.use_tool("ensemble_tool", "construct_dag", pag_result, data_profile, top_algorithm)
+            execution_plan = state.get("execution_plan", [])
+            algorithm_results = self._load_algorithm_results_from_state(state)
+            dag_result = self.use_tool("ensemble_tool", "construct_dag", 
+                                      pag_result, data_profile, top_algorithm,
+                                      execution_plan=execution_plan,
+                                      algorithm_results=algorithm_results)
             
             # Generate synthesis reasoning
             reasoning = self._generate_synthesis_reasoning(top_candidates, pag_result, dag_result, data_profile)
@@ -1205,26 +1406,23 @@ class CausalDiscoveryAgent(SpecialistAgent):
             logger.error(f"CAM execution failed: {e}")
             return {"error": str(e)}
 
-    def _cam_tool(self, method: str, *args, **kwargs) -> Dict[str, Any]:
-        from .tools import CAMTool
-        if method == "cam_discovery":
-            df = args[0]
-            return CAMTool.discover(df, **kwargs)
-        return {"error": f"Unknown method: {method}"}
-
-    def _run_pc(self, df: pd.DataFrame, data_profile: Dict = None, variable_schema: Dict = None, **kwargs) -> Dict[str, Any]:
-        """Run PC algorithm (backend default: causal-learn)"""
+    def _run_pc(self, df: pd.DataFrame, data_profile: Dict = None, variable_schema: Dict = None, 
+               indep_test: str = None, **kwargs) -> Dict[str, Any]:
+        """Run PC algorithm with dynamic CI test selection"""
         try:
-            # Select appropriate CI test based on data profile and variable schema
-            if data_profile is None:
-                data_profile = {}
-            if variable_schema is None:
-                variable_schema = {}
-            indep_test = self._select_ci_test(data_profile, variable_schema)
+            # Use provided indep_test from execution_plan, or select based on data profile
+            if indep_test is None:
+                if data_profile is None:
+                    data_profile = {}
+                if variable_schema is None:
+                    variable_schema = {}
+                indep_test = self._select_ci_test(data_profile, variable_schema)
             
-            # Pass alpha and indep_test
+            # Pass alpha, indep_test, and variable_schema
             kwargs['alpha'] = kwargs.get('alpha', self.ci_alpha)
-            kwargs['indep_test'] = kwargs.get('indep_test', indep_test)
+            kwargs['indep_test'] = indep_test
+            if variable_schema:
+                kwargs['variable_schema'] = variable_schema
             
             result = self.use_tool("pc_tool", "pc_discovery", df, **kwargs)
             return result
@@ -1232,52 +1430,64 @@ class CausalDiscoveryAgent(SpecialistAgent):
             logger.error(f"PC execution failed: {e}")
             return {"error": str(e)}
 
-    def _run_ges(self, df: pd.DataFrame) -> Dict[str, Any]:
-        """Run GES algorithm (backend default: causal-learn, score=BIC)"""
+    def _run_ges(self, df: pd.DataFrame, score_func: str = "bic") -> Dict[str, Any]:
+        """Run GES algorithm with dynamic score function selection"""
         try:
-            result = self.use_tool("ges_tool", "ges_discovery", df, score_func="bic")
+            # Map score function names to tool parameters
+            if score_func == "generalized_rkhs":
+                # Placeholder: use generalized RKHS scoring
+                result = self.use_tool("ges_tool", "ges_discovery", df, score_func="generalized_rkhs")
+            elif score_func == "bic-cg":
+                # Use BIC for Conditional Gaussian
+                result = self.use_tool("ges_tool", "ges_discovery", df, score_func="bic-cg")
+            else:
+                # Default: standard BIC
+                result = self.use_tool("ges_tool", "ges_discovery", df, score_func="bic")
             return result
         except Exception as e:
             logger.error(f"GES execution failed: {e}")
             return {"error": str(e)}
-    def _run_fci(self, df: pd.DataFrame, data_profile: Dict = None, variable_schema: Dict = None, **kwargs) -> Dict[str, Any]:
-        """Run FCI algorithm (backend default: causal-learn)"""
+    def _run_fci(self, df: pd.DataFrame, data_profile: Dict = None, variable_schema: Dict = None,
+                indep_test: str = None, **kwargs) -> Dict[str, Any]:
+        """Run FCI algorithm with dynamic CI test selection"""
         try:
-            # Select appropriate CI test based on data profile and variable schema
-            if data_profile is None:
-                data_profile = {}
-            if variable_schema is None:
-                variable_schema = {}
-            indep_test = self._select_ci_test(data_profile, variable_schema)
+            # Use provided indep_test from execution_plan, or select based on data profile
+            if indep_test is None:
+                if data_profile is None:
+                    data_profile = {}
+                if variable_schema is None:
+                    variable_schema = {}
+                indep_test = self._select_ci_test(data_profile, variable_schema)
             
-            # Pass alpha and indep_test
+            # Pass alpha, indep_test, and variable_schema
             kwargs['alpha'] = kwargs.get('alpha', self.ci_alpha)
-            kwargs['indep_test'] = kwargs.get('indep_test', indep_test)
+            kwargs['indep_test'] = indep_test
+            if variable_schema:
+                kwargs['variable_schema'] = variable_schema
             
             result = self.use_tool("fci_tool", "fci_discovery", df, **kwargs)
             return result
         except Exception as e:
             logger.error(f"FCI execution failed: {e}")
             return {"error": str(e)}
-    def _pc_tool(self, method: str, *args, **kwargs) -> Dict[str, Any]:
-        from .tools import PCTool
-        if method == "pc_discovery":
-            df = args[0]
-            return PCTool.discover(df, **kwargs)
-        return {"error": f"Unknown method: {method}"}
-
-    def _ges_tool(self, method: str, *args, **kwargs) -> Dict[str, Any]:
-        from .tools import GESTool
-        if method == "ges_discovery":
-            df = args[0]
-            return GESTool.discover(df, **kwargs)
-        return {"error": f"Unknown method: {method}"}
-    def _fci_tool(self, method: str, *args, **kwargs) -> Dict[str, Any]:
-        from .tools import FCITool
-        if method == "fci_discovery":
-            df = args[0]
-            return FCITool.discover(df, **kwargs)
-        return {"error": f"Unknown method: {method}"}
+    
+    def _run_lim(self, df: pd.DataFrame, variable_schema: Dict = None) -> Dict[str, Any]:
+        """Run LiM algorithm (placeholder for mixed data functional model)"""
+        try:
+            result = self.use_tool("lim_tool", "lim_discovery", df, variable_schema=variable_schema)
+            return result
+        except Exception as e:
+            logger.error(f"LiM execution failed: {e}")
+            return {"error": str(e)}
+    
+    def _run_tscm(self, df: pd.DataFrame, variable_schema: Dict = None) -> Dict[str, Any]:
+        """Run TSCM algorithm (placeholder for mixed data functional model)"""
+        try:
+            result = self.use_tool("tscm_tool", "tscm_discovery", df, variable_schema=variable_schema)
+            return result
+        except Exception as e:
+            logger.error(f"TSCM execution failed: {e}")
+            return {"error": str(e)}
     
     # === Evaluation Methods ===
     
@@ -1393,7 +1603,11 @@ class CausalDiscoveryAgent(SpecialistAgent):
         elif method == "construct_pag":
             return EnsembleTool.construct_pag(args[0], args[1])
         elif method == "construct_dag":
-            return EnsembleTool.construct_dag(args[0], args[1], args[2])
+            return EnsembleTool.construct_dag(
+                args[0], args[1], args[2],
+                execution_plan=kwargs.get("execution_plan"),
+                algorithm_results=kwargs.get("algorithm_results")
+            )
         else:
             return {"error": f"Unknown method: {method}"}
     
@@ -1402,7 +1616,12 @@ class CausalDiscoveryAgent(SpecialistAgent):
         from .tools import PCTool
         
         if method == "pc_discovery":
-            return PCTool.discover(args[0], **kwargs)
+            df = args[0]
+            # Pass variable_schema if available
+            variable_schema = kwargs.get("variable_schema") or (args[1] if len(args) > 1 else None)
+            if variable_schema:
+                kwargs["variable_schema"] = variable_schema
+            return PCTool.discover(df, **kwargs)
         else:
             return {"error": f"Unknown method: {method}"}
     
@@ -1411,7 +1630,8 @@ class CausalDiscoveryAgent(SpecialistAgent):
         from .tools import GESTool
         
         if method == "ges_discovery":
-            return GESTool.discover(args[0], **kwargs)
+            df = args[0]
+            return GESTool.discover(df, **kwargs)
         else:
             return {"error": f"Unknown method: {method}"}
     
@@ -1420,7 +1640,8 @@ class CausalDiscoveryAgent(SpecialistAgent):
         from .tools import FCITool
         
         if method == "fci_discovery":
-            return FCITool.discover(args[0], **kwargs)
+            df = args[0]
+            return FCITool.discover(df, **kwargs)
         else:
             return {"error": f"Unknown method: {method}"}
     
@@ -1429,6 +1650,25 @@ class CausalDiscoveryAgent(SpecialistAgent):
         from .tools import CAMTool
         
         if method == "cam_discovery":
-            return CAMTool.discover(args[0], **kwargs)
+            df = args[0]
+            return CAMTool.discover(df, **kwargs)
+        else:
+            return {"error": f"Unknown method: {method}"}
+    
+    def _lim_tool(self, method: str, *args, **kwargs) -> Dict[str, Any]:
+        """LiM algorithm tool implementation"""
+        from .tools import LiMTool
+        
+        if method == "lim_discovery":
+            return LiMTool.discover(args[0], **kwargs)
+        else:
+            return {"error": f"Unknown method: {method}"}
+    
+    def _tscm_tool(self, method: str, *args, **kwargs) -> Dict[str, Any]:
+        """TSCM algorithm tool implementation"""
+        from .tools import TSCMTool
+        
+        if method == "tscm_discovery":
+            return TSCMTool.discover(args[0], **kwargs)
         else:
             return {"error": f"Unknown method: {method}"}

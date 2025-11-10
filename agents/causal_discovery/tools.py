@@ -14,7 +14,7 @@ def _normalize_edges(edges):
         if isinstance(e, dict):
             frm, to = e.get("from"), e.get("to")
             w = e.get("weight", None)
-            conf = e.get("confidence") if isinstance(e, dict) else None
+            conf = e.get("confidence", None)
         else:
             # support tuple (from, to, weight?)
             frm = e[0]; to = e[1]; w = e[2] if len(e) > 2 else None
@@ -40,7 +40,7 @@ def normalize_graph_result(method: str, variables, edges, params=None, runtime=N
         }
     }
     return res
-# agents/causal_discovery/tools.py
+
 """
 Causal Discovery Agent Tools Implementation
 
@@ -181,6 +181,152 @@ class StatsTool:
         except Exception as e:
             logger.warning(f"Gaussian/EqVar test failed: {e}")
             return {"gaussian_score": 0.5, "eqvar_score": 0.5, "error": str(e)}
+    
+    @staticmethod
+    def pairwise_cont_cont_test(x: pd.Series, y: pd.Series) -> Dict[str, Any]:
+        """Test pairwise properties for continuous-continuous pairs.
+        Returns linearity (Pearson) and nonlinearity (mutual information) scores.
+        """
+        try:
+            # Remove NaN pairs
+            valid_idx = ~(x.isna() | y.isna())
+            x_clean = x[valid_idx]
+            y_clean = y[valid_idx]
+            
+            if len(x_clean) < 3:
+                return {"linearity": 0.5, "nonlinearity": 0.5, "error": "Insufficient data"}
+            
+            # Linearity: Pearson correlation
+            pearson_r, pearson_p = stats.pearsonr(x_clean, y_clean)
+            linearity_score = abs(float(pearson_r))  # [0, 1]
+            
+            # Nonlinearity: Mutual information (using normalized MI)
+            try:
+                from sklearn.feature_selection import mutual_info_regression
+                # Discretize for MI calculation (if needed)
+                mi_score = mutual_info_regression(
+                    x_clean.values.reshape(-1, 1), 
+                    y_clean.values,
+                    random_state=42
+                )[0]
+                # Normalize MI to [0, 1] range (rough approximation)
+                nonlinearity_score = min(1.0, max(0.0, mi_score / 2.0))
+            except Exception:
+                # Fallback: use correlation-based nonlinearity
+                nonlinearity_score = 1.0 - linearity_score
+            
+            return {
+                "linearity": float(linearity_score),
+                "nonlinearity": float(nonlinearity_score),
+                "pearson_r": float(pearson_r),
+                "pearson_p": float(pearson_p)
+            }
+        except Exception as e:
+            logger.warning(f"Cont-Cont pairwise test failed: {e}")
+            return {"linearity": 0.5, "nonlinearity": 0.5, "error": str(e)}
+    
+    @staticmethod
+    def pairwise_cont_cat_test(x: pd.Series, y: pd.Series) -> Dict[str, Any]:
+        """Test pairwise properties for continuous-categorical pairs.
+        Returns heteroscedasticity (Levene's test) and mean differences (ANOVA F-statistic).
+        """
+        try:
+            # Remove NaN pairs
+            valid_idx = ~(x.isna() | y.isna())
+            x_clean = x[valid_idx]
+            y_clean = y[valid_idx]
+            
+            if len(x_clean) < 3:
+                return {"heteroscedasticity": 0.5, "mean_difference": 0.5, "error": "Insufficient data"}
+            
+            # Determine which is continuous and which is categorical
+            if pd.api.types.is_numeric_dtype(x_clean) and not pd.api.types.is_numeric_dtype(y_clean):
+                cont_var = x_clean
+                cat_var = y_clean
+            elif pd.api.types.is_numeric_dtype(y_clean) and not pd.api.types.is_numeric_dtype(x_clean):
+                cont_var = y_clean
+                cat_var = x_clean
+            else:
+                # Both numeric or both categorical - use heuristics based on cardinality
+                # This can happen when categorical variables are encoded as numeric
+                # or when both are numeric but one should be treated as categorical
+                if x_clean.nunique() > y_clean.nunique():
+                    cont_var = x_clean
+                    cat_var = y_clean
+                else:
+                    cont_var = y_clean
+                    cat_var = x_clean
+            
+            # Group continuous variable by categorical levels
+            groups = [cont_var[cat_var == cat_val].dropna() for cat_val in cat_var.unique()]
+            groups = [g for g in groups if len(g) > 1]  # Filter groups with at least 2 samples
+            
+            if len(groups) < 2:
+                return {"heteroscedasticity": 0.5, "mean_difference": 0.5, "error": "Insufficient groups"}
+            
+            # Heteroscedasticity: Levene's test
+            try:
+                levene_stat, levene_p = stats.levene(*groups)
+                heteroscedasticity_score = float(levene_p)  # Higher p = more homoscedastic
+            except Exception:
+                heteroscedasticity_score = 0.5
+            
+            # Mean differences: ANOVA F-statistic
+            try:
+                f_stat, f_p = stats.f_oneway(*groups)
+                mean_difference_score = float(f_p)  # Lower p = more significant difference
+                # Convert to score where higher = more difference
+                mean_difference_score = 1.0 - min(1.0, mean_difference_score)
+            except Exception:
+                mean_difference_score = 0.5
+            
+            return {
+                "heteroscedasticity": heteroscedasticity_score,
+                "mean_difference": mean_difference_score,
+                "levene_p": float(levene_p) if 'levene_p' in locals() else 0.5,
+                "anova_f": float(f_stat) if 'f_stat' in locals() else 0.0,
+                "anova_p": float(f_p) if 'f_p' in locals() else 0.5
+            }
+        except Exception as e:
+            logger.warning(f"Cont-Cat pairwise test failed: {e}")
+            return {"heteroscedasticity": 0.5, "mean_difference": 0.5, "error": str(e)}
+    
+    @staticmethod
+    def pairwise_cat_cat_test(x: pd.Series, y: pd.Series) -> Dict[str, Any]:
+        """Test pairwise properties for categorical-categorical pairs.
+        Returns association (Chi-squared test).
+        """
+        try:
+            # Remove NaN pairs
+            valid_idx = ~(x.isna() | y.isna())
+            x_clean = x[valid_idx]
+            y_clean = y[valid_idx]
+            
+            if len(x_clean) < 3:
+                return {"association": 0.5, "error": "Insufficient data"}
+            
+            # Create contingency table
+            contingency = pd.crosstab(x_clean, y_clean)
+            
+            if contingency.size == 0:
+                return {"association": 0.5, "error": "Empty contingency table"}
+            
+            # Chi-squared test
+            try:
+                chi2_stat, chi2_p, dof, expected = stats.chi2_contingency(contingency)
+                # Convert p-value to association score (lower p = stronger association)
+                association_score = 1.0 - min(1.0, float(chi2_p))
+            except Exception:
+                association_score = 0.5
+            
+            return {
+                "association": float(association_score),
+                "chi2_stat": float(chi2_stat) if 'chi2_stat' in locals() else 0.0,
+                "chi2_p": float(chi2_p) if 'chi2_p' in locals() else 0.5
+            }
+        except Exception as e:
+            logger.warning(f"Cat-Cat pairwise test failed: {e}")
+            return {"association": 0.5, "error": str(e)}
 
 class IndependenceTool:
     """Independence testing tools for ANM and other tests"""
@@ -535,23 +681,217 @@ class GraphOps:
 
 # --- PC and GES tools ---
 
+class LRTTest:
+    """Likelihood-Ratio Test for conditional independence with mixed data support"""
+    def __init__(self, data: np.ndarray, variable_schema: Dict[str, Any] = None):
+        self.data = data
+        self.variable_schema = variable_schema or {}
+        self.vars = variable_schema.get("variables", {}) if variable_schema else {}
+    
+    def __call__(self, x: int, y: int, z: List[int] = None) -> float:
+        """Perform LRT test: X ⟂ Y | Z"""
+        if z is None:
+            z = []
+        
+        try:
+            # Get variable names
+            var_names = list(self.vars.keys()) if self.vars else [f"var_{i}" for i in range(self.data.shape[1])]
+            if x >= len(var_names) or y >= len(var_names):
+                return 1.0  # Default: independent
+            
+            x_var = var_names[x]
+            y_var = var_names[y]
+            
+            # Get variable types from schema
+            x_type = self.vars.get(x_var, {}).get("data_type", "Continuous") if self.vars else "Continuous"
+            y_type = self.vars.get(y_var, {}).get("data_type", "Continuous") if self.vars else "Continuous"
+            
+            # Extract data
+            X = self.data[:, x]
+            Y = self.data[:, y]
+            Z = self.data[:, z] if z else None
+            
+            # Remove NaN
+            valid_idx = ~(np.isnan(X) | np.isnan(Y))
+            if Z is not None:
+                valid_idx = valid_idx & ~np.isnan(Z).any(axis=1)
+            X_clean = X[valid_idx]
+            Y_clean = Y[valid_idx]
+            Z_clean = Z[valid_idx] if Z is not None else None
+            
+            if len(X_clean) < 3:
+                return 1.0
+            
+            # Perform LRT based on Y type
+            if y_type == "Continuous":
+                # Linear regression
+                from sklearn.linear_model import LinearRegression
+                if Z_clean is not None and len(Z_clean.shape) > 1 and Z_clean.shape[1] > 0:
+                    # Full model: Y ~ X + Z
+                    XZ = np.column_stack([X_clean.reshape(-1, 1), Z_clean])
+                    lr_full = LinearRegression()
+                    lr_full.fit(XZ, Y_clean)
+                    y_pred_full = lr_full.predict(XZ)
+                    ssr_full = np.sum((Y_clean - y_pred_full) ** 2)
+                    
+                    # Reduced model: Y ~ Z
+                    lr_reduced = LinearRegression()
+                    lr_reduced.fit(Z_clean, Y_clean)
+                    y_pred_reduced = lr_reduced.predict(Z_clean)
+                    ssr_reduced = np.sum((Y_clean - y_pred_reduced) ** 2)
+                else:
+                    # Full model: Y ~ X
+                    lr_full = LinearRegression()
+                    lr_full.fit(X_clean.reshape(-1, 1), Y_clean)
+                    y_pred_full = lr_full.predict(X_clean.reshape(-1, 1))
+                    ssr_full = np.sum((Y_clean - y_pred_full) ** 2)
+                    
+                    # Reduced model: Y ~ 1 (mean)
+                    ssr_reduced = np.sum((Y_clean - np.mean(Y_clean)) ** 2)
+                
+                # LRT statistic
+                if ssr_full > 0:
+                    lr_stat = len(Y_clean) * np.log(ssr_reduced / ssr_full)
+                    # Approximate p-value using chi-squared (1 df for one parameter difference)
+                    from scipy.stats import chi2
+                    p_value = 1.0 - chi2.cdf(lr_stat, df=1)
+                else:
+                    p_value = 1.0
+            
+            elif y_type in ["Binary"]:
+                # Logistic regression
+                from sklearn.linear_model import LogisticRegression
+                from scipy.stats import chi2
+                
+                # Prepare features
+                has_z = Z_clean is not None and len(Z_clean.shape) > 1 and Z_clean.shape[1] > 0
+                
+                if has_z:
+                    XZ = np.column_stack([X_clean.reshape(-1, 1), Z_clean])
+                    # Full model: Y ~ X + Z
+                    lr_full = LogisticRegression(max_iter=1000, random_state=42)
+                    lr_full.fit(XZ, Y_clean)
+                    # Reduced model: Y ~ Z
+                    lr_reduced = LogisticRegression(max_iter=1000, random_state=42)
+                    lr_reduced.fit(Z_clean, Y_clean)
+                else:
+                    # Full model: Y ~ X
+                    lr_full = LogisticRegression(max_iter=1000, random_state=42)
+                    lr_full.fit(X_clean.reshape(-1, 1), Y_clean)
+                    # Reduced: intercept only
+                    lr_reduced = LogisticRegression(max_iter=1000, random_state=42)
+                    lr_reduced.fit(np.ones((len(Y_clean), 1)), Y_clean)
+                
+                # Calculate log-likelihoods for LRT
+                # Use predict_proba to get probabilities, then compute log-likelihood
+                if has_z:
+                    prob_full = lr_full.predict_proba(XZ)
+                    prob_reduced = lr_reduced.predict_proba(Z_clean)
+                else:
+                    prob_full = lr_full.predict_proba(X_clean.reshape(-1, 1))
+                    prob_reduced = lr_reduced.predict_proba(np.ones((len(Y_clean), 1)))
+                
+                # Log-likelihood: sum of log(prob) for actual class
+                ll_full = np.sum(np.log(prob_full[np.arange(len(Y_clean)), Y_clean.astype(int)] + 1e-10))
+                ll_reduced = np.sum(np.log(prob_reduced[np.arange(len(Y_clean)), Y_clean.astype(int)] + 1e-10))
+                
+                # LRT statistic: -2 * (log_likelihood_reduced - log_likelihood_full)
+                lr_stat = -2 * (ll_reduced - ll_full)
+                p_value = 1.0 - chi2.cdf(max(0, lr_stat), df=1)
+            
+            else:
+                # Nominal/Ordinal: use multinomial or ordinal logistic (placeholder)
+                # For now, fallback to correlation-based test
+                if Z_clean is None or (len(Z_clean.shape) == 1 and Z_clean.shape[0] == 0):
+                    corr, p_val = stats.pearsonr(X_clean, Y_clean)
+                    p_value = float(p_val)
+                else:
+                    # Partial correlation (simplified)
+                    p_value = 0.5
+            
+            # Symmetric test: also test Y ⟂ X | Z (swap roles)
+            # For symmetric test, we swap X and Y and test again
+            try:
+                # Swap X and Y for symmetric test
+                if y_type == "Continuous":
+                    # Linear regression for Y->X
+                    if Z_clean is not None and len(Z_clean.shape) > 1 and Z_clean.shape[1] > 0:
+                        YZ = np.column_stack([Y_clean.reshape(-1, 1), Z_clean])
+                        lr_full_yx = LinearRegression()
+                        lr_full_yx.fit(YZ, X_clean)
+                        x_pred_full = lr_full_yx.predict(YZ)
+                        ssr_full_yx = np.sum((X_clean - x_pred_full) ** 2)
+                        
+                        lr_reduced_yx = LinearRegression()
+                        lr_reduced_yx.fit(Z_clean, X_clean)
+                        x_pred_reduced = lr_reduced_yx.predict(Z_clean)
+                        ssr_reduced_yx = np.sum((X_clean - x_pred_reduced) ** 2)
+                    else:
+                        lr_full_yx = LinearRegression()
+                        lr_full_yx.fit(Y_clean.reshape(-1, 1), X_clean)
+                        x_pred_full = lr_full_yx.predict(Y_clean.reshape(-1, 1))
+                        ssr_full_yx = np.sum((X_clean - x_pred_full) ** 2)
+                        ssr_reduced_yx = np.sum((X_clean - np.mean(X_clean)) ** 2)
+                    
+                    if ssr_full_yx > 0:
+                        lr_stat_yx = len(X_clean) * np.log(ssr_reduced_yx / ssr_full_yx)
+                        from scipy.stats import chi2
+                        p_value_yx = 1.0 - chi2.cdf(lr_stat_yx, df=1)
+                    else:
+                        p_value_yx = 1.0
+                else:
+                    # For non-continuous, use same p-value
+                    p_value_yx = p_value
+            except Exception:
+                p_value_yx = p_value
+            
+            # Combine p-values (max for conservative test)
+            combined_p = max(float(p_value), float(p_value_yx))
+            return combined_p
+            
+        except Exception as e:
+            logger.warning(f"LRT test failed: {e}")
+            return 1.0  # Default: independent
+
 class PCTool:
-    """PC algorithm wrapper. Uses causal-learn."""
+    """PC algorithm wrapper. Uses causal-learn with support for LRT and other CI tests."""
     @staticmethod
-    def discover(df: pd.DataFrame, alpha: float = 0.05, indep_test: str = "fisherz", **kwargs) -> Dict[str, Any]:
+    def discover(df: pd.DataFrame, alpha: float = 0.05, indep_test: str = "fisherz", 
+                 variable_schema: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         import time
         t0 = time.time()
         vars_ = list(df.columns)
         edges = []
         params = {"alpha": alpha, "indep_test": indep_test}
+        if variable_schema:
+            params["variable_schema"] = variable_schema
         try:
             from causallearn.search.ConstraintBased.PC import pc
             from causallearn.utils.cit import fisherz, kci, gsq
-            data = df.values
+            data = df.values.astype(float)
             
             # Convert string to actual test function
-            test_map = {"fisherz": fisherz, "kci": kci, "gsq": gsq}
-            test_func = test_map.get(indep_test, fisherz)
+            if indep_test == "lrt":
+                # Use LRT test for mixed data
+                test_func = LRTTest(data, variable_schema)
+            elif indep_test == "cg":
+                # PLACEHOLDER: Conditional Gaussian test
+                logger.warning("CG test not yet implemented, using fisherz")
+                test_func = fisherz
+            elif indep_test == "pillai":
+                # PLACEHOLDER: Pillai test
+                logger.warning("Pillai test not yet implemented, using fisherz")
+                test_func = fisherz
+            elif indep_test == "kernel_kcit":
+                # Use KCI test (kernel-based)
+                test_func = kci
+            elif indep_test == "cmi":
+                # PLACEHOLDER: Conditional Mutual Information
+                logger.warning("CMI test not yet implemented, using kci")
+                test_func = kci
+            else:
+                test_map = {"fisherz": fisherz, "kci": kci, "gsq": gsq}
+                test_func = test_map.get(indep_test, fisherz)
             
             cg = pc(data, alpha=alpha, indep_test=test_func, verbose=False)
             graph = cg.G.graph
@@ -583,10 +923,23 @@ class GESTool:
         try:
             from causallearn.search.ScoreBased.GES import ges
             data = df.values
+            
             # Convert score_func to causallearn format
             if score_func == "bic":
-                score_func = "local_score_BIC"
-            res = ges(data, score_func=score_func)
+                causallearn_score = "local_score_BIC"
+            elif score_func == "bic-cg":
+                # PLACEHOLDER: BIC for Conditional Gaussian (mixed data)
+                logger.warning("bic-cg score not yet implemented, using standard BIC")
+                causallearn_score = "local_score_BIC"
+            elif score_func == "generalized_rkhs":
+                # PLACEHOLDER: Generalized RKHS regression-based non-parametric scoring
+                logger.warning("generalized_rkhs score not yet implemented, using standard BIC")
+                causallearn_score = "local_score_BIC"
+            else:
+                # Default: try to use as-is or fallback to BIC
+                causallearn_score = score_func if hasattr(ges, score_func) else "local_score_BIC"
+            
+            res = ges(data, score_func=causallearn_score)
             G = getattr(res, 'G', None) or (res.get('G', None) if isinstance(res, dict) else None)
             if G is not None and hasattr(G, 'graph'):
                 graph = G.graph
@@ -608,13 +961,60 @@ class GESTool:
 
 
 # --- FCI tool ---
+class LiMTool:
+    """LiM (Linear Mixed) algorithm placeholder for mixed data functional model"""
+    @staticmethod
+    def discover(df: pd.DataFrame, variable_schema: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+        import time
+        t0 = time.time()
+        vars_ = list(df.columns)
+        edges = []
+        try:
+            # PLACEHOLDER: LiM algorithm implementation
+            # This should call the actual LiM library when available
+            # For now, return a placeholder structure
+            logger.warning("LiM algorithm not yet implemented. Returning placeholder result.")
+            # Placeholder: return empty graph structure
+            runtime = time.time() - t0
+            return normalize_graph_result(
+                "LiM", vars_, edges,
+                params={"variable_schema": variable_schema, "backend": "placeholder"},
+                runtime=runtime
+            )
+        except Exception as e:
+            return {"error": f"LiM not available: {e}"}
+
+class TSCMTool:
+    """TSCM (Tree-Structured Causal Model) algorithm placeholder for mixed data functional model"""
+    @staticmethod
+    def discover(df: pd.DataFrame, variable_schema: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+        import time
+        t0 = time.time()
+        vars_ = list(df.columns)
+        edges = []
+        try:
+            # PLACEHOLDER: TSCM algorithm implementation
+            # This should call the actual TSCM library when available
+            # For now, return a placeholder structure
+            logger.warning("TSCM algorithm not yet implemented. Returning placeholder result.")
+            # Placeholder: return empty graph structure
+            runtime = time.time() - t0
+            return normalize_graph_result(
+                "TSCM", vars_, edges,
+                params={"variable_schema": variable_schema, "backend": "placeholder"},
+                runtime=runtime
+            )
+        except Exception as e:
+            return {"error": f"TSCM not available: {e}"}
+
 class FCITool:
     """FCI algorithm wrapper. Uses causal-learn and returns a PAG-oriented result.
     Note: PAG edges may be partially directed; we expose adjacencies as edges and
     mark graph_type="PAG" in metadata/params for downstream handling.
     """
     @staticmethod
-    def discover(df: pd.DataFrame, alpha: float = 0.05, indep_test: str = "fisherz", **kwargs) -> Dict[str, Any]:
+    def discover(df: pd.DataFrame, alpha: float = 0.05, indep_test: str = "fisherz", 
+                 variable_schema: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
         import time
         t0 = time.time()
         vars_ = list(df.columns)
@@ -622,11 +1022,29 @@ class FCITool:
         try:
             from causallearn.search.ConstraintBased.FCI import fci
             from causallearn.utils.cit import fisherz, kci, gsq
-            data = df.values
+            data = df.values.astype(float)
             
             # Convert string to actual test function
-            test_map = {"fisherz": fisherz, "kci": kci, "gsq": gsq}
-            test_func = test_map.get(indep_test, fisherz)
+            if indep_test == "lrt":
+                # Use LRT test for mixed data
+                test_func = LRTTest(data, variable_schema)
+            elif indep_test == "cg":
+                # PLACEHOLDER: Conditional Gaussian test
+                logger.warning("CG test not yet implemented for FCI, using fisherz")
+                test_func = fisherz
+            elif indep_test == "pillai":
+                # PLACEHOLDER: Pillai test
+                logger.warning("Pillai test not yet implemented for FCI, using fisherz")
+                test_func = fisherz
+            elif indep_test == "kernel_kcit":
+                test_func = kci
+            elif indep_test == "cmi":
+                # PLACEHOLDER: Conditional Mutual Information
+                logger.warning("CMI test not yet implemented for FCI, using kci")
+                test_func = kci
+            else:
+                test_map = {"fisherz": fisherz, "kci": kci, "gsq": gsq}
+                test_func = test_map.get(indep_test, fisherz)
             
             # Causal-Learn FCI API: fci(data, indep_test, alpha)
             pag = fci(data, test_func, alpha)
@@ -638,9 +1056,12 @@ class FCITool:
                         # represented in normalized edges. Downstream can treat as PAG.
                         edges.append((vars_[i], vars_[j]))
             runtime = time.time() - t0
+            params_dict = {"alpha": alpha, "indep_test": indep_test, "graph_type": "PAG"}
+            if variable_schema:
+                params_dict["variable_schema"] = variable_schema
             result = normalize_graph_result(
                 "FCI", vars_, edges,
-                params={"alpha": alpha, "indep_test": indep_test, "graph_type": "PAG"},
+                params=params_dict,
                 runtime=runtime,
             )
             # Also set a top-level hint to consumers
@@ -1134,7 +1555,9 @@ class EnsembleTool:
             return skeleton
     
     @staticmethod
-    def construct_dag(pag: Dict[str, Any], data_profile: Dict[str, Any], top_algorithm: str) -> Dict[str, Any]:
+    def construct_dag(pag: Dict[str, Any], data_profile: Dict[str, Any], top_algorithm: str,
+                      execution_plan: List[Dict[str, Any]] = None,
+                      algorithm_results: Dict[str, Any] = None) -> Dict[str, Any]:
         """Construct single DAG with tie-breaking and cycle avoidance"""
         import networkx as nx
         
@@ -1147,7 +1570,11 @@ class EnsembleTool:
             
             for edge in pag.get("edges", []):
                 if edge.get("direction") in ["uncertain", "conflict"]:
-                    resolved_edge = EnsembleTool._apply_tie_breaking(edge, data_profile, top_algorithm)
+                    resolved_edge = EnsembleTool._apply_tie_breaking(
+                        edge, data_profile, top_algorithm, 
+                        execution_plan=execution_plan,
+                        algorithm_results=algorithm_results
+                    )
                     resolved_edges.append(resolved_edge)
                 else:
                     resolved_edges.append(edge)
@@ -1198,10 +1625,65 @@ class EnsembleTool:
             return pag
     
     @staticmethod
-    def _apply_tie_breaking(edge: Dict[str, Any], data_profile: Dict[str, Any], top_algorithm: str) -> Dict[str, Any]:
-        """Apply tie-breaking rules for uncertain edges"""
+    def _apply_tie_breaking(edge: Dict[str, Any], data_profile: Dict[str, Any], 
+                           top_algorithm: str, execution_plan: List[Dict[str, Any]] = None,
+                           algorithm_results: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Apply tie-breaking rules for uncertain edges with mixed data support"""
         try:
-            # Simple tie-breaking based on algorithm preferences
+            from_var = edge.get("from")
+            to_var = edge.get("to")
+            global_props = data_profile.get("global", {})
+            is_mixed = global_props.get("is_mixed", False)
+            pairwise = data_profile.get("pairwise", {})
+            
+            # New Rule 1: Nonlinear Mixed Data - use TSCM direction
+            if is_mixed and execution_plan:
+                # Check if TSCM is in execution plan
+                tscm_config = next((c for c in execution_plan if c["alg"] == "TSCM"), None)
+                if tscm_config:
+                    # Check pairwise properties for nonlinearity
+                    pair_key = f"{from_var}_{to_var}"
+                    pair_key_rev = f"{to_var}_{from_var}"
+                    
+                    # Check cont_cont or cont_cat pairs for nonlinearity
+                    cont_cont_pair = pairwise.get("cont_cont", {}).get(pair_key) or pairwise.get("cont_cont", {}).get(pair_key_rev)
+                    if cont_cont_pair and cont_cont_pair.get("nonlinearity", 0) > 0.5:
+                        # Use TSCM direction if available
+                        tscm_result = algorithm_results.get("TSCM", {}) if algorithm_results else {}
+                        tscm_direction = EnsembleTool._extract_tscm_direction(tscm_result, from_var, to_var)
+                        if tscm_direction:
+                            resolved_edge = edge.copy()
+                            resolved_edge["from"] = tscm_direction["from"]
+                            resolved_edge["to"] = tscm_direction["to"]
+                            resolved_edge["direction"] = "forward"
+                            resolved_edge["marker"] = "->"
+                            resolved_edge["tie_breaking"] = "TSCM direction (nonlinear mixed data)"
+                            return resolved_edge
+            
+            # New Rule 2: Linear Mixed Data - use LiM direction
+            if is_mixed and execution_plan:
+                # Check if LiM is in execution plan
+                lim_config = next((c for c in execution_plan if c["alg"] == "LiM"), None)
+                if lim_config:
+                    # Check pairwise properties for linearity
+                    pair_key = f"{from_var}_{to_var}"
+                    pair_key_rev = f"{to_var}_{from_var}"
+                    
+                    cont_cont_pair = pairwise.get("cont_cont", {}).get(pair_key) or pairwise.get("cont_cont", {}).get(pair_key_rev)
+                    if cont_cont_pair and cont_cont_pair.get("linearity", 0) > 0.6:
+                        # Use LiM direction if available
+                        lim_result = algorithm_results.get("LiM", {}) if algorithm_results else {}
+                        lim_direction = EnsembleTool._extract_lim_direction(lim_result, from_var, to_var)
+                        if lim_direction:
+                            resolved_edge = edge.copy()
+                            resolved_edge["from"] = lim_direction["from"]
+                            resolved_edge["to"] = lim_direction["to"]
+                            resolved_edge["direction"] = "forward"
+                            resolved_edge["marker"] = "->"
+                            resolved_edge["tie_breaking"] = "LiM direction (linear mixed data)"
+                            return resolved_edge
+            
+            # Fallback: Original rules
             if top_algorithm in ["LiNGAM", "PC", "GES"]:
                 # Prefer forward direction for linear algorithms
                 resolved_edge = edge.copy()
@@ -1232,3 +1714,29 @@ class EnsembleTool:
         except Exception as e:
             logger.warning(f"Tie-breaking failed: {e}")
             return edge
+    
+    @staticmethod
+    def _extract_tscm_direction(tscm_result: Dict[str, Any], var1: str, var2: str) -> Optional[Dict[str, str]]:
+        """Extract direction from TSCM result for a specific edge (placeholder)"""
+        # PLACEHOLDER: Extract direction from TSCM result
+        # This should parse TSCM output to find edge direction
+        if "graph" in tscm_result and "edges" in tscm_result["graph"]:
+            edges = tscm_result["graph"]["edges"]
+            for e in edges:
+                if (e.get("from") == var1 and e.get("to") == var2) or \
+                   (e.get("from") == var2 and e.get("to") == var1):
+                    return {"from": e["from"], "to": e["to"]}
+        return None
+    
+    @staticmethod
+    def _extract_lim_direction(lim_result: Dict[str, Any], var1: str, var2: str) -> Optional[Dict[str, str]]:
+        """Extract direction from LiM result for a specific edge (placeholder)"""
+        # PLACEHOLDER: Extract direction from LiM result
+        # This should parse LiM output to find edge direction
+        if "graph" in lim_result and "edges" in lim_result["graph"]:
+            edges = lim_result["graph"]["edges"]
+            for e in edges:
+                if (e.get("from") == var1 and e.get("to") == var2) or \
+                   (e.get("from") == var2 and e.get("to") == var1):
+                    return {"from": e["from"], "to": e["to"]}
+        return None

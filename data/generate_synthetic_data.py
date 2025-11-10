@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import networkx as nx
 from scipy.special import expit  # Logistic/Sigmoid function
-import json  # config 및 stats 저장을 위해 추가
+import json 
 
 # --- 1. Causal Discovery (CD) 벤치마크 생성기 ---
 

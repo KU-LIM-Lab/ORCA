@@ -302,9 +302,15 @@ class DataPreprocessorAgent(SpecialistAgent):
         if state.get("error"):
             return state
 
-        state = self._encode(state)
-        if state.get("error"):
-            return state
+        # Skip encoding if flag is set (for causal discovery with mixed data)
+        skip_encoding = state.get("skip_one_hot_encoding", False)
+        if skip_encoding:
+            logger.info("One-hot encoding skipped. Original data preserved for causal discovery algorithms.")
+            state["encoded_columns"] = []
+        else:
+            state = self._encode(state)
+            if state.get("error"):
+                return state
 
         # Mark as completed
         state["data_preprocessing_completed"] = True

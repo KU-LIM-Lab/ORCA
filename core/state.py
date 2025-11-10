@@ -69,7 +69,7 @@ class AgentState(TypedDict, total=False):
     # === Planning & execution Phase Outputs ===
     error: str
     error_type: str
-    execution_plan: Dict[str, Any]
+    execution_plan: List[Dict[str, Any]]
     # Runtime orchestration controls
     skip_steps: List[str]
 
@@ -146,6 +146,7 @@ class AgentState(TypedDict, total=False):
     impute_strategy: Optional[str]  # Strategy for imputing missing values
     scaling: Optional[str]  # Scaling method (standard, minmax, none)
     one_hot_threshold: Optional[int]  # Threshold for one-hot encoding
+    skip_one_hot_encoding: Optional[bool]  # Skip one-hot encoding for causal discovery
     persist_to_redis: Optional[bool]  # Whether to persist dataframes to Redis
     fetch_only: Optional[bool]  # Whether to only fetch data without full preprocessing
     
@@ -164,6 +165,7 @@ class AgentState(TypedDict, total=False):
     algorithm_tiers: Dict[str, Any]
     tiering_reasoning: str
     algorithm_tiering_completed: bool
+    algorithm_configuration_completed: bool  # New: algorithm configuration completion flag
     
     # 3. Algorithm execution
     algorithm_results: Dict[str, Any]  # Algorithm execution results
@@ -179,8 +181,10 @@ class AgentState(TypedDict, total=False):
     pruning_log: List[Dict[str, Any]]
     candidate_pruning_completed: bool
     scorecard: Dict[str, Any]
+    ranked_graphs: List[Dict[str, Any]]  # Ranked graphs from scorecard evaluation
     top_candidates: List[Dict[str, Any]]
     scorecard_evaluation_completed: bool
+    user_params: Dict[str, Any]  # User parameters (ranking_mode, pruning_thresholds, etc.)
     consensus_pag: Dict[str, Any]
     synthesis_reasoning: str
     ensemble_synthesis_completed: bool
