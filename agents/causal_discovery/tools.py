@@ -114,36 +114,6 @@ class StatsTool:
             return {"linearity_score": 0.5, "error": str(e)}
     
     @staticmethod
-    def normality_test(x: pd.Series, y: pd.Series) -> Dict[str, Any]:
-        """Test normality using Jarque-Bera and Shapiro-Wilk tests"""
-        try:
-            # Test both variables
-            x_jb_stat, x_jb_p = stats.jarque_bera(x.dropna())
-            y_jb_stat, y_jb_p = stats.jarque_bera(y.dropna())
-            
-            x_sw_stat, x_sw_p = stats.shapiro(x.dropna())
-            y_sw_stat, y_sw_p = stats.shapiro(y.dropna())
-            
-            # Combine p-values (lower p-value = more non-Gaussian)
-            combined_p = np.mean([x_jb_p, y_jb_p, x_sw_p, y_sw_p])
-            
-            # Convert to non-Gaussian score (lower p-value = higher score)
-            non_gaussian_score = 1.0 - min(1.0, combined_p)
-            
-            return {
-                "non_gaussian_score": non_gaussian_score,
-                "x_jb_p": x_jb_p,
-                "y_jb_p": y_jb_p,
-                "x_sw_p": x_sw_p,
-                "y_sw_p": y_sw_p,
-                "combined_p": combined_p
-            }
-            
-        except Exception as e:
-            logger.warning(f"Normality test failed: {e}")
-            return {"non_gaussian_score": 0.5, "error": str(e)}
-    
-    @staticmethod
     def gaussian_eqvar_test(x: pd.Series, y: pd.Series) -> Dict[str, Any]:
         """Test Gaussian and equal variance assumptions"""
         try:
@@ -183,150 +153,113 @@ class StatsTool:
             return {"gaussian_score": 0.5, "eqvar_score": 0.5, "error": str(e)}
     
     @staticmethod
-    def pairwise_cont_cont_test(x: pd.Series, y: pd.Series) -> Dict[str, Any]:
-        """Test pairwise properties for continuous-continuous pairs.
-        Returns linearity (Pearson) and nonlinearity (mutual information) scores.
+    def global_normality_test(df: pd.DataFrame) -> float:
+        """
+        Global multivariate normality test using Henze–Zirkler test
+        via pingouin.multivariate_normality.
+
+        Returns:
+            p-value (float): High = normal, Low = non-normal
         """
         try:
-            # Remove NaN pairs
-            valid_idx = ~(x.isna() | y.isna())
-            x_clean = x[valid_idx]
-            y_clean = y[valid_idx]
-            
-            if len(x_clean) < 3:
-                return {"linearity": 0.5, "nonlinearity": 0.5, "error": "Insufficient data"}
-            
-            # Linearity: Pearson correlation
-            pearson_r, pearson_p = stats.pearsonr(x_clean, y_clean)
-            linearity_score = abs(float(pearson_r))  # [0, 1]
-            
-            # Nonlinearity: Mutual information (using normalized MI)
-            try:
-                from sklearn.feature_selection import mutual_info_regression
-                # Discretize for MI calculation (if needed)
-                mi_score = mutual_info_regression(
-                    x_clean.values.reshape(-1, 1), 
-                    y_clean.values,
-                    random_state=42
-                )[0]
-                # Normalize MI to [0, 1] range (rough approximation)
-                nonlinearity_score = min(1.0, max(0.0, mi_score / 2.0))
-            except Exception:
-                # Fallback: use correlation-based nonlinearity
-                nonlinearity_score = 1.0 - linearity_score
-            
-            return {
-                "linearity": float(linearity_score),
-                "nonlinearity": float(nonlinearity_score),
-                "pearson_r": float(pearson_r),
-                "pearson_p": float(pearson_p)
-            }
+            import pingouin as pg
+
+            data = df.dropna().values
+            if data.shape[0] < 5 or data.shape[1] < 2:
+                return 0.0
+
+            # Pingouin HZ test
+            hz_res = pg.multivariate_normality(data, alpha=0.05)
+            # hz_res = HZResults(hz=..., pval=..., normal=...)
+
+            return float(hz_res.pval)
+
         except Exception as e:
-            logger.warning(f"Cont-Cont pairwise test failed: {e}")
-            return {"linearity": 0.5, "nonlinearity": 0.5, "error": str(e)}
+            logger.warning(f"Global normality test (pingouin) failed: {e}")
+            return 0.0
     
     @staticmethod
-    def pairwise_cont_cat_test(x: pd.Series, y: pd.Series) -> Dict[str, Any]:
-        """Test pairwise properties for continuous-categorical pairs.
-        Returns heteroscedasticity (Levene's test) and mean differences (ANOVA F-statistic).
+    def global_linearity_test(df: pd.DataFrame) -> float:
+        """Global linearity test using Ramsey RESET via statsmodels.
+
+        Tests H0: Linear specification is adequate for multiple regressions
+        via statsmodels.stats.diagnostic.linear_reset.
+
+        It then aggregates the resulting p-values into a single global p-value using a Holm step-down adjustment (less conservative than simple Bonferroni).
+
+        Returns:
+            p-value in [0, 1]; high values suggest no strong evidence against linearity.
         """
         try:
-            # Remove NaN pairs
-            valid_idx = ~(x.isna() | y.isna())
-            x_clean = x[valid_idx]
-            y_clean = y[valid_idx]
-            
-            if len(x_clean) < 3:
-                return {"heteroscedasticity": 0.5, "mean_difference": 0.5, "error": "Insufficient data"}
-            
-            # Determine which is continuous and which is categorical
-            if pd.api.types.is_numeric_dtype(x_clean) and not pd.api.types.is_numeric_dtype(y_clean):
-                cont_var = x_clean
-                cat_var = y_clean
-            elif pd.api.types.is_numeric_dtype(y_clean) and not pd.api.types.is_numeric_dtype(x_clean):
-                cont_var = y_clean
-                cat_var = x_clean
-            else:
-                # Both numeric or both categorical - use heuristics based on cardinality
-                # This can happen when categorical variables are encoded as numeric
-                # or when both are numeric but one should be treated as categorical
-                if x_clean.nunique() > y_clean.nunique():
-                    cont_var = x_clean
-                    cat_var = y_clean
+            import statsmodels.api as sm
+            from statsmodels.stats.diagnostic import linear_reset
+
+            data = df.dropna()
+            if data.shape[0] < 10 or data.shape[1] < 2:
+                # Not enough data to run a sensible global test
+                return 0.5
+
+            pvalues = []
+
+            # Test each variable as dependent variable
+            cols = list(data.columns)
+            max_vars = len(cols) # can limit max_vars if needed
+
+            for i in range(max_vars):
+                y_col = cols[i]
+                y = data[y_col].values
+                X = data.drop(columns=[y_col]).values
+
+                if X.ndim == 1:
+                    X = X.reshape(-1, 1)
+
+                # Add constant term
+                X_const = sm.add_constant(X, has_constant="add")
+
+                # Fit OLS model
+                model = sm.OLS(y, X_const)
+                res = model.fit()
+
+                # Ramsey RESET test
+                reset_res = linear_reset(res, power=3, test_type="fitted", use_f=True)
+
+                pval = reset_res.pvalue
+                if hasattr(pval, "__len__") and not np.isscalar(pval):
+                    pval = float(np.min(pval))
                 else:
-                    cont_var = y_clean
-                    cat_var = x_clean
-            
-            # Group continuous variable by categorical levels
-            groups = [cont_var[cat_var == cat_val].dropna() for cat_val in cat_var.unique()]
-            groups = [g for g in groups if len(g) > 1]  # Filter groups with at least 2 samples
-            
-            if len(groups) < 2:
-                return {"heteroscedasticity": 0.5, "mean_difference": 0.5, "error": "Insufficient groups"}
-            
-            # Heteroscedasticity: Levene's test
-            try:
-                levene_stat, levene_p = stats.levene(*groups)
-                heteroscedasticity_score = float(levene_p)  # Higher p = more homoscedastic
-            except Exception:
-                heteroscedasticity_score = 0.5
-            
-            # Mean differences: ANOVA F-statistic
-            try:
-                f_stat, f_p = stats.f_oneway(*groups)
-                mean_difference_score = float(f_p)  # Lower p = more significant difference
-                # Convert to score where higher = more difference
-                mean_difference_score = 1.0 - min(1.0, mean_difference_score)
-            except Exception:
-                mean_difference_score = 0.5
-            
-            return {
-                "heteroscedasticity": heteroscedasticity_score,
-                "mean_difference": mean_difference_score,
-                "levene_p": float(levene_p) if 'levene_p' in locals() else 0.5,
-                "anova_f": float(f_stat) if 'f_stat' in locals() else 0.0,
-                "anova_p": float(f_p) if 'f_p' in locals() else 0.5
-            }
+                    pval = float(pval)
+
+                pvalues.append(pval)
+
+            if not pvalues:
+                logger.warning("Global linearity test produced no valid p-values.")
+                return np.nan
+
+            # --- Holm step-down 기반 global p-value 집계 ---
+            pvals = np.asarray(pvalues, dtype=float)
+            m = pvals.size
+
+            order = np.argsort(pvals)
+            sorted_p = pvals[order]
+
+            # Holm 조정 p-value 계산: p_(i) * (m - i + 1)
+            holm_adj = np.empty_like(sorted_p)
+            for i, p in enumerate(sorted_p):
+                k = m - i  # remaining hypotheses
+                holm_adj[i] = min(1.0, p * k)
+
+            for i in range(1, m):
+                if holm_adj[i] < holm_adj[i - 1]:
+                    holm_adj[i] = holm_adj[i - 1]
+
+            # Global p-value is the minimum of the Holm-adjusted p-values
+            global_p = float(np.min(holm_adj))
+
+            return global_p
+
         except Exception as e:
-            logger.warning(f"Cont-Cat pairwise test failed: {e}")
-            return {"heteroscedasticity": 0.5, "mean_difference": 0.5, "error": str(e)}
-    
-    @staticmethod
-    def pairwise_cat_cat_test(x: pd.Series, y: pd.Series) -> Dict[str, Any]:
-        """Test pairwise properties for categorical-categorical pairs.
-        Returns association (Chi-squared test).
-        """
-        try:
-            # Remove NaN pairs
-            valid_idx = ~(x.isna() | y.isna())
-            x_clean = x[valid_idx]
-            y_clean = y[valid_idx]
-            
-            if len(x_clean) < 3:
-                return {"association": 0.5, "error": "Insufficient data"}
-            
-            # Create contingency table
-            contingency = pd.crosstab(x_clean, y_clean)
-            
-            if contingency.size == 0:
-                return {"association": 0.5, "error": "Empty contingency table"}
-            
-            # Chi-squared test
-            try:
-                chi2_stat, chi2_p, dof, expected = stats.chi2_contingency(contingency)
-                # Convert p-value to association score (lower p = stronger association)
-                association_score = 1.0 - min(1.0, float(chi2_p))
-            except Exception:
-                association_score = 0.5
-            
-            return {
-                "association": float(association_score),
-                "chi2_stat": float(chi2_stat) if 'chi2_stat' in locals() else 0.0,
-                "chi2_p": float(chi2_p) if 'chi2_p' in locals() else 0.5
-            }
-        except Exception as e:
-            logger.warning(f"Cat-Cat pairwise test failed: {e}")
-            return {"association": 0.5, "error": str(e)}
+            logger.warning(f"Global linearity test (statsmodels RESET) failed: {e}")
+            return 0.0
 
 class IndependenceTool:
     """Independence testing tools for ANM and other tests"""
@@ -462,7 +395,6 @@ class ANMTool:
         runtime = time.time() - t0
         return normalize_graph_result("ANM", vars_, edges, 
                                     {"delta": delta, "tau": tau, "backend": "causal-learn"}, runtime)
-
 
 # CAM tool
 class CAMTool:
@@ -687,6 +619,77 @@ class LRTTest:
         self.data = data
         self.variable_schema = variable_schema or {}
         self.vars = variable_schema.get("variables", {}) if variable_schema else {}
+        # Convert data to DataFrame for easier dummy encoding
+        var_names = list(self.vars.keys()) if self.vars else [f"var_{i}" for i in range(self.data.shape[1])]
+        self.df = pd.DataFrame(self.data, columns=var_names[:self.data.shape[1]])
+    
+    def _dummy_encode_categorical(self, var_idx: int, data: np.ndarray) -> Tuple[np.ndarray, int]:
+        """Convert categorical variable to dummy variables
+        
+        Returns:
+            encoded_data: Dummy-encoded array (n_samples, n_dummies)
+            n_dummies: Number of dummy variables created (for df calculation)
+        """
+        if var_idx >= len(self.vars):
+            # No schema info, treat as continuous
+            return data.reshape(-1, 1), 1
+        
+        var_name = list(self.vars.keys())[var_idx] if self.vars else f"var_{var_idx}"
+        var_info = self.vars.get(var_name, {})
+        var_type = var_info.get("data_type", "Continuous")
+        
+        if var_type in ["Nominal", "Binary", "Ordinal"]:
+            # Convert to categorical and create dummy variables
+            var_series = pd.Series(data, name=var_name)
+            # Get unique values (excluding NaN)
+            unique_vals = var_series.dropna().unique()
+            n_levels = len(unique_vals)
+            
+            if n_levels <= 1:
+                # Only one level, return single column
+                return np.ones((len(data), 1)), 1
+            
+            # Create dummy variables (drop_first=True to avoid multicollinearity)
+            dummies = pd.get_dummies(var_series, drop_first=True, dummy_na=False)
+            # Fill NaN with 0 (reference category)
+            dummies = dummies.fillna(0)
+            n_dummies = dummies.shape[1]
+            return dummies.values, n_dummies
+        else:
+            # Continuous variable, return as-is
+            return data.reshape(-1, 1), 1
+    
+    def _prepare_features(self, x_idx: int, z_indices: List[int], 
+                         x_data: np.ndarray, z_data: np.ndarray = None) -> Tuple[np.ndarray, int]:
+        """Prepare feature matrix with dummy encoding for categorical variables
+        
+        Returns:
+            features: Feature matrix (n_samples, n_features)
+            df_diff: Difference in degrees of freedom between full and reduced model
+        """
+        # Encode X
+        x_encoded, x_df = self._dummy_encode_categorical(x_idx, x_data)
+        
+        # Encode Z variables
+        z_encoded_list = []
+        z_df_total = 0
+        if z_data is not None and len(z_data.shape) > 1 and z_data.shape[1] > 0:
+            for i, z_idx in enumerate(z_indices):
+                z_col = z_data[:, i] if z_data.shape[1] > i else z_data.flatten()
+                z_enc, z_df = self._dummy_encode_categorical(z_idx, z_col)
+                z_encoded_list.append(z_enc)
+                z_df_total += z_df
+        
+        # Combine features
+        if z_encoded_list:
+            features = np.column_stack([x_encoded] + z_encoded_list)
+        else:
+            features = x_encoded
+        
+        # df_diff is the number of parameters added by X (after dummy encoding)
+        df_diff = x_df
+        
+        return features, df_diff
     
     def __call__(self, x: int, y: int, z: List[int] = None) -> float:
         """Perform LRT test: X ⟂ Y | Z"""
@@ -722,127 +725,220 @@ class LRTTest:
             if len(X_clean) < 3:
                 return 1.0
             
+            from scipy.stats import chi2
+            
+            # Prepare features with dummy encoding
+            XZ_features, df_diff = self._prepare_features(x, z, X_clean, Z_clean)
+            has_z = Z_clean is not None and len(Z_clean.shape) > 1 and Z_clean.shape[1] > 0
+            
+            # Prepare Z features for reduced model
+            if has_z:
+                Z_features_list = []
+                for i, z_idx in enumerate(z):
+                    z_col = Z_clean[:, i] if Z_clean.shape[1] > i else Z_clean.flatten()
+                    z_enc, _ = self._dummy_encode_categorical(z_idx, z_col)
+                    Z_features_list.append(z_enc)
+                Z_features = np.column_stack(Z_features_list) if Z_features_list else None
+            else:
+                Z_features = None
+            
             # Perform LRT based on Y type
             if y_type == "Continuous":
                 # Linear regression
                 from sklearn.linear_model import LinearRegression
-                if Z_clean is not None and len(Z_clean.shape) > 1 and Z_clean.shape[1] > 0:
-                    # Full model: Y ~ X + Z
-                    XZ = np.column_stack([X_clean.reshape(-1, 1), Z_clean])
-                    lr_full = LinearRegression()
-                    lr_full.fit(XZ, Y_clean)
-                    y_pred_full = lr_full.predict(XZ)
-                    ssr_full = np.sum((Y_clean - y_pred_full) ** 2)
-                    
-                    # Reduced model: Y ~ Z
+                
+                # Full model: Y ~ X + Z
+                lr_full = LinearRegression()
+                lr_full.fit(XZ_features, Y_clean)
+                y_pred_full = lr_full.predict(XZ_features)
+                ssr_full = np.sum((Y_clean - y_pred_full) ** 2)
+                
+                # Reduced model: Y ~ Z (or intercept only)
+                if Z_features is not None:
                     lr_reduced = LinearRegression()
-                    lr_reduced.fit(Z_clean, Y_clean)
-                    y_pred_reduced = lr_reduced.predict(Z_clean)
+                    lr_reduced.fit(Z_features, Y_clean)
+                    y_pred_reduced = lr_reduced.predict(Z_features)
                     ssr_reduced = np.sum((Y_clean - y_pred_reduced) ** 2)
                 else:
-                    # Full model: Y ~ X
-                    lr_full = LinearRegression()
-                    lr_full.fit(X_clean.reshape(-1, 1), Y_clean)
-                    y_pred_full = lr_full.predict(X_clean.reshape(-1, 1))
-                    ssr_full = np.sum((Y_clean - y_pred_full) ** 2)
-                    
-                    # Reduced model: Y ~ 1 (mean)
                     ssr_reduced = np.sum((Y_clean - np.mean(Y_clean)) ** 2)
                 
                 # LRT statistic
                 if ssr_full > 0:
                     lr_stat = len(Y_clean) * np.log(ssr_reduced / ssr_full)
-                    # Approximate p-value using chi-squared (1 df for one parameter difference)
-                    from scipy.stats import chi2
-                    p_value = 1.0 - chi2.cdf(lr_stat, df=1)
+                    p_value = 1.0 - chi2.cdf(max(0, lr_stat), df=df_diff)
                 else:
                     p_value = 1.0
             
-            elif y_type in ["Binary"]:
-                # Logistic regression
+            elif y_type == "Binary":
+                # Binary logistic regression
                 from sklearn.linear_model import LogisticRegression
-                from scipy.stats import chi2
                 
-                # Prepare features
-                has_z = Z_clean is not None and len(Z_clean.shape) > 1 and Z_clean.shape[1] > 0
+                # Full model: Y ~ X + Z
+                lr_full = LogisticRegression(max_iter=1000, random_state=42)
+                lr_full.fit(XZ_features, Y_clean)
                 
-                if has_z:
-                    XZ = np.column_stack([X_clean.reshape(-1, 1), Z_clean])
-                    # Full model: Y ~ X + Z
-                    lr_full = LogisticRegression(max_iter=1000, random_state=42)
-                    lr_full.fit(XZ, Y_clean)
-                    # Reduced model: Y ~ Z
+                # Reduced model: Y ~ Z (or intercept only)
+                if Z_features is not None:
                     lr_reduced = LogisticRegression(max_iter=1000, random_state=42)
-                    lr_reduced.fit(Z_clean, Y_clean)
+                    lr_reduced.fit(Z_features, Y_clean)
+                    prob_reduced = lr_reduced.predict_proba(Z_features)
                 else:
-                    # Full model: Y ~ X
-                    lr_full = LogisticRegression(max_iter=1000, random_state=42)
-                    lr_full.fit(X_clean.reshape(-1, 1), Y_clean)
-                    # Reduced: intercept only
                     lr_reduced = LogisticRegression(max_iter=1000, random_state=42)
                     lr_reduced.fit(np.ones((len(Y_clean), 1)), Y_clean)
-                
-                # Calculate log-likelihoods for LRT
-                # Use predict_proba to get probabilities, then compute log-likelihood
-                if has_z:
-                    prob_full = lr_full.predict_proba(XZ)
-                    prob_reduced = lr_reduced.predict_proba(Z_clean)
-                else:
-                    prob_full = lr_full.predict_proba(X_clean.reshape(-1, 1))
                     prob_reduced = lr_reduced.predict_proba(np.ones((len(Y_clean), 1)))
                 
-                # Log-likelihood: sum of log(prob) for actual class
-                ll_full = np.sum(np.log(prob_full[np.arange(len(Y_clean)), Y_clean.astype(int)] + 1e-10))
-                ll_reduced = np.sum(np.log(prob_reduced[np.arange(len(Y_clean)), Y_clean.astype(int)] + 1e-10))
+                # Calculate log-likelihoods
+                prob_full = lr_full.predict_proba(XZ_features)
+                y_int = Y_clean.astype(int)
+                ll_full = np.sum(np.log(prob_full[np.arange(len(Y_clean)), y_int] + 1e-10))
+                ll_reduced = np.sum(np.log(prob_reduced[np.arange(len(Y_clean)), y_int] + 1e-10))
                 
-                # LRT statistic: -2 * (log_likelihood_reduced - log_likelihood_full)
+                # LRT statistic
                 lr_stat = -2 * (ll_reduced - ll_full)
-                p_value = 1.0 - chi2.cdf(max(0, lr_stat), df=1)
+                p_value = 1.0 - chi2.cdf(max(0, lr_stat), df=df_diff)
+            
+            elif y_type == "Nominal":
+                # Multinomial logistic regression
+                from sklearn.linear_model import LogisticRegression
+                
+                # Full model: Y ~ X + Z
+                lr_full = LogisticRegression(multi_class='multinomial', max_iter=1000, random_state=42, solver='lbfgs')
+                lr_full.fit(XZ_features, Y_clean)
+                
+                # Reduced model: Y ~ Z (or intercept only)
+                if Z_features is not None:
+                    lr_reduced = LogisticRegression(multi_class='multinomial', max_iter=1000, random_state=42, solver='lbfgs')
+                    lr_reduced.fit(Z_features, Y_clean)
+                    prob_reduced = lr_reduced.predict_proba(Z_features)
+                else:
+                    lr_reduced = LogisticRegression(multi_class='multinomial', max_iter=1000, random_state=42, solver='lbfgs')
+                    lr_reduced.fit(np.ones((len(Y_clean), 1)), Y_clean)
+                    prob_reduced = lr_reduced.predict_proba(np.ones((len(Y_clean), 1)))
+                
+                # Calculate log-likelihoods
+                prob_full = lr_full.predict_proba(XZ_features)
+                y_int = Y_clean.astype(int)
+                ll_full = np.sum(np.log(prob_full[np.arange(len(Y_clean)), y_int] + 1e-10))
+                ll_reduced = np.sum(np.log(prob_reduced[np.arange(len(Y_clean)), y_int] + 1e-10))
+                
+                # LRT statistic
+                lr_stat = -2 * (ll_reduced - ll_full)
+                p_value = 1.0 - chi2.cdf(max(0, lr_stat), df=df_diff)
+            
+            elif y_type == "Ordinal":
+                # Ordinal logistic regression (proportional odds model)
+                try:
+                    import mord
+                    # Full model: Y ~ X + Z
+                    lr_full = mord.LogisticAT()
+                    lr_full.fit(XZ_features, Y_clean)
+                    
+                    # Reduced model: Y ~ Z (or intercept only)
+                    if Z_features is not None:
+                        lr_reduced = mord.LogisticAT()
+                        lr_reduced.fit(Z_features, Y_clean)
+                    else:
+                        lr_reduced = mord.LogisticAT()
+                        lr_reduced.fit(np.ones((len(Y_clean), 1)), Y_clean)
+                    
+                    # Calculate log-likelihoods (mord doesn't provide predict_proba easily)
+                    # Use score as approximation or calculate manually
+                    # For now, use a simplified approach
+                    ll_full = lr_full.score(XZ_features, Y_clean) * len(Y_clean)
+                    ll_reduced = lr_reduced.score(Z_features if Z_features is not None else np.ones((len(Y_clean), 1)), Y_clean) * len(Y_clean)
+                    
+                    lr_stat = -2 * (ll_reduced - ll_full)
+                    p_value = 1.0 - chi2.cdf(max(0, lr_stat), df=df_diff)
+                except ImportError:
+                    # Fallback: treat as multinomial if mord not available
+                    logger.warning("mord library not available for ordinal regression, using multinomial as fallback")
+                    from sklearn.linear_model import LogisticRegression
+                    lr_full = LogisticRegression(multi_class='multinomial', max_iter=1000, random_state=42, solver='lbfgs')
+                    lr_full.fit(XZ_features, Y_clean)
+                    if Z_features is not None:
+                        lr_reduced = LogisticRegression(multi_class='multinomial', max_iter=1000, random_state=42, solver='lbfgs')
+                        lr_reduced.fit(Z_features, Y_clean)
+                        prob_reduced = lr_reduced.predict_proba(Z_features)
+                    else:
+                        lr_reduced = LogisticRegression(multi_class='multinomial', max_iter=1000, random_state=42, solver='lbfgs')
+                        lr_reduced.fit(np.ones((len(Y_clean), 1)), Y_clean)
+                        prob_reduced = lr_reduced.predict_proba(np.ones((len(Y_clean), 1)))
+                    
+                    prob_full = lr_full.predict_proba(XZ_features)
+                    y_int = Y_clean.astype(int)
+                    ll_full = np.sum(np.log(prob_full[np.arange(len(Y_clean)), y_int] + 1e-10))
+                    ll_reduced = np.sum(np.log(prob_reduced[np.arange(len(Y_clean)), y_int] + 1e-10))
+                    lr_stat = -2 * (ll_reduced - ll_full)
+                    p_value = 1.0 - chi2.cdf(max(0, lr_stat), df=df_diff)
             
             else:
-                # Nominal/Ordinal: use multinomial or ordinal logistic (placeholder)
-                # For now, fallback to correlation-based test
+                # Unknown type, fallback
+                logger.warning(f"Unknown y_type {y_type}, using correlation-based fallback")
                 if Z_clean is None or (len(Z_clean.shape) == 1 and Z_clean.shape[0] == 0):
                     corr, p_val = stats.pearsonr(X_clean, Y_clean)
                     p_value = float(p_val)
                 else:
-                    # Partial correlation (simplified)
                     p_value = 0.5
             
             # Symmetric test: also test Y ⟂ X | Z (swap roles)
             # For symmetric test, we swap X and Y and test again
             try:
-                # Swap X and Y for symmetric test
-                if y_type == "Continuous":
+                # Prepare features for Y->X test (swap roles)
+                YX_features, df_diff_yx = self._prepare_features(y, z, Y_clean, Z_clean)
+                
+                if x_type == "Continuous":
                     # Linear regression for Y->X
-                    if Z_clean is not None and len(Z_clean.shape) > 1 and Z_clean.shape[1] > 0:
-                        YZ = np.column_stack([Y_clean.reshape(-1, 1), Z_clean])
-                        lr_full_yx = LinearRegression()
-                        lr_full_yx.fit(YZ, X_clean)
-                        x_pred_full = lr_full_yx.predict(YZ)
-                        ssr_full_yx = np.sum((X_clean - x_pred_full) ** 2)
-                        
+                    from sklearn.linear_model import LinearRegression
+                    
+                    # Full model: X ~ Y + Z
+                    lr_full_yx = LinearRegression()
+                    lr_full_yx.fit(YX_features, X_clean)
+                    x_pred_full = lr_full_yx.predict(YX_features)
+                    ssr_full_yx = np.sum((X_clean - x_pred_full) ** 2)
+                    
+                    # Reduced model: X ~ Z (or intercept only)
+                    if Z_features is not None:
                         lr_reduced_yx = LinearRegression()
-                        lr_reduced_yx.fit(Z_clean, X_clean)
-                        x_pred_reduced = lr_reduced_yx.predict(Z_clean)
+                        lr_reduced_yx.fit(Z_features, X_clean)
+                        x_pred_reduced = lr_reduced_yx.predict(Z_features)
                         ssr_reduced_yx = np.sum((X_clean - x_pred_reduced) ** 2)
                     else:
-                        lr_full_yx = LinearRegression()
-                        lr_full_yx.fit(Y_clean.reshape(-1, 1), X_clean)
-                        x_pred_full = lr_full_yx.predict(Y_clean.reshape(-1, 1))
-                        ssr_full_yx = np.sum((X_clean - x_pred_full) ** 2)
                         ssr_reduced_yx = np.sum((X_clean - np.mean(X_clean)) ** 2)
                     
                     if ssr_full_yx > 0:
                         lr_stat_yx = len(X_clean) * np.log(ssr_reduced_yx / ssr_full_yx)
-                        from scipy.stats import chi2
-                        p_value_yx = 1.0 - chi2.cdf(lr_stat_yx, df=1)
+                        p_value_yx = 1.0 - chi2.cdf(max(0, lr_stat_yx), df=df_diff_yx)
                     else:
                         p_value_yx = 1.0
+                elif x_type == "Binary":
+                    # Binary logistic regression for Y->X
+                    from sklearn.linear_model import LogisticRegression
+                    
+                    # Full model: X ~ Y + Z
+                    lr_full_yx = LogisticRegression(max_iter=1000, random_state=42)
+                    lr_full_yx.fit(YX_features, X_clean)
+                    
+                    # Reduced model: X ~ Z (or intercept only)
+                    if Z_features is not None:
+                        lr_reduced_yx = LogisticRegression(max_iter=1000, random_state=42)
+                        lr_reduced_yx.fit(Z_features, X_clean)
+                        prob_reduced_yx = lr_reduced_yx.predict_proba(Z_features)
+                    else:
+                        lr_reduced_yx = LogisticRegression(max_iter=1000, random_state=42)
+                        lr_reduced_yx.fit(np.ones((len(X_clean), 1)), X_clean)
+                        prob_reduced_yx = lr_reduced_yx.predict_proba(np.ones((len(X_clean), 1)))
+                    
+                    prob_full_yx = lr_full_yx.predict_proba(YX_features)
+                    x_int = X_clean.astype(int)
+                    ll_full_yx = np.sum(np.log(prob_full_yx[np.arange(len(X_clean)), x_int] + 1e-10))
+                    ll_reduced_yx = np.sum(np.log(prob_reduced_yx[np.arange(len(X_clean)), x_int] + 1e-10))
+                    lr_stat_yx = -2 * (ll_reduced_yx - ll_full_yx)
+                    p_value_yx = 1.0 - chi2.cdf(max(0, lr_stat_yx), df=df_diff_yx)
                 else:
-                    # For non-continuous, use same p-value
+                    # For non-continuous/non-binary X, use same p-value
                     p_value_yx = p_value
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Symmetric test failed: {e}")
                 p_value_yx = p_value
             
             # Combine p-values (max for conservative test)
@@ -962,50 +1058,118 @@ class GESTool:
 
 # --- FCI tool ---
 class LiMTool:
-    """LiM (Linear Mixed) algorithm placeholder for mixed data functional model"""
+    """LiM (Linear Mixed) algorithm for mixed data functional model"""
+    
     @staticmethod
-    def discover(df: pd.DataFrame, variable_schema: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+    def _build_dis_con(variables: List[str], variable_schema: Optional[Dict[str, Any]] = None) -> np.ndarray:
+        """Build dis_con vector for LiM algorithm
+        
+        Args:
+            variables: List of variable names
+            variable_schema: Variable schema dictionary
+            
+        Returns:
+            dis_con: (1, n_features) array where 1=Continuous, 0=Discrete
+        """
+        n_features = len(variables)
+        dis_con = np.ones((1, n_features), dtype=int)
+        
+        if variable_schema:
+            schema_vars = variable_schema.get("variables", {})
+            for j, name in enumerate(variables):
+                meta = schema_vars.get(name, {})
+                dtype = meta.get("data_type")
+                if dtype in ["Binary", "Nominal", "Ordinal"]:
+                    dis_con[0, j] = 0  # Discrete
+                elif dtype == "Continuous":
+                    dis_con[0, j] = 1  # Continuous
+                else:
+                    # Unknown type defaults to discrete
+                    dis_con[0, j] = 0
+                    logger.warning(f"Unknown data_type '{dtype}' for variable '{name}', treating as discrete")
+        
+        return dis_con
+    
+    @staticmethod
+    def discover(df: pd.DataFrame, variable_schema: Dict[str, Any] = None, algo_config: Optional[Dict[str, Any]] = None, **kwargs) -> Dict[str, Any]:
+        """LiM algorithm implementation using lingam library
+        
+        Args:
+            df: DataFrame with mixed data (continuous and categorical)
+            variable_schema: Variable schema dictionary with data types
+            algo_config: Optional algorithm configuration dictionary
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary with graph result in ORCA standard format
+        """
         import time
         t0 = time.time()
-        vars_ = list(df.columns)
-        edges = []
+        
         try:
-            # PLACEHOLDER: LiM algorithm implementation
-            # This should call the actual LiM library when available
-            # For now, return a placeholder structure
-            logger.warning("LiM algorithm not yet implemented. Returning placeholder result.")
-            # Placeholder: return empty graph structure
+            import lingam
+            
+            # 1. 입력 데이터 정리 (NaN 제거)
+            df_li = df.dropna()
+            if df_li.empty:
+                raise ValueError("DataFrame is empty after dropping NaN values")
+            
+            variables = list(df_li.columns)
+            X = df_li.values.astype(float)
+            
+            # 2. dis_con 벡터 생성
+            dis_con = LiMTool._build_dis_con(variables, variable_schema)
+            
+            # 3. LiM 모델 생성 및 학습
+            lim_params = {}
+            if algo_config and "LiM" in algo_config:
+                lim_params = algo_config["LiM"]
+            
+            lim_params.update(kwargs)
+            
+            model = lingam.LiM(**lim_params)
+            model.fit(X, dis_con)
+            
+            # 4. Adjacency matrix에서 edge list 변환
+            edges = []
+            A = getattr(model, 'adjacency_matrix_', None)
+            if A is None:
+                A = getattr(model, 'adjacency_matrix', None)
+            
+            if A is not None:
+                A = np.asarray(A)
+                for i in range(A.shape[0]):
+                    for j in range(A.shape[1]):
+                        if abs(A[i, j]) > 0:
+                            edges.append({"from": variables[i], "to": variables[j], "weight": float(A[i, j])})
+            else:
+                # Fallback: use causal order if available
+                order = getattr(model, 'causal_order_', None)
+                if order is None:
+                    order = getattr(model, 'causal_order', None)
+                
+                if order is not None:
+                    order = np.asarray(order)
+                    for i in range(len(order)):
+                        for j in range(i + 1, len(order)):
+                            edges.append({"from": variables[order[i]], "to": variables[order[j]], "weight": 1.0})
+                else:
+                    logger.warning("No adjacency matrix or causal order found in LiM model")
+            
             runtime = time.time() - t0
-            return normalize_graph_result(
-                "LiM", vars_, edges,
-                params={"variable_schema": variable_schema, "backend": "placeholder"},
-                runtime=runtime
-            )
+            
+            params = {"variable_schema": variable_schema, "backend": "lingam"}
+            if lim_params:
+                params["algo_config"] = lim_params
+            
+            return normalize_graph_result("LiM", variables, edges, params, runtime)
+            
+        except ImportError as e:
+            logger.error(f"LiM algorithm requires lingam library: {e}")
+            return {"error": f"LiM not available: lingam library not installed"}
         except Exception as e:
+            logger.error(f"LiM execution failed: {e}")
             return {"error": f"LiM not available: {e}"}
-
-class TSCMTool:
-    """TSCM (Tree-Structured Causal Model) algorithm placeholder for mixed data functional model"""
-    @staticmethod
-    def discover(df: pd.DataFrame, variable_schema: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
-        import time
-        t0 = time.time()
-        vars_ = list(df.columns)
-        edges = []
-        try:
-            # PLACEHOLDER: TSCM algorithm implementation
-            # This should call the actual TSCM library when available
-            # For now, return a placeholder structure
-            logger.warning("TSCM algorithm not yet implemented. Returning placeholder result.")
-            # Placeholder: return empty graph structure
-            runtime = time.time() - t0
-            return normalize_graph_result(
-                "TSCM", vars_, edges,
-                params={"variable_schema": variable_schema, "backend": "placeholder"},
-                runtime=runtime
-            )
-        except Exception as e:
-            return {"error": f"TSCM not available: {e}"}
 
 class FCITool:
     """FCI algorithm wrapper. Uses causal-learn and returns a PAG-oriented result.

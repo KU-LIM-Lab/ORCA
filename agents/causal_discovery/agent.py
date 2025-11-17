@@ -272,17 +272,6 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 return self._scorecard_evaluation(state)
             elif substep == "ensemble_synthesis":
                 return self._ensemble_synthesis(state)
-            # Legacy substeps for backward compatibility
-            elif substep == "assumption_method_matrix":
-                return self._data_profiling(state)
-            elif substep == "algorithm_scoring":
-                return self._algorithm_tiering(state)
-            elif substep == "run_algorithms":
-                return self._run_algorithms_portfolio(state)
-            elif substep == "intermediate_scoring":
-                return self._scorecard_evaluation(state)
-            elif substep == "final_graph_selection":
-                return self._ensemble_synthesis(state)
             else:
                 raise ValueError(f"Unknown substep: {substep}")
                 
@@ -293,7 +282,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
             return state
     
     def _data_profiling(self, state: AgentState) -> AgentState:
-        """Stage 1: Data profiling with qualitative summary generation"""
+        """Stage 1: Data profiling with three-stage approach (basic checks + global tests + pairwise profiles)"""
         logger.info("Performing data profiling...")
         
         try:
@@ -303,73 +292,32 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 raise ValueError("No preprocessed data available")
             
             # Get variable information
-            variables = list(df.columns)
+            variables = list[Any](df.columns)
             logger.info(f"Profiling data for variables: {variables}")
             
             # Check for variable schema from preprocessing
             variable_schema = state.get("variable_schema", {})
-            if variable_schema:
-                mixed_types = variable_schema.get("mixed_data_types", False)
-                statistics = variable_schema.get("statistics", {})
-                if mixed_types:
-                    logger.info(
-                        f"Mixed data types detected: {statistics.get('n_continuous', 0)} continuous, "
-                        f"{statistics.get('n_categorical', 0)} categorical, "
-                        f"{statistics.get('n_binary', 0)} binary variables"
-                    )
-                high_card_vars = variable_schema.get("high_cardinality_vars", [])
-                if high_card_vars:
-                    logger.warning(f"High cardinality variables detected: {high_card_vars[:5]}")
             
-            # Initialize assumption scores
-            assumption_scores = {
-                "S_lin": {},      # Linearity scores
-                "S_nG": {},       # Non-Gaussian scores  
-                "S_ANM": {},      # ANM scores
-                "S_Gauss": {},    # Gaussian scores
-                "S_EqVar": {}     # Equal variance scores
+            # 1. 기본 검사 (p > n, 데이터 유형 등)
+            basic_profile = self._run_basic_checks(variable_schema, df)
+            logger.info(f"Basic checks profile: {basic_profile}")
+            
+            # 2. 전역 테스트 (GES 및 Mixed Data)
+            global_profile = self._run_global_tests(df, variable_schema, basic_profile)
+            logger.info(f"Global tests profile: {global_profile}")
+            
+            # 3. 쌍별 테스트 (LiNGAM, ANM)
+            pairwise_profile = self._run_pairwise_profiles(df, variable_schema, basic_profile)
+            logger.info(f"Pairwise profiles: {pairwise_profile}")
+            
+            # 4. 최종 프로파일 취합
+            data_profile = {
+                "basic_checks": basic_profile,
+                "global_scores": global_profile,
+                "pairwise_scores": pairwise_profile
             }
             
-            # Build all lower-triangle pairs
-            pairs = [(variables[i], variables[j]) for i in range(len(variables)) for j in range(i+1, len(variables))]
-            # Sampling for very large pair sets
-            if self.profiling_max_pairs and len(pairs) > self.profiling_max_pairs:
-                rng = np.random.default_rng(42)
-                idx = rng.choice(len(pairs), size=self.profiling_max_pairs, replace=False)
-                pairs = [pairs[k] for k in idx]
-                logger.info(f"Sampling pairwise tests: using {len(pairs)} pairs")
-
-            # Determine parallelism
-            max_workers = self.profiling_parallelism or min(8, max(1, len(pairs)))
-
-            def _eval_pair(var1: str, var2: str):
-                pair_key = f"{var1}_{var2}"
-                # 1. Linearity test
-                linearity_score = self._test_linearity(df[var1], df[var2])
-                # 2. Non-Gaussian test
-                non_gaussian_score = self._test_non_gaussian(df[var1], df[var2])
-                # 3. ANM test
-                anm_score = self._test_anm(df[var1], df[var2])
-                # 4. Gaussian + Equal Variance
-                gauss_score, eqvar_score = self._test_gaussian_eqvar(df[var1], df[var2])
-                return pair_key, linearity_score, non_gaussian_score, anm_score, gauss_score, eqvar_score
-
-            # Parallel execution
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = [executor.submit(_eval_pair, v1, v2) for v1, v2 in pairs]
-                for fut in futures:
-                    pair_key, lin_s, ng_s, anm_s, g_s, ev_s = fut.result()
-                    assumption_scores["S_lin"][pair_key] = lin_s
-                    assumption_scores["S_nG"][pair_key] = ng_s
-                    assumption_scores["S_ANM"][pair_key] = anm_s
-                    assumption_scores["S_Gauss"][pair_key] = g_s
-                    assumption_scores["S_EqVar"][pair_key] = ev_s
-            
-            # Generate qualitative data profile
-            data_profile = self._generate_qualitative_profile(assumption_scores, variables, variable_schema, df)
-            
             # Update state
-            state["assumption_method_scores"] = assumption_scores
             state["data_profile"] = data_profile
             state["data_profiling_completed"] = True
             
@@ -385,254 +333,189 @@ class CausalDiscoveryAgent(SpecialistAgent):
             state["error"] = f"Data profiling failed: {str(e)}"
             return state
     
-    def _classify_assumption_strength(self, scores_dict: Dict[str, float], 
-                                       n_pairs: int, 
-                                       use_quantile: bool = None) -> str:
-        """Classify assumption strength using adaptive thresholds"""
-        if use_quantile is None:
-            use_quantile = self.use_quantile_thresholds
+    def _run_basic_checks(self, variable_schema: Dict[str, Any], df: pd.DataFrame) -> Dict[str, Any]:
+        """Basic checks: Classify data type and assess CI reliability
+                
+        Args:
+            variable_schema: Variable schema from preprocessing
+            df: DataFrame to profile
             
-        scores = np.array(list(scores_dict.values()))
-        mean = scores_dict["mean"]
-        std = scores_dict["std"]
+        Returns:
+            Dictionary with:
+            - data_type_profile: "Pure Continuous", "Mixed", or "Pure Categorical"
+            - ci_reliability: "High", "Low (High-Dimensional)", or "Critically Low (p > n)"
+            - high_cardinality: Boolean indicating high cardinality variables
+        """
+        stats = variable_schema.get("statistics", {}) if variable_schema else {}
+        n_cont = stats.get("n_continuous", 0)
+        n_cat = stats.get("n_categorical", 0) + stats.get("n_binary", 0)
         
-        # Use quantile approach if enough pairs
-        if use_quantile and n_pairs >= self.min_pairs_for_quantile:
-            q1, q3 = np.quantile(scores, [0.25, 0.75])
-            if mean >= q3:
-                return "strong"
-            elif mean <= q1:
-                return "weak"
-            else:
-                return "moderate"
+        # 1. 데이터 유형(Data Type) 분류
+        data_type_profile = "Mixed"
+        if n_cont > 0 and n_cat == 0:
+            data_type_profile = "Pure Continuous"
+        elif n_cont == 0 and n_cat > 0:
+            data_type_profile = "Pure Categorical"
         
-        # Fallback: simple approach with confidence
-        hi, lo, min_conf = self.threshold_high, self.threshold_low, self.min_confidence
+        # 2. 차원성(Dimensionality)에 기반한 CI 신뢰도 판단 
+        n_variables = len(df.columns)
+        n_samples = len(df)
+        p_gt_n = n_variables > n_samples
         
-        if std < min_conf:
-            return "strong" if mean >= hi else "weak" if mean <= lo else "moderate"
+        ci_reliability = "High"
+        if p_gt_n:
+            ci_reliability = "Critically Low (p > n)"  # p > n 이면 CI 테스트는 통계적으로 신뢰 불가
+        elif n_variables > 20:  # 변수가 많아도 CI 테스트 검정력 저하
+            ci_reliability = "Low (High-Dimensional)"
         
-        if mean >= hi and std <= 0.15:
-            return "strong"
-        elif mean <= lo and std <= 0.15:
-            return "weak"
-        else:
-            return "moderate"
-
-    def _generate_qualitative_profile(self, assumption_scores: Dict[str, Dict[str, float]], 
-                                     variables: List[str], 
-                                     variable_schema: Dict[str, Any] = None,
-                                     df: pd.DataFrame = None) -> Dict[str, Any]:
-        """Generate qualitative data profile from assumption scores with enhanced pairwise and global properties"""
-        try:
-            # Aggregate scores across all pairs
-            aggregated_scores = {}
-            for assumption_type, pair_scores in assumption_scores.items():
-                if pair_scores:
-                    scores = list(pair_scores.values())
-                    aggregated_scores[assumption_type] = {
-                        "mean": np.mean(scores),
-                        "median": np.median(scores),
-                        "std": np.std(scores),
-                        "min": np.min(scores),
-                        "max": np.max(scores)
-                    }
-                else:
-                    aggregated_scores[assumption_type] = {"mean": 0.5, "median": 0.5, "std": 0.0, "min": 0.5, "max": 0.5}
-            
-            # Generate qualitative descriptions using adaptive thresholds
-            n_pairs = len(variables) * (len(variables) - 1) // 2
-            
-            linearity_desc = self._classify_assumption_strength(
-                aggregated_scores["S_lin"], n_pairs)
-            non_gaussian_desc = self._classify_assumption_strength(
-                aggregated_scores["S_nG"], n_pairs)
-            gaussian_desc = self._classify_assumption_strength(
-                aggregated_scores["S_Gauss"], n_pairs)
-            eqvar_desc = self._classify_assumption_strength(
-                aggregated_scores["S_EqVar"], n_pairs)
-            
-            # ANM compatibility with dual check
-            anm_scores = np.array(list(assumption_scores["S_ANM"].values()))
-            anm_mean = aggregated_scores["S_ANM"]["mean"]
-            anm_compatible = (anm_mean >= self.anm_mean_threshold) and (np.mean(anm_scores >= self.anm_mean_threshold) >= self.anm_pair_ratio_threshold)
-            
-            # Per-variable properties (from variable_schema)
-            per_variable = {}
-            if variable_schema:
-                per_variable = {
-                    "statistics": variable_schema.get("statistics", {}),
-                    "variables": variable_schema.get("variables", {}),
-                    "high_cardinality_vars": variable_schema.get("high_cardinality_vars", [])
-                }
-            
-            # Pairwise propertie
-            pairwise = self._compute_pairwise_properties(variables, variable_schema, df)
-            
-            # Global properties
-            global_props = self._compute_global_properties(variable_schema, pairwise, aggregated_scores)
-            
-            data_profile = {
-                "per_variable": per_variable,
-                "pairwise": pairwise,
-                "global": global_props,
-                "linearity": linearity_desc,
-                "non_gaussian": non_gaussian_desc,
-                "anm_compatible": anm_compatible,
-                "gaussian": gaussian_desc,
-                "equal_variance": eqvar_desc,
-                "n_variables": len(variables),
-                "n_pairs": n_pairs,
-                "aggregated_scores": aggregated_scores,
-                "summary": f"Data shows {linearity_desc} linearity, {non_gaussian_desc} non-Gaussianity, "
-                          f"{'ANM-compatible' if anm_compatible else 'ANM-incompatible'} patterns"
-            }
-            
-            return data_profile
-            
-        except Exception as e:
-            logger.warning(f"Qualitative profile generation failed: {e}")
-            return {
-                "per_variable": {},
-                "pairwise": {},
-                "global": {"is_mixed": False, "is_mostly_linear": True, "has_high_cardinality": False},
-                "linearity": "moderate",
-                "non_gaussian": "moderate", 
-                "anm_compatible": False,
-                "gaussian": "moderate",
-                "equal_variance": "moderate",
-                "n_variables": len(variables),
-                "n_pairs": len(variables) * (len(variables) - 1) // 2,
-                "summary": "Default profile due to generation error"
-            }
+        # 3. High cardinality check
+        high_cardinality = len(variable_schema.get("high_cardinality_vars", [])) > 0 if variable_schema else False
+        
+        return {
+            "data_type_profile": data_type_profile,
+            "ci_reliability": ci_reliability,
+            "high_cardinality": high_cardinality
+        }
     
-    def _compute_pairwise_properties(self, variables: List[str], 
-                                    variable_schema: Dict[str, Any] = None,
-                                    df: pd.DataFrame = None) -> Dict[str, Any]:
-        """Compute pairwise properties for Cont-Cont, Cont-Cat, Cat-Cat pairs"""
+    def _run_global_tests(self, df: pd.DataFrame, variable_schema: Dict[str, Any], basic_profile: Dict[str, Any]) -> Dict[str, Any]:
+        """Global tests: GES 및 Mixed Data 전역 가정 검증
+        
+        Args:
+            df: DataFrame to profile
+            variable_schema: Variable schema from preprocessing
+            basic_profile: Results from basic checks
+            
+        Returns:
+            Dictionary with global test scores:
+            - s_global_normality_pvalue: Multivariate normality p-value (for Pure Continuous)
+            - s_global_linearity_pvalue: Global linearity p-value (for Pure Continuous or Mixed)
+        """
         from .tools import StatsTool
         
-        pairwise = {
-            "cont_cont": {},
-            "cont_cat": {},
-            "cat_cat": {}
-        }
+        data_type = basic_profile.get("data_type_profile", "Mixed")
+        global_scores = {}
         
-        if df is None or variable_schema is None:
-            return pairwise
+        # 변수 분류
+        schema_vars = variable_schema.get("variables", {}) if variable_schema else {}
+        cont_vars = [k for k, v in schema_vars.items() if v.get("data_type") == "Continuous"]
+        cat_vars = [k for k, v in schema_vars.items() if v.get("data_type") in ["Nominal", "Binary", "Ordinal"]]
         
-        # Get variable types from schema
-        var_types = {}
-        schema_vars = variable_schema.get("variables", {})
-        for var in variables:
-            var_info = schema_vars.get(var, {})
-            var_types[var] = var_info.get("data_type", "Continuous")
-        
-        # Classify pairs and compute properties
-        pairs = [(variables[i], variables[j]) for i in range(len(variables)) for j in range(i+1, len(variables))]
-        
-        for var1, var2 in pairs:
-            if var1 not in df.columns or var2 not in df.columns:
-                continue
-            
-            type1 = var_types.get(var1, "Continuous")
-            type2 = var_types.get(var2, "Continuous")
-            
-            pair_key = f"{var1}_{var2}"
-            
-            # Classify pair type
-            is_cont1 = type1 in ["Continuous"]
-            is_cont2 = type2 in ["Continuous"]
-            is_cat1 = type1 in ["Nominal", "Binary", "Ordinal"]
-            is_cat2 = type2 in ["Nominal", "Binary", "Ordinal"]
-            
-            if is_cont1 and is_cont2:
-                # Cont-Cont pair
-                result = StatsTool.pairwise_cont_cont_test(df[var1], df[var2])
-                pairwise["cont_cont"][pair_key] = result
-            elif (is_cont1 and is_cat2) or (is_cat1 and is_cont2):
-                # Cont-Cat pair
-                result = StatsTool.pairwise_cont_cat_test(df[var1], df[var2])
-                pairwise["cont_cat"][pair_key] = result
-            elif is_cat1 and is_cat2:
-                # Cat-Cat pair
-                result = StatsTool.pairwise_cat_cat_test(df[var1], df[var2])
-                pairwise["cat_cat"][pair_key] = result
-        
-        return pairwise
-    
-    def _compute_global_properties(self, variable_schema: Dict[str, Any] = None,
-                                   pairwise: Dict[str, Any] = None,
-                                   aggregated_scores: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Compute global properties summary"""
-        global_props = {
-            "is_mixed": False,
-            "is_mostly_linear": True,
-            "has_high_cardinality": False,
-            "n_continuous": 0,
-            "n_categorical": 0
-        }
-        
-        if variable_schema:
-            stats = variable_schema.get("statistics", {})
-            global_props["n_continuous"] = stats.get("n_continuous", 0)
-            global_props["n_categorical"] = stats.get("n_categorical", 0) + stats.get("n_binary", 0)
-            global_props["is_mixed"] = variable_schema.get("mixed_data_types", False)
-            global_props["has_high_cardinality"] = len(variable_schema.get("high_cardinality_vars", [])) > 0
-        
-        # Determine if mostly linear from aggregated scores
-        if aggregated_scores and "S_lin" in aggregated_scores:
-            linearity_mean = aggregated_scores["S_lin"].get("mean", 0.5)
-            global_props["is_mostly_linear"] = linearity_mean >= 0.6
-        
-        return global_props
-    
-    def _calculate_family_score(self, data_profile: Dict[str, Any], 
-                                requirements: Dict[str, List[str]]) -> float:
-        """Calculate family score with penalties for opposite assumptions"""
-        
-        def desc_to_value(desc: str) -> float:
-            return {"strong": 1.0, "moderate": 0.6, "weak": 0.0}.get(desc, 0.5)
-        
-        def get_desc(assumption: str) -> str:
-            mapping = {
-                "linearity": data_profile["linearity"],
-                "non_gaussian": data_profile["non_gaussian"],
-                "anm_compatible": "strong" if data_profile["anm_compatible"] else "weak",
-                "gaussian": data_profile["gaussian"],
-                "equal_variance": data_profile["equal_variance"]
-            }
-            return mapping.get(assumption, "moderate")
-        
-        score, total = 0.0, 0.0
-        
-        # Required assumptions (weight = 1.0)
-        for req in requirements.get("required", []):
-            s = desc_to_value(get_desc(req))
-            score += s * 1.0
-            total += 1.0
-        
-        # Preferred assumptions (weight = 0.5)
-        for pref in requirements.get("preferred", []):
-            s = desc_to_value(get_desc(pref))
-            score += s * 0.5
-            total += 0.5
-        
-        # Opposite assumptions (penalty = configurable weight)
-        pen, pen_w = 0.0, 0.0
-        for opp in requirements.get("opposite", []):
-            s = desc_to_value(get_desc(opp))
-            pen += s * self.penalty_weight
-            pen_w += self.penalty_weight
-        
-        # Normalize with penalty and clip to [0, 1]
-        if total + pen_w > 0:
-            family_score = (score - pen + pen_w) / (total + pen_w)
+        # 다변량 정규성: Pure Continuous만
+        if data_type == "Pure Continuous" and cont_vars:
+            try:
+                # Henze-Zirkler(HZ) 테스트
+                # H0: 데이터가 다변량 정규분포를 따름
+                hz_pvalue = StatsTool.global_normality_test(df[cont_vars])
+                global_scores["s_global_normality_pvalue"] = hz_pvalue
+            except Exception as e:
+                logger.warning(f"Global normality test failed: {e}")
+                global_scores["s_global_normality_pvalue"] = 0.0  # 실패 시 비정규성으로 간주
         else:
-            family_score = 0.5
+            global_scores["s_global_normality_pvalue"] = np.nan
         
-        return np.clip(family_score, 0.0, 1.0)
-
+        # 전역 선형성: Pure Continuous 또는 Mixed
+        if data_type in ["Pure Continuous", "Mixed"]:
+            try:
+                if data_type == "Pure Continuous" and cont_vars:
+                    test_df = df[cont_vars]
+                elif data_type == "Mixed":
+                    # 범주형 변수 원-핫 인코딩
+                    test_df = df.copy()
+                    for cat_var in cat_vars:
+                        if cat_var in test_df.columns:
+                            dummies = pd.get_dummies(test_df[cat_var], prefix=cat_var, drop_first=True)
+                            test_df = pd.concat([test_df.drop(columns=[cat_var]), dummies], axis=1)
+                    # 연속형 변수와 더미 변수 모두 포함
+                    selected_cols = []
+                    if cont_vars:
+                        selected_cols.extend([c for c in test_df.columns if c in cont_vars])
+                    if cat_vars:
+                        selected_cols.extend([c for c in test_df.columns if any(c.startswith(cat_var + "_") for cat_var in cat_vars)])
+                    if selected_cols:
+                        test_df = test_df[selected_cols]
+                else:
+                    test_df = df
+                
+                if test_df.shape[0] >= 10 and test_df.shape[1] >= 2:
+                    # Ramsey RESET test 
+                    reset_pvalue = StatsTool.global_linearity_test(test_df)
+                    global_scores["s_global_linearity_pvalue"] = reset_pvalue
+                else:
+                    global_scores["s_global_linearity_pvalue"] = np.nan
+            except Exception as e:
+                logger.warning(f"Global linearity test failed: {e}")
+                global_scores["s_global_linearity_pvalue"] = np.nan
+        else:
+            global_scores["s_global_linearity_pvalue"] = np.nan
+        
+        return global_scores
+    
+    def _run_pairwise_profiles(self, df: pd.DataFrame, variable_schema: Dict[str, Any], basic_profile: Dict[str, Any]) -> Dict[str, Any]:
+        """Pairwise profiles: LiNGAM / ANM용 쌍별 가정 검증
+        
+        Args:
+            df: DataFrame to profile
+            variable_schema: Variable schema from preprocessing
+            basic_profile: Results from basic checks
+            
+        Returns:
+            Dictionary with pairwise scores:
+            - s_pairwise_linearity_median: Median linearity score
+            - s_pairwise_non_gaussianity_median: Median non-Gaussianity score
+            - s_pairwise_anm_median: Median ANM score
+        """
+        from .tools import StatsTool, IndependenceTool
+        
+        if basic_profile.get("data_type_profile") != "Pure Continuous":
+            return {}
+        
+        scores_lin_cont = []
+        scores_ng_cont = []
+        scores_anm_cont = []
+        
+        # Get continuous variables
+        schema_vars = variable_schema.get("variables", {}) if variable_schema else {}
+        cont_vars = [k for k, v in schema_vars.items() if v.get("data_type") == "Continuous"]
+        
+        if not cont_vars:
+            return {}
+        
+        cont_cont_pairs = [(cont_vars[i], cont_vars[j]) for i in range(len(cont_vars)) for j in range(i + 1, len(cont_vars))]
+        
+        for var1, var2 in cont_cont_pairs:
+            try:
+                # 1. 선형성 (Linearity): GLM vs GAM MSE 비교
+                lin_result = StatsTool.linearity_test(df[var1], df[var2])
+                scores_lin_cont.append(lin_result.get("linearity_score", np.nan))
+            except Exception as e:
+                logger.warning(f"Linearity test failed for {var1}-{var2}: {e}")
+                scores_lin_cont.append(np.nan)
+            
+            try:
+                # 2. 비정규성 (Non-Gaussianity): 잔차의 정규성 p-value
+                ng_result = StatsTool.gaussian_eqvar_test(df[var1], df[var2])  # 잔차 정규성 테스트
+                gaussian_p_value = ng_result.get("gaussian_score", 0.5)  # p-value (높을수록 정규성)
+                scores_ng_cont.append(1.0 - gaussian_p_value)  # 비정규성 점수로 변환 (높을수록 비정규성)
+            except Exception as e:
+                logger.warning(f"Non-Gaussianity test failed for {var1}-{var2}: {e}")
+                scores_ng_cont.append(np.nan)
+            
+            try:
+                # 3. ANM 적합성: HSIC p-value
+                anm_result = IndependenceTool.anm_test(df[var1], df[var2])
+                scores_anm_cont.append(anm_result.get("anm_score", np.nan))
+            except Exception as e:
+                logger.warning(f"ANM test failed for {var1}-{var2}: {e}")
+                scores_anm_cont.append(np.nan)
+        
+        pairwise_scores = {
+            "s_pairwise_linearity_median": float(np.nanmedian(scores_lin_cont)) if scores_lin_cont else np.nan,
+            "s_pairwise_non_gaussianity_median": float(np.nanmedian(scores_ng_cont)) if scores_ng_cont else np.nan,
+            "s_pairwise_anm_median": float(np.nanmedian(scores_anm_cont)) if scores_anm_cont else np.nan
+        }
+        
+        return pairwise_scores
+    
     def _algorithm_configuration(self, state: AgentState) -> AgentState:
         """Stage 2: Algorithm configuration based on data profile - generates execution_plan"""
         logger.info("Performing algorithm configuration...")
@@ -651,15 +534,6 @@ class CausalDiscoveryAgent(SpecialistAgent):
             state["execution_plan"] = execution_plan
             state["algorithm_configuration_completed"] = True
             
-            # Backward compatibility: also set algorithm_tiers for legacy code
-            all_algorithms = [config["alg"] for config in execution_plan]
-            state["algorithm_tiers"] = {
-                "tier1": all_algorithms, 
-                "tier2": [],
-                "tier3": []
-            }
-            state["algorithm_tiering_completed"] = True  # For backward compatibility
-            
             logger.info(f"Algorithm configuration completed. Execution plan: {len(execution_plan)} algorithms")
             return state
             
@@ -670,110 +544,131 @@ class CausalDiscoveryAgent(SpecialistAgent):
     
     def _generate_execution_plan(self, data_profile: Dict[str, Any], 
                                  variable_schema: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Generate execution plan based on 6 scenario matrix logic"""
+        """Generate execution plan based on data profile"""
         execution_plan = []
         
-        global_props = data_profile.get("global", {})
-        is_mixed = global_props.get("is_mixed", False)
-        is_mostly_linear = global_props.get("is_mostly_linear", True)
-        has_high_cardinality = global_props.get("has_high_cardinality", False)
-        n_continuous = global_props.get("n_continuous", 0)
-        n_categorical = global_props.get("n_categorical", 0)
+        # Extract basic checks information
+        basic_checks = data_profile.get("basic_checks", {})
+        data_type_profile = basic_checks.get("data_type_profile", "Mixed")
+        ci_reliability = basic_checks.get("ci_reliability", "High")
+        high_cardinality = basic_checks.get("high_cardinality", False)
         
-        # Scenario 1: Pure Continuous, Linear
-        if not is_mixed and n_continuous > 0 and n_categorical == 0 and is_mostly_linear:
-            execution_plan.extend([
-                {"alg": "PC", "ci_test": "fisherz", "priority": 1},
-                {"alg": "GES", "score": "bic", "priority": 1},
-                {"alg": "LiNGAM", "priority": 1}
-            ])
+        global_scores = data_profile.get("global_scores", {})
+        pairwise_scores = data_profile.get("pairwise_scores", {})
         
-        # Scenario 2: Pure Continuous, Nonlinear
-        elif not is_mixed and n_continuous > 0 and n_categorical == 0 and not is_mostly_linear:
-            execution_plan.extend([
-                {"alg": "PC", "ci_test": "kernel_kcit", "priority": 1},
-                {"alg": "GES", "score": "generalized_rkhs", "priority": 1},
-                {"alg": "ANM", "priority": 1},
-                {"alg": "TSCM", "priority": 1}
-            ])
+        # 2. CI 테스트 기본값 결정
+        default_ci_test = "fisherz"
+        if data_type_profile == "Pure Categorical":
+            default_ci_test = "gsq"
+        elif ci_reliability != "High":  # p > n 또는 High-Dimensional
+            default_ci_test = "kernel_kcit"
         
-        # Scenario 3: Mixed Data, Linear
-        elif is_mixed and is_mostly_linear and not has_high_cardinality:
-            execution_plan.extend([
-                {"alg": "PC", "ci_test": "lrt", "priority": 1},
-                {"alg": "GES", "score": "bic-cg", "priority": 1},
-                {"alg": "LiM", "priority": 1}
-            ])
+        # 3. 선형성 판단
+        global_linearity_pvalue = global_scores.get("s_global_linearity_pvalue", np.nan)
+        pairwise_linearity_median = pairwise_scores.get("s_pairwise_linearity_median", np.nan)
         
-        # Scenario 4: Mixed Data, Nonlinear
-        elif is_mixed and not is_mostly_linear:
+        is_mostly_linear = True  # 기본 가정
+        
+        if data_type_profile == "Pure Continuous" and not np.isnan(pairwise_linearity_median):
+            # 1st priority: Pure Continuous uses Pairwise (GLM vs GAM) score
+            is_mostly_linear = pairwise_linearity_median >= 0.6
+        elif not np.isnan(global_linearity_pvalue):
+            # 2nd priority: Mixed data or failed Pairwise uses Global (Ramsey RESET) score
+            is_mostly_linear = global_linearity_pvalue >= 0.05
+        
+        # --- 4. 시나리오별 알고리즘 선택  ---
+        
+        # Scenario 6: High Cardinality
+        if high_cardinality:
+            logger.info("Scenario 6: High Cardinality")
             execution_plan.extend([
-                {"alg": "PC", "ci_test": "kernel_kcit", "priority": 1},
-                {"alg": "GES", "score": "generalized_rkhs", "priority": 1},
-                {"alg": "TSCM", "priority": 1}
+                {"alg": "PC", "ci_test": "kernel_kcit"},
+                {"alg": "FCI", "ci_test": "kernel_kcit"},
             ])
         
         # Scenario 5: Pure Categorical
-        elif not is_mixed and n_continuous == 0 and n_categorical > 0:
+        elif data_type_profile == "Pure Categorical":
+            logger.info("Scenario 5: Pure Categorical")
             execution_plan.extend([
-                {"alg": "PC", "ci_test": "gsq", "priority": 1},
-                {"alg": "FCI", "ci_test": "gsq", "priority": 1}
+                {"alg": "PC", "ci_test": "gsq"},
+                {"alg": "FCI", "ci_test": "gsq"}
             ])
         
-        # Scenario 6: High Cardinality
-        elif has_high_cardinality:
+        # Scenario 1: Pure Continuous, Linear
+        elif data_type_profile == "Pure Continuous" and is_mostly_linear:
+            logger.info("Scenario 1: Pure Continuous, Linear")
+            
+            # 정규성(Gaussianity) 확인 (GES, PC용)
+            is_gaussian = global_scores.get("s_global_normality_pvalue", 0.0) >= 0.05
+            
+            pc_ci_test = "fisherz" if (is_gaussian and ci_reliability == "High") else "kernel_kcit"
+            
             execution_plan.extend([
-                {"alg": "PC", "ci_test": "kernel_kcit", "priority": 1},
-                {"alg": "FCI", "ci_test": "kernel_kcit", "priority": 1},
-                {"alg": "TSCM", "priority": 1}
+                {"alg": "PC", "ci_test": pc_ci_test},
+                {"alg": "GES", "score": "bic" if is_gaussian else "generalized_rkhs"},  # 정규성이면 bic, 아니면 rkhs
+            ])
+            
+            # LiNGAM: 선형 + 비정규성(Non-Gaussianity)
+            non_gaussian_score = pairwise_scores.get("s_pairwise_non_gaussianity_median", 0.0)
+            if non_gaussian_score >= 0.5:  # 비정규성 점수가 0.5 이상일 때만
+                execution_plan.append({"alg": "LiNGAM"})
+        
+        # Scenario 2: Pure Continuous, Nonlinear
+        elif data_type_profile == "Pure Continuous" and not is_mostly_linear:
+            logger.info("Scenario 2: Pure Continuous, Nonlinear")
+            execution_plan.extend([
+                {"alg": "PC", "ci_test": "kernel_kcit"},
+                {"alg": "GES", "score": "generalized_rkhs"},
+                {"alg": "CAM"}
+            ])
+            
+            # ANM: 비선형 + ANM 적합성
+            anm_score = pairwise_scores.get("s_pairwise_anm_median", 0.0)
+            if anm_score >= 0.5:  # ANM 적합성 점수가 0.5 이상일 때만
+                execution_plan.append({"alg": "ANM"})
+        
+        # Scenario 3: Mixed Data, Linear (High Cardinality가 아닐 때)
+        elif data_type_profile == "Mixed" and is_mostly_linear:
+            logger.info("Scenario 3: Mixed Data, Linear")
+            execution_plan.extend([
+                {"alg": "PC", "ci_test": "lrt"},  # Linear Mixed
+                {"alg": "GES", "score": "bic-cg"},  # Linear Mixed (CG-BIC)
+                {"alg": "LiM"}
             ])
         
-        # Default execution plan
+        # Scenario 4: Mixed Data, Nonlinear 
+        elif data_type_profile == "Mixed" and not is_mostly_linear:
+            logger.info("Scenario 4: Mixed Data, Nonlinear")
+            execution_plan.extend([
+                {"alg": "PC", "ci_test": "kernel_kcit"},  # Nonlinear Mixed
+                {"alg": "GES", "score": "generalized_rkhs"},  # Nonlinear Mixed
+            ])
+        
+        # Default (이론상 도달 불가능)
         if not execution_plan:
             logger.warning("No scenario matched, using default execution plan")
+            default_ci_test = "kernel_kcit" if ci_reliability != "High" else "fisherz"
+            if data_type_profile == "Pure Categorical":
+                default_ci_test = "gsq"
+            
             execution_plan.extend([
-                {"alg": "PC", "ci_test": "fisherz", "priority": 1},
-                {"alg": "GES", "score": "bic", "priority": 1},
-                {"alg": "FCI", "ci_test": "fisherz", "priority": 1}
+                {"alg": "PC", "ci_test": default_ci_test},
+                {"alg": "FCI", "ci_test": default_ci_test}
             ])
         
         # Always include FCI for latent robustness
         has_fci = any(config["alg"] == "FCI" for config in execution_plan)
         if not has_fci:
-            execution_plan.append({"alg": "FCI", "ci_test": "fisherz", "priority": 2})
+            fci_ci_test = "kernel_kcit" if (ci_reliability != "High" or data_type_profile == "Mixed") else "fisherz"
+            if data_type_profile == "Pure Categorical":
+                fci_ci_test = "gsq"
+            if high_cardinality:
+                fci_ci_test = "kernel_kcit"
+            
+            execution_plan.append({"alg": "FCI", "ci_test": fci_ci_test})
         
         return execution_plan
-    
-    def _algorithm_tiering(self, state: AgentState) -> AgentState:
-        """Legacy method: redirects to algorithm_configuration for backward compatibility"""
-        return self._algorithm_configuration(state)
-    
-    def _generate_tiering_reasoning(self, data_profile: Dict[str, Any], family_scores: Dict[str, float], 
-                                   tier1: List[str], tier2: List[str], tier3: List[str]) -> str:
-        """Generate reasoning for algorithm tiering"""
-        reasoning = f"""
-        Data Profile Analysis:
-        - Linearity: {data_profile['linearity']}
-        - Non-Gaussianity: {data_profile['non_gaussian']}
-        - ANM Compatibility: {data_profile['anm_compatible']}
-        - Gaussian: {data_profile['gaussian']}
-        - Equal Variance: {data_profile['equal_variance']}
-        
-        Family Scores: {family_scores}
-        
-        Algorithm Tiering:
-        - Tier 1 (Best Match): {tier1}
-        - Tier 2 (Partial Match): {tier2}
-        - Tier 3 (Exploration): {tier3}
-        
-        Rationale: Each family contributes one representative algorithm by default. Extended algorithms
-        (PNL, CAM) can be included when explicitly requested. FCI is always included for latent robustness.
-        Tier 1 algorithms have the best assumption compatibility, Tier 2 have partial compatibility,
-        and Tier 3 algorithms have opposite assumptions for exploratory analysis.
-        """
-        return reasoning.strip()
-    
-    
+            
     def _run_algorithms_portfolio(self, state: AgentState) -> AgentState:
         """Stage 3: Run algorithms from execution_plan in parallel"""
         logger.info("Running algorithm portfolio in parallel...")
@@ -800,7 +695,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
             with ThreadPoolExecutor(max_workers=len(algorithm_configs)) as executor:
                 futures = {}
                 # Per-algorithm timeouts (seconds)
-                timeout_map = {"LiNGAM": 120, "ANM": 180, "PC": 180, "GES": 300, "FCI": 300, "CAM": 300, "LiM": 300, "TSCM": 300}
+                timeout_map = {"LiNGAM": 120, "ANM": 180, "PC": 180, "GES": 300, "FCI": 300, "LiM": 300, "CAM": 300}
                 for config in algorithm_configs:
                     alg_name = config["alg"]
                     future = executor.submit(self._dispatch_algorithm, config, df, data_profile, variable_schema)
@@ -1128,39 +1023,6 @@ class CausalDiscoveryAgent(SpecialistAgent):
 
     # === Helpers and dispatch ===
 
-    def _select_ci_test(self, data_profile: Dict, variable_schema: Dict = None) -> str:
-        """Select appropriate CI test based on data characteristics and variable schema"""
-        if variable_schema is None:
-            variable_schema = {}
-        
-        # Check for mixed data types
-        mixed_data_types = variable_schema.get("mixed_data_types", False)
-        statistics = variable_schema.get("statistics", {})
-        n_categorical = statistics.get("n_categorical", 0)
-        n_continuous = statistics.get("n_continuous", 0)
-        
-        # If mixed data types, prefer KCI (handles mixed types)
-        if mixed_data_types or (n_categorical > 0 and n_continuous > 0):
-            logger.info(f"Mixed data types detected (continuous: {n_continuous}, categorical: {n_categorical}), using KCI test")
-            return "kci"
-        
-        # If only categorical data, use Chi-square test
-        if n_categorical > 0 and n_continuous == 0:
-            logger.info("Categorical data detected, using Chi-square (gsq) test")
-            return "gsq"
-        
-        # For continuous data, check linearity
-        linearity = data_profile.get("linearity", "moderate")
-        
-        # Non-linear data needs kernel-based test
-        if linearity == "weak":
-            logger.info("Non-linear data detected, using KCI test")
-            return "kci"
-        
-        # Default: Fisher-Z for linear continuous data
-        logger.info("Linear continuous data detected, using Fisher-Z test")
-        return "fisherz"
-
     def _load_dataframe_from_state(self, state: AgentState) -> Optional[pd.DataFrame]:
         # First, try to get DataFrame directly from df_preprocessed
         df = state.get("df_preprocessed")
@@ -1214,6 +1076,8 @@ class CausalDiscoveryAgent(SpecialistAgent):
             return self._run_lingam(df)
         if alg_name == "ANM":
             return self._run_anm(df)
+        if alg_name == "CAM":
+            return self._run_cam(df)
         if alg_name == "PC":
             return self._run_pc(df, data_profile=data_profile, variable_schema=variable_schema, 
                               indep_test=ci_test)
@@ -1222,12 +1086,8 @@ class CausalDiscoveryAgent(SpecialistAgent):
         if alg_name == "FCI":
             return self._run_fci(df, data_profile=data_profile, variable_schema=variable_schema,
                               indep_test=ci_test)
-        if alg_name == "CAM":
-            return self._run_cam(df)
         if alg_name == "LiM":
             return self._run_lim(df, variable_schema=variable_schema)
-        if alg_name == "TSCM":
-            return self._run_tscm(df, variable_schema=variable_schema)
         return {"error": f"Unknown algorithm: {alg_name}"}
     
     
@@ -1293,9 +1153,23 @@ class CausalDiscoveryAgent(SpecialistAgent):
     
     def _generate_synthesis_reasoning(self, top_candidates: List[Dict[str, Any]], pag_result: Dict[str, Any], 
                                     dag_result: Dict[str, Any], data_profile: Dict[str, Any]) -> str:
-        """Generate reasoning for ensemble synthesis"""
+        """Generate reasoning for ensemble synthesis
+        
+        Updated to work with new profile structure
+        """
         try:
             top_algorithm = top_candidates[0]["algorithm"] if top_candidates else "Unknown"
+            
+            # Generate summary from new profile structure
+            basic_checks = data_profile.get("basic_checks", {})
+            global_scores = data_profile.get("global_scores", {})
+            
+            data_type = basic_checks.get("data_type_profile", "Unknown")
+            ci_reliability = basic_checks.get("ci_reliability", "Unknown")
+            global_linearity_pvalue = global_scores.get("s_global_linearity_pvalue", 0.5)
+            is_mostly_linear = global_linearity_pvalue >= 0.05 if global_linearity_pvalue > 0 else True
+            
+            profile_summary = f"{data_type}, CI reliability: {ci_reliability}, Mostly linear: {is_mostly_linear}"
             
             reasoning = f"""
             Ensemble Synthesis Results:
@@ -1303,7 +1177,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
             Top Candidates: {[c['algorithm'] for c in top_candidates]}
             Leading Algorithm: {top_algorithm}
             
-            Data Profile: {data_profile.get('summary', 'N/A')}
+            Data Profile: {profile_summary}
             
             PAG Construction:
             - Graph Type: {pag_result.get('graph_type', 'Unknown')}
@@ -1340,16 +1214,6 @@ class CausalDiscoveryAgent(SpecialistAgent):
             return result.get("linearity_score", 0.5)
         except Exception as e:
             logger.warning(f"Linearity test failed: {e}")
-            return 0.5
-    
-    def _test_non_gaussian(self, x: pd.Series, y: pd.Series) -> float:
-        """Test non-Gaussianity using normality tests"""
-        try:
-            # Use stats tool for normality tests
-            result = self.use_tool("stats_tool", "normality_test", x, y)
-            return result.get("non_gaussian_score", 0.5)
-        except Exception as e:
-            logger.warning(f"Non-Gaussian test failed: {e}")
             return 0.5
     
     def _test_anm(self, x: pd.Series, y: pd.Series) -> float:
@@ -1408,15 +1272,12 @@ class CausalDiscoveryAgent(SpecialistAgent):
 
     def _run_pc(self, df: pd.DataFrame, data_profile: Dict = None, variable_schema: Dict = None, 
                indep_test: str = None, **kwargs) -> Dict[str, Any]:
-        """Run PC algorithm with dynamic CI test selection"""
+        """Run PC algorithm with CI test from execution_plan"""
         try:
-            # Use provided indep_test from execution_plan, or select based on data profile
+            # indep_test should always be provided from execution_plan
             if indep_test is None:
-                if data_profile is None:
-                    data_profile = {}
-                if variable_schema is None:
-                    variable_schema = {}
-                indep_test = self._select_ci_test(data_profile, variable_schema)
+                logger.warning("indep_test not provided from execution_plan, using default fisherz")
+                indep_test = "fisherz"
             
             # Pass alpha, indep_test, and variable_schema
             kwargs['alpha'] = kwargs.get('alpha', self.ci_alpha)
@@ -1447,17 +1308,15 @@ class CausalDiscoveryAgent(SpecialistAgent):
         except Exception as e:
             logger.error(f"GES execution failed: {e}")
             return {"error": str(e)}
+        
     def _run_fci(self, df: pd.DataFrame, data_profile: Dict = None, variable_schema: Dict = None,
                 indep_test: str = None, **kwargs) -> Dict[str, Any]:
-        """Run FCI algorithm with dynamic CI test selection"""
+        """Run FCI algorithm with CI test from execution_plan"""
         try:
-            # Use provided indep_test from execution_plan, or select based on data profile
+            # indep_test should always be provided from execution_plan
             if indep_test is None:
-                if data_profile is None:
-                    data_profile = {}
-                if variable_schema is None:
-                    variable_schema = {}
-                indep_test = self._select_ci_test(data_profile, variable_schema)
+                logger.warning("indep_test not provided from execution_plan, using default fisherz")
+                indep_test = "fisherz"
             
             # Pass alpha, indep_test, and variable_schema
             kwargs['alpha'] = kwargs.get('alpha', self.ci_alpha)
@@ -1472,21 +1331,12 @@ class CausalDiscoveryAgent(SpecialistAgent):
             return {"error": str(e)}
     
     def _run_lim(self, df: pd.DataFrame, variable_schema: Dict = None) -> Dict[str, Any]:
-        """Run LiM algorithm (placeholder for mixed data functional model)"""
+        """Run LiM algorithm for mixed data functional model"""
         try:
             result = self.use_tool("lim_tool", "lim_discovery", df, variable_schema=variable_schema)
             return result
         except Exception as e:
             logger.error(f"LiM execution failed: {e}")
-            return {"error": str(e)}
-    
-    def _run_tscm(self, df: pd.DataFrame, variable_schema: Dict = None) -> Dict[str, Any]:
-        """Run TSCM algorithm (placeholder for mixed data functional model)"""
-        try:
-            result = self.use_tool("tscm_tool", "tscm_discovery", df, variable_schema=variable_schema)
-            return result
-        except Exception as e:
-            logger.error(f"TSCM execution failed: {e}")
             return {"error": str(e)}
     
     # === Evaluation Methods ===
@@ -1516,8 +1366,6 @@ class CausalDiscoveryAgent(SpecialistAgent):
         
         if test_type == "linearity_test":
             return StatsTool.linearity_test(args[0], args[1])
-        elif test_type == "normality_test":
-            return StatsTool.normality_test(args[0], args[1])
         elif test_type == "gaussian_eqvar_test":
             return StatsTool.gaussian_eqvar_test(args[0], args[1])
         else:
