@@ -81,10 +81,9 @@ agent = CausalDiscoveryAgent(
         "violation_threshold": 0.1,
         "n_subsets": 3,
         "composite_weights": {
-            "statistical_fit": 0.3,
-            "global_consistency": 0.25,
-            "sampling_stability": 0.25,
-            "structural_stability": 0.2
+            "global_consistency": 0.4,
+            "sampling_stability": 0.3,
+            "structural_stability": 0.3
         },
         # 대표 vs 전체 실행 스위치
         "run_all_tier_algorithms": False
@@ -133,10 +132,9 @@ config = {
     "violation_threshold": 0.1,          # CI 위반 임계값
     "n_subsets": 5,                      # 구조적 일관성 테스트용 서브셋 수
     "composite_weights": {               # 복합 점수 가중치
-        "statistical_fit": 0.3,
-        "global_consistency": 0.25,
-        "sampling_stability": 0.25,
-        "structural_stability": 0.2
+        "global_consistency": 0.4,
+        "sampling_stability": 0.3,
+        "structural_stability": 0.3
     }
 }
 ```
@@ -196,7 +194,6 @@ config = {
     {
         "algorithm": "LiNGAM",
         "graph_id": "LiNGAM_12345",
-        "statistical_fit": 0.85,
         "global_consistency": 0.90,
         "sampling_stability": 0.80,
         "structural_stability": 0.75,

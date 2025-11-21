@@ -467,51 +467,6 @@ class GraphEvaluator:
     """Graph evaluation tools"""
     
     @staticmethod
-    def fidelity_evaluation(df: pd.DataFrame, result: Dict[str, Any]) -> Dict[str, Any]:
-        """Evaluate fidelity using BIC/MDL"""
-        try:
-            if "graph" not in result or "edges" not in result["graph"]:
-                return {"fidelity_score": 0.5}
-            
-            edges = result["graph"]["edges"]
-            n_edges = len(edges)
-            n_vars = len(df.columns)
-            n_samples = len(df)
-            
-            # Simple BIC calculation
-            # BIC = -2 * log_likelihood + k * log(n)
-            # For simplicity, use number of edges as complexity
-            complexity_penalty = n_edges * np.log(n_samples)
-            
-            # Calculate likelihood (simplified)
-            log_likelihood = 0
-            for edge in edges:
-                from_var = edge["from"]
-                to_var = edge["to"]
-                if from_var in df.columns and to_var in df.columns:
-                    # Simple correlation-based likelihood
-                    corr = abs(df[from_var].corr(df[to_var]))
-                    log_likelihood += np.log(corr + 1e-10)
-            
-            bic = -2 * log_likelihood + complexity_penalty
-            
-            # Convert BIC to fidelity score (lower BIC = higher fidelity)
-            # Normalize to 0-1 range
-            max_bic = n_vars * n_vars * np.log(n_samples)  # Maximum possible BIC
-            fidelity_score = max(0.0, min(1.0, 1.0 - (bic / max_bic)))
-            
-            return {
-                "fidelity_score": fidelity_score,
-                "bic": bic,
-                "n_edges": n_edges,
-                "log_likelihood": log_likelihood
-            }
-            
-        except Exception as e:
-            logger.warning(f"Fidelity evaluation failed: {e}")
-            return {"fidelity_score": 0.5, "error": str(e)}
-    
-    @staticmethod
     def cv_evaluation(df: pd.DataFrame, result: Dict[str, Any], cv_folds: int = 5) -> Dict[str, Any]:
         """Cross-validation evaluation for generalizability"""
         try:
@@ -1008,7 +963,8 @@ class PCTool:
             return {"error": str(e)}
 
 class GESTool:
-    """GES algorithm wrapper. Uses causal-learn (score=BIC by default)."""
+    """GES algorithm wrapper. Supports multiple scoring methods
+    """
     @staticmethod
     def discover(df: pd.DataFrame, score_func: str = "bic", **kwargs) -> Dict[str, Any]:
         import time
@@ -1016,43 +972,68 @@ class GESTool:
         vars_ = list(df.columns)
         params = {"score_func": score_func}
         edges = []
+        
         try:
-            from causallearn.search.ScoreBased.GES import ges
-            data = df.values
-            
-            # Convert score_func to causallearn format
-            if score_func == "bic":
-                causallearn_score = "local_score_BIC"
-            elif score_func == "bic-cg":
-                # PLACEHOLDER: BIC for Conditional Gaussian (mixed data)
-                logger.warning("bic-cg score not yet implemented, using standard BIC")
-                causallearn_score = "local_score_BIC"
+            if score_func in {"bic-g", "bic-cg", "bic-d", "bdeu"}:
+                # --- pgmpy ---
+                try:
+                    from pgmpy.estimators import GES as PGMPY_GES
+                except ImportError:
+                    logger.error("pgmpy not available for GES scoring. Install with: pip install pgmpy")
+                    return {"error": "pgmpy not available"}
+                
+                est = PGMPY_GES(df)
+                
+                scoring_method = score_func
+                
+                dag = est.estimate(scoring_method=scoring_method)
+                edges = [(str(u), str(v)) for u, v in dag.edges()]
+                
+                params["backend"] = "pgmpy"
+                params["scoring_method"] = scoring_method
+                
             elif score_func == "generalized_rkhs":
-                # PLACEHOLDER: Generalized RKHS regression-based non-parametric scoring
-                logger.warning("generalized_rkhs score not yet implemented, using standard BIC")
-                causallearn_score = "local_score_BIC"
-            else:
-                # Default: try to use as-is or fallback to BIC
-                causallearn_score = score_func if hasattr(ges, score_func) else "local_score_BIC"
-            
-            res = ges(data, score_func=causallearn_score)
-            G = getattr(res, 'G', None) or (res.get('G', None) if isinstance(res, dict) else None)
-            if G is not None and hasattr(G, 'graph'):
-                graph = G.graph
-                if hasattr(graph, 'items'):
-                    # Dictionary format
-                    for (i, j), v in graph.items():
-                        if v != 0:
-                            edges.append((vars_[i], vars_[j]))
-                else:
-                    # Numpy array format
-                    for i in range(graph.shape[0]):
-                        for j in range(graph.shape[1]):
-                            if graph[i, j] != 0:
+                # --- causal-learn generalized RKHS  ---
+                try:
+                    from causallearn.search.ScoreBased.GES import ges as CL_GES
+                except ImportError:
+                    logger.error("causal-learn not available for GES scoring")
+                    return {"error": "causal-learn not available"}
+                
+                data = df.values
+                res = CL_GES(data, score_func="local_score_CV_general")
+                G = getattr(res, 'G', None) or (res.get('G', None) if isinstance(res, dict) else None)
+                
+                if G is not None and hasattr(G, 'graph'):
+                    graph = G.graph
+                    if hasattr(graph, 'items'):
+                        # Dictionary format
+                        for (i, j), v in graph.items():
+                            if v != 0:
                                 edges.append((vars_[i], vars_[j]))
+                    else:
+                        # Numpy array format
+                        for i in range(graph.shape[0]):
+                            for j in range(graph.shape[1]):
+                                if graph[i, j] != 0:
+                                    edges.append((vars_[i], vars_[j]))
+                
+                params["backend"] = "causallearn"
+                if hasattr(res, "score"):
+                    params["raw_score"] = float(res.score)
+            
+            else:
+                # Unsupported score function
+                supported_funcs = ["bic-g", "bic-cg", "bic-d", "bdeu", "generalized_rkhs"]
+                error_msg = f"Unsupported score_func '{score_func}'. Supported functions: {supported_funcs}"
+                logger.error(error_msg)
+                return {"error": error_msg}
+            
             runtime = time.time() - t0
             return normalize_graph_result("GES", vars_, edges, params, runtime)
+            
         except Exception as e:
+            logger.error(f"GES execution failed: {e}")
             return {"error": str(e)}
 
 
@@ -1217,7 +1198,6 @@ class FCITool:
                 for (i, j), v in G.graph.items():
                     if v != 0:
                         # Keep adjacency; orientation marks are PAG-specific and not
-                        # represented in normalized edges. Downstream can treat as PAG.
                         edges.append((vars_[i], vars_[j]))
             runtime = time.time() - t0
             params_dict = {"alpha": alpha, "indep_test": indep_test, "graph_type": "PAG"}
@@ -1228,7 +1208,6 @@ class FCITool:
                 params=params_dict,
                 runtime=runtime,
             )
-            # Also set a top-level hint to consumers
             result["metadata"]["graph_type"] = "PAG"
             return result
         except Exception as e:
@@ -1265,13 +1244,20 @@ class PruningTool:
         return G
     
     @staticmethod
-    def global_markov_test(graph: Dict[str, Any], df: pd.DataFrame, alpha: float = 0.05) -> Dict[str, Any]:
+    def global_markov_test(graph: Dict[str, Any], df: pd.DataFrame, alpha: float = 0.05, max_pa_size: Optional[int] = None) -> Dict[str, Any]:
         """Test global Markov property using d-separation and CI tests
         
         Handles different graph types:
         - DAG: Direct d-separation testing
         - CPDAG: Convert to representative DAG first
         - PAG: Skip (latent confounders present)
+        
+        Args:
+            graph: Graph dictionary
+            df: DataFrame for CI testing
+            alpha: Significance level for CI tests
+            max_pa_size: Maximum parent set size. Tests with |Pa(X)| > max_pa_size are skipped.
+                        If None, no limit is applied.
         """
         try:
             if "graph" not in graph or "edges" not in graph["graph"]:
@@ -1308,24 +1294,36 @@ class PruningTool:
             
             # Get CI test method from graph metadata
             ci_test_method = "fisherz"  # default
+            variable_schema = None
             if "metadata" in graph and "params" in graph["metadata"]:
-                ci_test_method = graph["metadata"]["params"].get("indep_test", "fisherz")
+                params = graph["metadata"]["params"]
+                ci_test_method = params.get("indep_test", "fisherz")
+                variable_schema = params.get("variable_schema")
             
             # Prepare data for CI testing
             data_np = df[variables].values.astype(float)
             
             # Import and instantiate CI test function
             try:
-                from causallearn.utils.cit import FisherZ, KCI, Chisq_or_Gsq
-                if ci_test_method == "fisherz":
-                    ci_test_func = FisherZ(data_np)
-                elif ci_test_method == "kci":
-                    ci_test_func = KCI(data_np)
-                elif ci_test_method == "gsq":
-                    ci_test_func = Chisq_or_Gsq(data_np, "gsq")
+                if ci_test_method == "lrt":
+                    # Use LRT test for mixed data (requires variable_schema)
+                    if variable_schema is None:
+                        logger.warning("LRT test requires variable_schema, falling back to fisherz")
+                        from causallearn.utils.cit import FisherZ
+                        ci_test_func = FisherZ(data_np)
+                    else:
+                        ci_test_func = LRTTest(data_np, variable_schema)
                 else:
-                    logger.warning(f"Unknown CI test {ci_test_method}, using fisherz")
-                    ci_test_func = FisherZ(data_np)
+                    from causallearn.utils.cit import FisherZ, KCI, Chisq_or_Gsq
+                    if ci_test_method == "fisherz":
+                        ci_test_func = FisherZ(data_np)
+                    elif ci_test_method == "kci":
+                        ci_test_func = KCI(data_np)
+                    elif ci_test_method == "gsq":
+                        ci_test_func = Chisq_or_Gsq(data_np, "gsq")
+                    else:
+                        logger.warning(f"Unknown CI test {ci_test_method}, using fisherz")
+                        ci_test_func = FisherZ(data_np)
             except ImportError:
                 logger.warning(f"CI test {ci_test_method} not available, using fisherz")
                 from causallearn.utils.cit import FisherZ
@@ -1335,16 +1333,21 @@ class PruningTool:
             ci_tests_log = []
             violations = 0
             total_tests = 0
+            skipped_tests = 0
             
             # Create variable index mapping
             var_to_idx = {var: i for i, var in enumerate(variables)}
             
             for x in G.nodes():
-                # Get parents of X
                 pa_x = list(G.predecessors(x))
-                # Get descendants of X (including X itself)
+                
+                # Skip tests if parent set size exceeds max_pa_size
+                if max_pa_size is not None and len(pa_x) > max_pa_size:
+                    skipped_tests += len([y for y in G.nodes() 
+                                         if y not in (set(nx.descendants(G, x)) | {x}) and y not in pa_x])
+                    continue
+                
                 desc_x = set(nx.descendants(G, x)) | {x}
-                # Get non-descendants of X (excluding parents)
                 non_desc_x = [y for y in G.nodes() if y not in desc_x and y not in pa_x]
                 
                 if not non_desc_x:
@@ -1383,17 +1386,21 @@ class PruningTool:
                             "error": str(e)
                         })
             
+            # violation_ratio is calculated only from tests that were actually performed
             violation_ratio = violations / total_tests if total_tests > 0 else 0.0
             
             return {
                 "violation_ratio": violation_ratio,
                 "total_tests": total_tests,
                 "violations": violations,
+                "skipped_tests": skipped_tests,
                 "ci_tests": ci_tests_log,
                 "alpha": alpha,
+                "max_pa_size": max_pa_size,
                 "ci_test_method": ci_test_method,
                 "graph_type": graph_type,
-                "message": f"Test completed on {graph_type} with {total_tests} d-separation tests"
+                "message": f"Test completed on {graph_type} with {total_tests} d-separation tests" + 
+                          (f" ({skipped_tests} skipped due to max_pa_size={max_pa_size})" if skipped_tests > 0 else "")
             }
             
         except Exception as e:
@@ -1402,10 +1409,27 @@ class PruningTool:
     
     @staticmethod
     def structural_consistency_test(graph: Dict[str, Any], df: pd.DataFrame, algorithm_name: str, n_subsets: int = 3) -> Dict[str, Any]:
-        """Test structural consistency using subsampling"""
+        """Test structural consistency using subsampling
+        
+        Graph type-specific handling:
+        - DAG: Fully oriented SHD 
+        - CPDAG: Edge-wise adjacency differences
+        - PAG: Skip test, return None/NaN
+        """
         try:
             if "graph" not in graph or "edges" not in graph["graph"]:
                 return {"instability_score": 1.0, "error": "Invalid graph structure"}
+            
+            # Determine graph type
+            graph_type = PruningTool._get_graph_type(graph)
+            
+            # Skip PAG graphs
+            if graph_type == "PAG":
+                return {
+                    "instability_score": None,
+                    "message": "Structural consistency test skipped for PAG (latent confounders present)",
+                    "graph_type": graph_type
+                }
             
             variables = graph["graph"]["variables"]
             if len(variables) < 3:
@@ -1465,12 +1489,23 @@ class PruningTool:
                     # Restrict original graph to this subset
                     original_restricted = PruningTool._restrict_graph_to_subset(graph, subset_vars)
                     
-                    # Compute normalized SHD between G|Vi and Gi
-                    normalized_shd = PruningTool._compute_shd(
-                        original_restricted, 
-                        subset_graph, 
-                        normalize=True
-                    )
+                    # Compute SHD based on graph type
+                    if graph_type == "CPDAG":
+                        # CPDAG: adjacency differences
+                        normalized_shd = PruningTool._compute_adjacency_difference(
+                            original_restricted,
+                            subset_graph,
+                            normalize=True,
+                            original_graph=graph
+                        )
+                    else:
+                        # DAG: fully oriented SHD
+                        normalized_shd = PruningTool._compute_shd(
+                            original_restricted, 
+                            subset_graph, 
+                            normalize=True,
+                            original_graph=graph
+                        )
                     
                     normalized_shd_scores.append(normalized_shd)
                     
@@ -1488,7 +1523,8 @@ class PruningTool:
                 "instability_score": instability_score,
                 "n_subsets": len(subset_results),
                 "normalized_shd_scores": normalized_shd_scores,
-                "subset_results": subset_results
+                "subset_results": subset_results,
+                "graph_type": graph_type
             }
             
         except Exception as e:
@@ -1496,8 +1532,17 @@ class PruningTool:
             return {"instability_score": 1.0, "error": str(e)}
     
     @staticmethod
-    def _compute_shd(graph1: Dict[str, Any], graph2: Dict[str, Any], normalize: bool = True) -> float:
-        """Compute raw or normalized Structural Hamming Distance based on common variables."""
+    def _compute_shd(graph1: Dict[str, Any], graph2: Dict[str, Any], normalize: bool = True, 
+                     original_graph: Optional[Dict[str, Any]] = None) -> float:
+        """Compute raw or normalized Structural Hamming Distance based on common variables.
+        
+        Args:
+            graph1: First graph (restricted graph) 
+            graph2: Second graph (subset graph)
+            normalize: Whether to normalize SHD by max possible edges
+            original_graph: Original full graph. If provided, edges in graph2 that exist due to
+                          directed paths in original_graph are excluded from penalty (induced edges).
+        """
         try:
             vars1 = set(graph1.get("graph", {}).get("variables", []))
             vars2 = set(graph2.get("graph", {}).get("variables", []))
@@ -1516,6 +1561,27 @@ class PruningTool:
                 if e["from"] in common_vars and e["to"] in common_vars
             }
             
+            if original_graph is not None:
+                try:
+                    original_G = PruningTool._convert_to_networkx_dag(original_graph)
+                    
+                    filtered_edges2 = set()
+                    for edge in edges2:
+                        x, z = edge
+                        
+                        if edge in edges1:
+                            filtered_edges2.add(edge)
+                        else:
+                            # Check if this edge is induced (exists due to path in original_graph)
+                            if nx.has_path(original_G, x, z) or nx.has_path(original_G, z, x):
+                                continue
+                            else:
+                                filtered_edges2.add(edge)
+                    
+                    edges2 = filtered_edges2
+                except Exception as e:
+                    logger.warning(f"Failed to filter induced edges: {e}, using original edges2")
+            
             raw_shd = len(edges1.symmetric_difference(edges2))
             
             if not normalize:
@@ -1526,6 +1592,89 @@ class PruningTool:
                 return 0.0
             
             max_edges = n * (n - 1)  # For directed graphs
+            normalized_shd = raw_shd / max_edges if max_edges > 0 else 0.0
+            return normalized_shd
+            
+        except Exception:
+            return 1.0  # Return max instability on failure
+    
+    @staticmethod
+    def _compute_adjacency_difference(graph1: Dict[str, Any], graph2: Dict[str, Any], normalize: bool = True,
+                              original_graph: Optional[Dict[str, Any]] = None) -> float:
+        """Compute edge-wise adjacency differences, ignore orientation).
+        
+        Adjacency difference = |E1 Δ E2| where E1, E2 are undirected edge sets.
+        
+        Args:
+            graph1: First graph (restricted graph)
+            graph2: Second graph (subset graph)
+            normalize: Whether to normalize adjacency difference by max possible edges
+            original_graph: Original full graph. Used to exclude induced edges.
+        """
+        try:
+            def get_adjacency_edges(g: Dict[str, Any]) -> set:
+                """Extract undirected skeleton edges from graph"""
+                edges = g.get("graph", {}).get("edges", [])
+                skel = set()
+                for e in edges:
+                    u, v = e["from"], e["to"]
+                    if u == v:
+                        continue
+                    skel.add(tuple(sorted((u, v))))  # undirected edge
+                return skel
+            
+            vars1 = set(graph1.get("graph", {}).get("variables", []))
+            vars2 = set(graph2.get("graph", {}).get("variables", []))
+            common_vars = vars1.intersection(vars2)
+            
+            if not common_vars:
+                return 1.0 if normalize else 0.0
+            
+            # Get skeleton edges within common variables
+            E1 = get_adjacency_edges(graph1)
+            E2 = get_adjacency_edges(graph2)
+            
+            # Filter to common variables only
+            E1_filtered = {e for e in E1 if e[0] in common_vars and e[1] in common_vars}
+            E2_filtered = {e for e in E2 if e[0] in common_vars and e[1] in common_vars}
+            
+            # If original_graph is provided, exclude induced edges from E2
+            if original_graph is not None:
+                try:
+                    original_G = PruningTool._convert_to_networkx_dag(original_graph)
+                    
+                    filtered_E2 = set()
+                    for edge in E2_filtered:
+                        x, z = edge
+                        
+                        # If edge exists in E1, keep it
+                        if edge in E1_filtered:
+                            filtered_E2.add(edge)
+                        else:
+                            # Check if this edge is induced (exists due to path in original_graph)
+                            if nx.has_path(original_G, x, z) or nx.has_path(original_G, z, x):
+                                # Induced edge, do not count as a penalty
+                                continue
+                            else:
+                                # This is a real difference, count it
+                                filtered_E2.add(edge)
+                    
+                    E2_filtered = filtered_E2
+                except Exception as e:
+                    logger.warning(f"Failed to filter induced edges in adjacency difference: {e}")
+            
+            # Compute symmetric difference
+            diff = E1_filtered.symmetric_difference(E2_filtered)
+            raw_shd = len(diff)
+            
+            if not normalize:
+                return float(raw_shd)
+            
+            n = len(common_vars)
+            if n < 2:
+                return 0.0
+            
+            max_edges = n * (n - 1) // 2  # For undirected skeleton
             normalized_shd = raw_shd / max_edges if max_edges > 0 else 0.0
             return normalized_shd
             
@@ -1878,19 +2027,7 @@ class EnsembleTool:
         except Exception as e:
             logger.warning(f"Tie-breaking failed: {e}")
             return edge
-    
-    @staticmethod
-    def _extract_tscm_direction(tscm_result: Dict[str, Any], var1: str, var2: str) -> Optional[Dict[str, str]]:
-        """Extract direction from TSCM result for a specific edge (placeholder)"""
-        # PLACEHOLDER: Extract direction from TSCM result
-        # This should parse TSCM output to find edge direction
-        if "graph" in tscm_result and "edges" in tscm_result["graph"]:
-            edges = tscm_result["graph"]["edges"]
-            for e in edges:
-                if (e.get("from") == var1 and e.get("to") == var2) or \
-                   (e.get("from") == var2 and e.get("to") == var1):
-                    return {"from": e["from"], "to": e["to"]}
-        return None
+
     
     @staticmethod
     def _extract_lim_direction(lim_result: Dict[str, Any], var1: str, var2: str) -> Optional[Dict[str, str]]:

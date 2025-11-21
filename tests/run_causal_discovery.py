@@ -9,6 +9,7 @@ from datetime import datetime
 
 from utils.settings import CONFIG
 from agents.causal_discovery.agent import CausalDiscoveryAgent
+from agents.data_explorer.data_preprocessor.agent import DataPreprocessorAgent
 from utils.synthetic_data import generate_er_synthetic
 
 """
@@ -123,14 +124,60 @@ def run_single_experiment(agent: CausalDiscoveryAgent, df: pd.DataFrame,
                          ground_truth: Dict[str, Any], run_id: int) -> Dict[str, Any]:
     """Run a single causal discovery experiment and return results"""
     
-    state: Dict[str, Any] = {"df_preprocessed": df}
+    # Step 1: Run data preprocessing to get variable_schema
+    # This is required for data_profiling step
+    preprocessor = DataPreprocessorAgent()
+    
+    # For in-memory DataFrame, set it directly in preprocessor instance
+    # and run preprocessing steps
+    preprocessor.df = df.copy()
+    preprocessor._data_fetched = True
+    
+    prep_state: Dict[str, Any] = {
+        "df_preprocessed": df.copy(),
+        "db_id": "test",  # Required for preprocessor
+        "skip_one_hot_encoding": True  # Preserve original data for causal discovery
+    }
+    
+    # Run schema detection
+    prep_state["current_substep"] = "schema_detection"
+    prep_state = preprocessor.step(prep_state)
+    
+    if prep_state.get("error"):
+        return {
+            "run_id": run_id,
+            "success": False,
+            "error": f"Schema detection failed: {prep_state.get('error')}",
+            "execution_time": 0,
+            "final_metrics": None
+        }
+    
+    # Run clean_nulls
+    prep_state["current_substep"] = "clean_nulls"
+    prep_state = preprocessor.step(prep_state)
+    
+    if prep_state.get("error"):
+        return {
+            "run_id": run_id,
+            "success": False,
+            "error": f"Clean nulls failed: {prep_state.get('error')}",
+            "execution_time": 0,
+            "final_metrics": None
+        }
+    
+    # Step 2: Run causal discovery with preprocessed data
+    state: Dict[str, Any] = {
+        "df_preprocessed": preprocessor.df if preprocessor.df is not None else df,
+        "variable_schema": prep_state.get("variable_schema", {}),
+        "db_id": "test"
+    }
 
     substeps = [
         "data_profiling",
-        "algorithm_tiering",
+        "algorithm_configuration",
         "run_algorithms_portfolio",
-        "candidate_pruning",
-        "scorecard_evaluation",
+        "graph_scoring",
+        "graph_evaluation",
         "ensemble_synthesis",
     ]
 
@@ -158,10 +205,15 @@ def run_single_experiment(agent: CausalDiscoveryAgent, df: pd.DataFrame,
             # Store key results
             if sub == "data_profiling":
                 results["data_profile"] = state.get("data_profile", {})
-            elif sub == "algorithm_tiering":
-                results["algorithm_tiers"] = state.get("algorithm_tiers", {})
+            elif sub == "algorithm_configuration":
+                results["execution_plan"] = state.get("execution_plan", [])
             elif sub == "run_algorithms_portfolio":
                 results["algorithm_results"] = state.get("algorithm_results", {})
+            elif sub == "graph_scoring":
+                results["scored_graphs"] = state.get("scored_graphs", [])
+            elif sub == "graph_evaluation":
+                results["scorecard"] = state.get("scorecard", [])
+                results["top_candidates"] = state.get("top_candidates", [])
             elif sub == "ensemble_synthesis":
                 dag = state.get("selected_graph", {})
                 if dag and isinstance(dag, dict):

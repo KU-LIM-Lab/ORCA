@@ -6,8 +6,8 @@ This agent implements the complete causal discovery pipeline:
 1. data_profiling - Profile data characteristics and generate qualitative summary
 2. algorithm_configuration - Configure algorithms based on data profile (replaces algorithm_tiering)
 3. run_algorithms_portfolio - Execute algorithms from execution_plan in parallel
-4. candidate_pruning - Prune candidates using CI testing and structural consistency
-5. scorecard_evaluation - Evaluate candidates using composite scorecard
+4. graph_scoring - Calculate 3 scores (global_consistency, sampling_stability, structural_stability) for all graphs
+5. graph_evaluation - Evaluate and rank graphs using composite scorecard
 6. ensemble_synthesis - Synthesize ensemble with PAG-like and DAG outputs
 """
 
@@ -190,11 +190,13 @@ class CausalDiscoveryAgent(SpecialistAgent):
         self.profiling_parallelism = self.config.get("profiling_parallelism")
         self.anm_rf_estimators = self.config.get("anm_rf_estimators", 100)
         self.run_all_tier_algorithms = self.config.get("run_all_tier_algorithms", False)
+        self.max_pa_size = self.config.get("max_pa_size", 3) 
         
-        # Composite weights
+        # Composite weights 
         self.composite_weights = self.config.get("composite_weights", {
-            "statistical_fit": 0.3, "global_consistency": 0.25,
-            "sampling_stability": 0.25, "structural_stability": 0.2
+            "global_consistency": 0.4,
+            "sampling_stability": 0.3,
+            "structural_stability": 0.3
         })
         
         # Scoring configuration
@@ -266,10 +268,10 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 return self._algorithm_configuration(state)
             elif substep == "run_algorithms_portfolio":
                 return self._run_algorithms_portfolio(state)
-            elif substep == "candidate_pruning":
-                return self._candidate_pruning(state)
-            elif substep == "scorecard_evaluation":
-                return self._scorecard_evaluation(state)
+            elif substep == "graph_scoring":
+                return self._graph_scoring(state)
+            elif substep == "graph_evaluation":
+                return self._graph_evaluation(state)
             elif substep == "ensemble_synthesis":
                 return self._ensemble_synthesis(state)
             else:
@@ -527,10 +529,8 @@ class CausalDiscoveryAgent(SpecialistAgent):
             if not data_profile:
                 raise ValueError("No data profile available")
             
-            # Generate execution plan based on 6 scenario matrix
             execution_plan = self._generate_execution_plan(data_profile, variable_schema)
             
-            # Update state
             state["execution_plan"] = execution_plan
             state["algorithm_configuration_completed"] = True
             
@@ -542,8 +542,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
             state["error"] = f"Algorithm configuration failed: {str(e)}"
             return state
     
-    def _generate_execution_plan(self, data_profile: Dict[str, Any], 
-                                 variable_schema: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _generate_execution_plan(self, data_profile: Dict[str, Any], variable_schema: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """Generate execution plan based on data profile"""
         execution_plan = []
         
@@ -556,14 +555,14 @@ class CausalDiscoveryAgent(SpecialistAgent):
         global_scores = data_profile.get("global_scores", {})
         pairwise_scores = data_profile.get("pairwise_scores", {})
         
-        # 2. CI 테스트 기본값 결정
+        # Default CI test 
         default_ci_test = "fisherz"
         if data_type_profile == "Pure Categorical":
             default_ci_test = "gsq"
         elif ci_reliability != "High":  # p > n 또는 High-Dimensional
             default_ci_test = "kernel_kcit"
         
-        # 3. 선형성 판단
+        # Linearity 
         global_linearity_pvalue = global_scores.get("s_global_linearity_pvalue", np.nan)
         pairwise_linearity_median = pairwise_scores.get("s_pairwise_linearity_median", np.nan)
         
@@ -576,7 +575,6 @@ class CausalDiscoveryAgent(SpecialistAgent):
             # 2nd priority: Mixed data or failed Pairwise uses Global (Ramsey RESET) score
             is_mostly_linear = global_linearity_pvalue >= 0.05
         
-        # --- 4. 시나리오별 알고리즘 선택  ---
         
         # Scenario 6: High Cardinality
         if high_cardinality:
@@ -591,7 +589,8 @@ class CausalDiscoveryAgent(SpecialistAgent):
             logger.info("Scenario 5: Pure Categorical")
             execution_plan.extend([
                 {"alg": "PC", "ci_test": "gsq"},
-                {"alg": "FCI", "ci_test": "gsq"}
+                {"alg": "FCI", "ci_test": "gsq"},
+                {"alg": "GES", "score": "bic-d"}, 
             ])
         
         # Scenario 1: Pure Continuous, Linear
@@ -602,13 +601,15 @@ class CausalDiscoveryAgent(SpecialistAgent):
             is_gaussian = global_scores.get("s_global_normality_pvalue", 0.0) >= 0.05
             
             pc_ci_test = "fisherz" if (is_gaussian and ci_reliability == "High") else "kernel_kcit"
+            fci_ci_test = "fisherz" if ci_reliability == "High" else "kernel_kcit"
             
             execution_plan.extend([
                 {"alg": "PC", "ci_test": pc_ci_test},
-                {"alg": "GES", "score": "bic" if is_gaussian else "generalized_rkhs"},  # 정규성이면 bic, 아니면 rkhs
+                {"alg": "GES", "score": "bic-g" if is_gaussian else "generalized_rkhs"},  # 정규성이면 bic-g, 아니면 rkhs
+                {"alg": "FCI", "ci_test": fci_ci_test}
             ])
             
-            # LiNGAM: 선형 + 비정규성(Non-Gaussianity)
+            # LiNGAM: Linear + Non-Gaussianity
             non_gaussian_score = pairwise_scores.get("s_pairwise_non_gaussianity_median", 0.0)
             if non_gaussian_score >= 0.5:  # 비정규성 점수가 0.5 이상일 때만
                 execution_plan.append({"alg": "LiNGAM"})
@@ -616,10 +617,12 @@ class CausalDiscoveryAgent(SpecialistAgent):
         # Scenario 2: Pure Continuous, Nonlinear
         elif data_type_profile == "Pure Continuous" and not is_mostly_linear:
             logger.info("Scenario 2: Pure Continuous, Nonlinear")
+          
             execution_plan.extend([
                 {"alg": "PC", "ci_test": "kernel_kcit"},
                 {"alg": "GES", "score": "generalized_rkhs"},
-                {"alg": "CAM"}
+                {"alg": "CAM"},
+                {"alg": "FCI", "ci_test": "kernel_kcit"}
             ])
             
             # ANM: 비선형 + ANM 적합성
@@ -633,7 +636,8 @@ class CausalDiscoveryAgent(SpecialistAgent):
             execution_plan.extend([
                 {"alg": "PC", "ci_test": "lrt"},  # Linear Mixed
                 {"alg": "GES", "score": "bic-cg"},  # Linear Mixed (CG-BIC)
-                {"alg": "LiM"}
+                {"alg": "LiM"},
+                {"alg": "FCI", "ci_test": "kernel_kcit"}
             ])
         
         # Scenario 4: Mixed Data, Nonlinear 
@@ -641,10 +645,10 @@ class CausalDiscoveryAgent(SpecialistAgent):
             logger.info("Scenario 4: Mixed Data, Nonlinear")
             execution_plan.extend([
                 {"alg": "PC", "ci_test": "kernel_kcit"},  # Nonlinear Mixed
-                {"alg": "GES", "score": "generalized_rkhs"},  # Nonlinear Mixed
+                {"alg": "FCI", "ci_test": "kernel_kcit"}
             ])
         
-        # Default (이론상 도달 불가능)
+        # Default (이론상 도달 불가능해야)
         if not execution_plan:
             logger.warning("No scenario matched, using default execution plan")
             default_ci_test = "kernel_kcit" if ci_reliability != "High" else "fisherz"
@@ -655,17 +659,6 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 {"alg": "PC", "ci_test": default_ci_test},
                 {"alg": "FCI", "ci_test": default_ci_test}
             ])
-        
-        # Always include FCI for latent robustness
-        has_fci = any(config["alg"] == "FCI" for config in execution_plan)
-        if not has_fci:
-            fci_ci_test = "kernel_kcit" if (ci_reliability != "High" or data_type_profile == "Mixed") else "fisherz"
-            if data_type_profile == "Pure Categorical":
-                fci_ci_test = "gsq"
-            if high_cardinality:
-                fci_ci_test = "kernel_kcit"
-            
-            execution_plan.append({"alg": "FCI", "ci_test": fci_ci_test})
         
         return execution_plan
             
@@ -729,7 +722,6 @@ class CausalDiscoveryAgent(SpecialistAgent):
             
             # Update state
             state["algorithm_results"] = algorithm_results
-            # Echo which algorithms were executed for verification in tests
             state["executed_algorithms"] = list(algorithm_results.keys())
             state["run_algorithms_portfolio_completed"] = True
             
@@ -741,141 +733,83 @@ class CausalDiscoveryAgent(SpecialistAgent):
             state["error"] = f"Algorithm portfolio execution failed: {str(e)}"
             return state
     
-    def _candidate_pruning(self, state: AgentState) -> AgentState:
-        """Stage 3: Candidate pruning using CI testing and structural consistency"""
-        logger.info("Performing candidate pruning...")
+    def _graph_scoring(self, state: AgentState) -> AgentState:
+        """Stage 4: Graph scoring"""
+        logger.info("Performing graph scoring...")
         
         try:
             algorithm_results = self._load_algorithm_results_from_state(state)
             df = self._load_dataframe_from_state(state)
+            execution_plan = state.get("execution_plan", [])
             
             if not algorithm_results:
                 raise ValueError("No algorithm results available")
             if df is None:
                 raise ValueError("No preprocessed data available")
             
-            pruned_candidates = []
-            pruning_log = []
+            scored_graphs = []
             
             for alg_name, result in algorithm_results.items():
                 if "error" in result:
-                    pruning_log.append({
-                        "algorithm": alg_name,
-                        "reason": "execution_error",
-                        "error": result["error"]
-                    })
+                    logger.warning(f"Skipping {alg_name} due to execution error: {result['error']}")
                     continue
                 
-                logger.info(f"Pruning candidate from {alg_name}...")
+                logger.info(f"Scoring graph from {alg_name}...")
                 
-                # 1. Global Markov test
-                markov_result = self.use_tool("pruning_tool", "global_markov_test", result, df, alpha=self.ci_alpha)
-                violation_ratio = markov_result.get("violation_ratio", 1.0)
+                # Calculate 3 scores in parallel for this graph
+                scores = self._calculate_graph_scores(result, alg_name, df, execution_plan)
                 
-                # Filter if violation ratio too high
-                if violation_ratio > self.violation_threshold:
-                    pruning_log.append({
-                        "algorithm": alg_name,
-                        "reason": "high_ci_violations",
-                        "violation_ratio": violation_ratio,
-                        "threshold": self.violation_threshold
-                    })
-                    continue
-                
-                # 2. Structural consistency test
-                consistency_result = self.use_tool("pruning_tool", "structural_consistency_test", result, df, alg_name)
-                instability_score = consistency_result.get("instability_score", 1.0)
-                
-                # Store pruned candidate
-                pruned_candidates.append({
+                scored_graphs.append({
                     "algorithm": alg_name,
                     "graph": result,
-                    "violation_ratio": violation_ratio,
-                    "instability_score": instability_score,
-                    "markov_result": markov_result,
-                    "consistency_result": consistency_result
+                    "global_consistency": scores["global_consistency"],
+                    "sampling_stability": scores["sampling_stability"],
+                    "structural_stability": scores["structural_stability"]
                 })
             
             # Convert numpy types to Python native types for msgpack serialization
-            pruned_candidates = _convert_numpy_types(pruned_candidates)
-            pruning_log = _convert_numpy_types(pruning_log)
+            scored_graphs = _convert_numpy_types(scored_graphs)
             
             # Update state
-            state["pruned_candidates"] = pruned_candidates
-            state["pruning_log"] = pruning_log
-            state["candidate_pruning_completed"] = True
+            state["scored_graphs"] = scored_graphs
+            state["graph_scoring_completed"] = True
             
-            logger.info(f"Candidate pruning completed. {len(pruned_candidates)} candidates retained, {len(pruning_log)} rejected")
+            logger.info(f"Graph scoring completed. Scored {len(scored_graphs)} graphs")
             return state
             
         except Exception as e:
-            logger.error(f"Candidate pruning failed: {str(e)}")
-            state["error"] = f"Candidate pruning failed: {str(e)}"
+            logger.error(f"Graph scoring failed: {str(e)}")
+            state["error"] = f"Graph scoring failed: {str(e)}"
             return state
     
-    def _scorecard_evaluation(self, state: AgentState) -> AgentState:
-        """Stage 4: Scorecard evaluation with composite scoring or sequential pruning"""
+    def _graph_evaluation(self, state: AgentState) -> AgentState:
+        """Stage 5: Graph evaluation - Evaluate and rank graphs using composite scoring or sequential pruning"""
         logger.info("Performing scorecard evaluation...")
         
         try:
-            pruned_candidates = state.get("pruned_candidates", [])
-            df = self._load_dataframe_from_state(state)
-            execution_plan = state.get("execution_plan", [])
+            scored_graphs = state.get("scored_graphs", [])
             user_params = state.get("user_params", {})
             ranking_mode = user_params.get("ranking_mode", "composite_score")
             
-            if not pruned_candidates:
-                raise ValueError("No pruned candidates available")
-            if df is None:
-                raise ValueError("No preprocessed data available")
+            if not scored_graphs:
+                raise ValueError("No scored graphs available")
             
-            # Get dynamic metric functions based on execution_plan
-            metric_functions = self._get_dynamic_metric_functions(execution_plan)
-            
+            # Build scorecard from pre-calculated scores
             scorecard = []
             
-            for candidate in pruned_candidates:
-                alg_name = candidate["algorithm"]
-                graph = candidate["graph"]
+            for scored_graph in scored_graphs:
+                alg_name = scored_graph["algorithm"]
+                graph = scored_graph["graph"]
                 
                 logger.info(f"Evaluating {alg_name} for scorecard...")
                 
-                # 1. Statistical fit
-                statistical_fit_func = metric_functions.get("statistical_fit")
-                if statistical_fit_func:
-                    statistical_fit = statistical_fit_func(graph, alg_name, df)
-                else:
-                    # Fallback to default
-                    statistical_fit = self._compute_algorithm_native_score(graph, alg_name)
-                    if statistical_fit is None:
-                        fidelity_result = self.use_tool("graph_evaluator", "fidelity_evaluation", df, graph)
-                        statistical_fit = fidelity_result.get("fidelity_score", 0.5)
-                
-                # 2. Global consistency - use dynamic function if available
-                global_consistency_func = metric_functions.get("global_consistency")
-                is_pag = graph.get("metadata", {}).get("graph_type") == "PAG"
-                
-                if is_pag:
-                    global_consistency = 0.0  # Not applicable for PAG
-                else:
-                    if global_consistency_func:
-                        global_consistency = global_consistency_func(graph, candidate, df)
-                    else:
-                        global_consistency = 1.0 - candidate["violation_ratio"]
-                
-                # 3. Sampling stability
-                sampling_stability = self._evaluate_robustness(df, graph, alg_name)
-                
-                # 4. Structural stability
-                structural_stability = 1.0 - candidate["instability_score"]
-                
+
                 scorecard.append({
                     "algorithm": alg_name,
                     "graph_id": f"{alg_name}_{id(graph)}",
-                    "statistical_fit": statistical_fit,
-                    "global_consistency": global_consistency,
-                    "sampling_stability": sampling_stability,
-                    "structural_stability": structural_stability,
+                    "global_consistency": scored_graph["global_consistency"],
+                    "sampling_stability": scored_graph["sampling_stability"],
+                    "structural_stability": scored_graph["structural_stability"],
                     "graph": graph
                 })
             
@@ -898,27 +832,23 @@ class CausalDiscoveryAgent(SpecialistAgent):
             state["scorecard"] = scorecard
             state["ranked_graphs"] = ranked_graphs
             state["top_candidates"] = top_candidates
-            state["scorecard_evaluation_completed"] = True
+            state["graph_evaluation_completed"] = True
             
-            logger.info(f"Scorecard evaluation completed. Top candidate: {top_candidates[0]['algorithm'] if top_candidates else 'None'}")
+            logger.info(f"Graph evaluation completed. Top candidate: {top_candidates[0]['algorithm'] if top_candidates else 'None'}")
             return state
             
         except Exception as e:
-            logger.error(f"Scorecard evaluation failed: {str(e)}")
-            state["error"] = f"Scorecard evaluation failed: {str(e)}"
+            logger.error(f"Graph evaluation failed: {str(e)}")
+            state["error"] = f"Graph evaluation failed: {str(e)}"
             return state
     
     def _get_dynamic_metric_functions(self, execution_plan: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Get appropriate metric functions for each algorithm in execution_plan"""
         metric_functions = {}
         
-        ges_config = next((c for c in execution_plan if c["alg"] == "GES"), None)
-        if ges_config and ges_config.get("score") == "bic-cg":
-            def bic_cg_fit(graph, alg_name, df):
-                # PLACEHOLDER: Calculate BIC-CG score
-                # For now, use default
-                return self._compute_algorithm_native_score(graph, alg_name) or 0.5
-            metric_functions["statistical_fit"] = bic_cg_fit
+        # Note: bic-cg score is calculated during GES execution and stored in graph metadata
+        # We just extract it via _compute_algorithm_native_score, no need for custom function
+        # If bic-cg implementation is needed, it should be in tools.py GESTool.discover()
         
         # Find PC/FCI config to determine global_consistency function
         pc_config = next((c for c in execution_plan if c["alg"] in ["PC", "FCI"]), None)
@@ -931,23 +861,25 @@ class CausalDiscoveryAgent(SpecialistAgent):
         return metric_functions
     
     def _composite_score_ranking(self, scorecard: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Rank graphs using composite score"""
+        """Rank graphs using composite score
+        
+        For DAG: Uses 3 scores (global_consistency, sampling_stability, structural_stability)
+        For PAG: Uses 2 scores (sampling_stability, structural_stability) with weight renormalization
+        """
         for item in scorecard:
             is_pag = item["graph"].get("metadata", {}).get("graph_type") == "PAG"
             
             if is_pag:
-                w_stat = self.composite_weights["statistical_fit"]
+                # PAG: Use only sampling_stability
                 w_samp = self.composite_weights["sampling_stability"]
                 w_struct = self.composite_weights["structural_stability"]
-                weight_sum = w_stat + w_samp + w_struct
-                composite_score = (
-                    (w_stat / weight_sum) * item["statistical_fit"] +
-                    (w_samp / weight_sum) * item["sampling_stability"] +
-                    (w_struct / weight_sum) * item["structural_stability"]
-                )
+                
+
+                composite_score = item["sampling_stability"]
+
             else:
+                # DAG: Use all 3 scores (global_consistency, sampling_stability, structural_stability)
                 composite_score = (
-                    self.composite_weights["statistical_fit"] * item["statistical_fit"] +
                     self.composite_weights["global_consistency"] * item["global_consistency"] +
                     self.composite_weights["sampling_stability"] * item["sampling_stability"] +
                     self.composite_weights["structural_stability"] * item["structural_stability"]
@@ -968,58 +900,103 @@ class CausalDiscoveryAgent(SpecialistAgent):
     
     def _sequential_pruning(self, scorecard: List[Dict[str, Any]], 
                            user_params: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Rank graphs using sequential pruning with thresholds"""
         pruning_thresholds = user_params.get("pruning_thresholds", {
-            "fit": 0.3,
             "consistency": 0.05,
             "sampling": 0.2
         })
         
-        # Step 1: Filter by statistical_fit
-        step1 = [g for g in scorecard if g["statistical_fit"] >= pruning_thresholds["fit"]]
-        
-        # Step 2: Filter by global_consistency (skip for PAG)
-        step2 = []
-        for g in step1:
+        # Step 1: Filter by global_consistency (skip for PAG)
+        step1 = []
+        for g in scorecard:
             is_pag = g["graph"].get("metadata", {}).get("graph_type") == "PAG"
             if is_pag or g["global_consistency"] >= pruning_thresholds["consistency"]:
-                step2.append(g)
+                step1.append(g)
         
-        # Step 3: Filter by sampling_stability
-        step3 = [g for g in step2 if g["sampling_stability"] >= pruning_thresholds["sampling"]]
+        # Step 2: Filter by sampling_stability
+        step2 = [g for g in step1 if g["sampling_stability"] >= pruning_thresholds["sampling"]]
         
-        # Step 4: Sort by structural_stability
-        final_ranked = sorted(step3, key=lambda x: x["structural_stability"], reverse=True)
+        # Step 3: Sort by structural_stability (None values go to end)
+        final_ranked = sorted(step2, key=lambda x: (x["structural_stability"] is None, x.get("structural_stability") or 0.0), reverse=True)
         
         return final_ranked
     
-    def _compute_algorithm_native_score(self, graph: Dict[str, Any], algorithm_name: str) -> Optional[float]:
-        """Extract algorithm-native BIC/AIC score from metadata if available"""
-        try:
-            if "metadata" in graph:
-                metadata = graph["metadata"]
+    def _calculate_graph_scores(self, graph: Dict[str, Any], alg_name: str, df: pd.DataFrame, 
+                                execution_plan: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Calculate 3 scores for a single graph with parallelization
+        
+        Args:
+            graph: Graph result dictionary
+            alg_name: Algorithm name
+            df: DataFrame for evaluation
+            execution_plan: Execution plan for dynamic metric functions
+            
+        Returns:
+            Dictionary with 3 scores: global_consistency, sampling_stability, structural_stability
+        """
+        def calculate_global_consistency():
+            """Calculate global consistency score"""
+            try:
+                is_pag = graph.get("metadata", {}).get("graph_type") == "PAG"
+                if is_pag:
+                    return 0.0 
                 
-                # Check for common score fields
-                if "bic" in metadata:
-                    # Convert BIC to score (lower BIC = higher score)
-                    bic = metadata["bic"]
-                    return max(0.0, min(1.0, 1.0 - (bic / 1000)))  # Simple normalization
-                elif "aic" in metadata:
-                    # Convert AIC to score
-                    aic = metadata["aic"]
-                    return max(0.0, min(1.0, 1.0 - (aic / 1000)))
-                elif "score" in metadata:
-                    return float(metadata["score"])
-                elif "log_likelihood" in metadata:
-                    # Convert log-likelihood to score
-                    ll = metadata["log_likelihood"]
-                    return max(0.0, min(1.0, (ll + 100) / 200))  # Simple normalization
+                metric_functions = self._get_dynamic_metric_functions(execution_plan)
+                global_consistency_func = metric_functions.get("global_consistency")
+                
+                markov_result = self.use_tool("pruning_tool", "global_markov_test", graph, df, 
+                                             alpha=self.ci_alpha, max_pa_size=self.max_pa_size)
+                violation_ratio = markov_result.get("violation_ratio", 1.0)
+                
+                if global_consistency_func:
+                    candidate_dict = {"violation_ratio": violation_ratio}
+                    return global_consistency_func(graph, candidate_dict, df)
+                else:
+                    # Default: use 1.0 - violation_ratio
+                    return 1.0 - violation_ratio 
+            except Exception as e:
+                logger.warning(f"Global consistency calculation failed for {alg_name}: {e}")
+                return 0.0
+        
+        def calculate_sampling_stability():
+            """Calculate sampling stability score"""
+            try:
+                bootstrap_result = self.use_tool("bootstrapper", "bootstrap_evaluation", df, graph, alg_name, self.bootstrap_iterations)
+                return bootstrap_result.get("robustness_score", 0.5)
+            except Exception as e:
+                logger.warning(f"Sampling stability calculation failed for {alg_name}: {e}")
+                return 0.5
+        
+        def calculate_structural_stability():
+            """Calculate structural stability score"""
+            try:
+                consistency_result = self.use_tool("pruning_tool", "structural_consistency_test", graph, df, alg_name, n_subsets=self.n_subsets)
+                instability_score = consistency_result.get("instability_score")
+                
+                # PAG graphs return None (test skipped)
+                if instability_score is None:
+                    return None
+                
+                return 1.0 - instability_score
+            except Exception as e:
+                logger.warning(f"Structural stability calculation failed for {alg_name}: {e}")
+                return 0.0
+        
+        # Calculate 3 scores in parallel
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            future_consistency = executor.submit(calculate_global_consistency)
+            future_sampling = executor.submit(calculate_sampling_stability)
+            future_structural = executor.submit(calculate_structural_stability)
             
-            return None
-            
-        except Exception as e:
-            logger.warning(f"Failed to extract native score for {algorithm_name}: {e}")
-            return None
+            # Collect results
+            global_consistency = future_consistency.result()
+            sampling_stability = future_sampling.result()
+            structural_stability = future_structural.result()
+        
+        return {
+            "global_consistency": global_consistency,
+            "sampling_stability": sampling_stability,
+            "structural_stability": structural_stability
+        }
 
     # === Helpers and dispatch ===
 
@@ -1092,7 +1069,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
     
     
     def _ensemble_synthesis(self, state: AgentState) -> AgentState:
-        """Stage 5: Ensemble synthesis with PAG-like and DAG outputs"""
+        """Stage 6: Ensemble synthesis with PAG-like and DAG outputs"""
         logger.info("Performing ensemble synthesis...")
         
         try:
@@ -1291,19 +1268,17 @@ class CausalDiscoveryAgent(SpecialistAgent):
             logger.error(f"PC execution failed: {e}")
             return {"error": str(e)}
 
-    def _run_ges(self, df: pd.DataFrame, score_func: str = "bic") -> Dict[str, Any]:
-        """Run GES algorithm with dynamic score function selection"""
+    def _run_ges(self, df: pd.DataFrame, score_func: str = "bic-g") -> Dict[str, Any]:
+        """Run GES algorithm with dynamic score function selection
+        
+        Supported score functions:
+        - bic-g: pgmpy bic-g (continuous)
+        - bic-d: pgmpy bic-d (categorical)
+        - bic-cg: pgmpy bic-cg (mixed)
+        - generalized_rkhs: causal-learn generalized RKHS (nonlinear)
+        """
         try:
-            # Map score function names to tool parameters
-            if score_func == "generalized_rkhs":
-                # Placeholder: use generalized RKHS scoring
-                result = self.use_tool("ges_tool", "ges_discovery", df, score_func="generalized_rkhs")
-            elif score_func == "bic-cg":
-                # Use BIC for Conditional Gaussian
-                result = self.use_tool("ges_tool", "ges_discovery", df, score_func="bic-cg")
-            else:
-                # Default: standard BIC
-                result = self.use_tool("ges_tool", "ges_discovery", df, score_func="bic")
+            result = self.use_tool("ges_tool", "ges_discovery", df, score_func=score_func)
             return result
         except Exception as e:
             logger.error(f"GES execution failed: {e}")
@@ -1411,9 +1386,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
         """Graph evaluation tool implementation"""
         from .tools import GraphEvaluator
         
-        if method == "fidelity_evaluation":
-            return GraphEvaluator.fidelity_evaluation(args[0], args[1])
-        elif method == "cv_evaluation":
+        if method == "cv_evaluation":
             return GraphEvaluator.cv_evaluation(args[0], args[1], args[2])
         else:
             return {"error": f"Unknown method: {method}"}
@@ -1434,7 +1407,11 @@ class CausalDiscoveryAgent(SpecialistAgent):
         from .tools import PruningTool
         
         if method == "global_markov_test":
-            return PruningTool.global_markov_test(args[0], args[1], kwargs.get("alpha", self.ci_alpha))
+            return PruningTool.global_markov_test(
+                args[0], args[1], 
+                alpha=kwargs.get("alpha", self.ci_alpha),
+                max_pa_size=kwargs.get("max_pa_size", self.max_pa_size)
+            )
         elif method == "structural_consistency_test":
             return PruningTool.structural_consistency_test(args[0], args[1], args[2], kwargs.get("n_subsets", self.n_subsets))
         else:

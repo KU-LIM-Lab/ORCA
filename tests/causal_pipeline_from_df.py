@@ -8,7 +8,7 @@ from datetime import datetime
 import pandas as pd
 
 from orchestration.graph import create_orchestration_graph
-from tests.synthetic_data import generate_er_synthetic
+from utils.synthetic_data import generate_er_synthetic
 
 
 def main():
