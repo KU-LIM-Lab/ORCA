@@ -5,6 +5,7 @@ const { v4: uuidv4 } = require('uuid');
 const ORDER_COUNT = 10000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+
 function sigmoid(x) {
   return 1 / (1 + Math.exp(-x));
 }
@@ -169,6 +170,9 @@ module.exports = async function () {
     }
 
     //payment_status
+
+    const now = new Date();
+
     let paymentStatus;
 
     if (paymentDate === null) {
@@ -181,7 +185,8 @@ module.exports = async function () {
         // 오래됐는데도 아직 결제 X → 실패
         paymentStatus = 'FAILED';
       }
-    
+    } else {
+      paymentStatus = 'COMPLETED';
     }
     
 

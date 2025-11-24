@@ -345,7 +345,7 @@ CREATE TABLE public.payment (
     payment_status varchar(20) NOT NULL DEFAULT 'PENDING',
 
     amount numeric(10,2) NOT NULL DEFAULT 0.00,
-    payment_date timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    payment_date timestamp without time zone,
 
     CONSTRAINT fk_payment_order
         FOREIGN KEY (order_id)

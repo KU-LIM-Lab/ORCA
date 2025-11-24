@@ -20,6 +20,7 @@ module.exports = async function () {
   console.log(`Connected. Inserting ${categoryNames.length} categories...`);
 
   const today = new Date();
+  const DAY_MS = 24 * 60 * 60 * 1000;
 
   // Uniform(a, b) days ago → 실제 날짜 반환
   const daysAgo = (minDays, maxDays) => {
