@@ -30,7 +30,7 @@ createdb reef_db
 
 # DDL 실행
 echo "DDL을 실행합니다..."
-psql -d reef_db -f REEF/REEF_ddl.sql
+psql -d reef_db -f REEF/REEF_ddl_continuous.sql
 
 if [ $? -eq 0 ]; then
     echo "✅ 데이터베이스 스키마 생성 완료"
@@ -43,7 +43,7 @@ fi
 echo "📋 3단계: 시드 데이터 생성"
 echo "샘플 데이터를 생성합니다..."
 
-cd REEF/seed
+cd REEF/seed_R1
 
 # Node.js 패키지 설치
 echo "Node.js 패키지를 설치합니다..."
