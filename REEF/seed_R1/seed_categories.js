@@ -27,13 +27,20 @@ module.exports = async function () {
     return new Date(today.getTime() - d * 24 * 60 * 60 * 1000);
   };
 
+  const START = new Date("2024-01-01");
+
+  function randomFromStart(startDate, minDays, maxDays) {
+    const offsetDays = faker.number.int({ min: minDays, max: maxDays });
+    return new Date(startDate.getTime() + offsetDays * DAY_MS);
+  }
+
   for (const name of categoryNames) {
 
     const category_id = faker.string.uuid();
     const description = faker.commerce.productDescription();
 
     // 1) created_at = U(30, 365 days ago)
-    const created_at = daysAgo(30, 365);
+    const created_at = randomFromStart(START, 0, 30);
 
     // 2) updated_at = created_at
     const updated_at = created_at;

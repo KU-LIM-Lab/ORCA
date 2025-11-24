@@ -101,6 +101,8 @@ module.exports = async function () {
 
     const updated_at = created_at; // 엑셀 정의에 맞게 동일하게 두기
 
+    const point_balance = faker.number.int({ min: 100, max: 50000 });
+
     await client.query(
       `
       INSERT INTO users (
@@ -143,7 +145,7 @@ module.exports = async function () {
         is_active,
         created_at,
         updated_at,
-        0.0, // point_balance (2차 seeding에서 point_transaction로 업데이트 예정)
+        point_balance, // point_balance (2차 seeding에서 point_transaction로 업데이트 예정)
       ]
     );
   }

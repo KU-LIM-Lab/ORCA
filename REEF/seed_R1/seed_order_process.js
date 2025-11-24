@@ -82,7 +82,7 @@ module.exports = async function () {
     const baseCreated = new Date(
       Math.max(earliestProductCreated.getTime(), new Date(user.created_at).getTime())
     );
-    const plusDays = faker.number.int({ min: 0, max: 60 });
+    const plusDays = faker.number.int({ min: 0, max: 300 });
     const orderCreatedAt = new Date(baseCreated.getTime() + plusDays * DAY_MS);
 
     // 2-2. order_items 생성 + subtotal 계산
@@ -144,25 +144,46 @@ module.exports = async function () {
     // ───────────────── 3. 결제 생성 (payment) ─────────────────
 
     // score_card = α0 + α1*log1p(total_amount) + α2*I(age>=40) + ε
-    const ageOver40 = user.age >= 40 ? 1 : 0;
-    const epsM = faker.number.float({ mean: 0, stddev: 1 });
+    // const ageOver40 = user.age >= 40 ? 1 : 0;
+    // const epsM = faker.number.float({ mean: 0, stddev: 1 });
 
-    const scoreCard = -0.5 + 0.4 * Math.log1p(total_amount) + 0.3 * ageOver40 + epsM;
-    const pSuccess = sigmoid(scoreCard);
+    // const scoreCard = -0.5 + 0.4 * Math.log1p(total_amount) + 0.3 * ageOver40 + epsM;
+    // const pSuccess = sigmoid(scoreCard);
 
-    let paymentStatus;
-    const r = Math.random();
-    if (r < pSuccess * 0.85) {
-      paymentStatus = 'COMPLETED';
-    } else if (r < pSuccess) {
-      paymentStatus = 'PENDING';
-    } else {
-      paymentStatus = 'FAILED';
-    }
+    // let paymentStatus;
+    // const r = Math.random();
+    // if (r < pSuccess * 0.85) {
+    //   paymentStatus = 'COMPLETED';
+    // } else if (r < pSuccess) {
+    //   paymentStatus = 'PENDING';
+    // } else {
+    //   paymentStatus = 'FAILED';
+    // }
 
     // payment_date: 주문일 이후 0~3일
-    const payOffsetDays = faker.number.int({ min: 0, max: 3 });
-    const paymentDate = new Date(orderCreatedAt.getTime() + payOffsetDays * DAY_MS);
+    let paymentDate = null;
+    const attempt = Math.random() < 0.9;
+    if (attempt) {
+      const payOffsetDays = faker.number.int({ min: 0, max: 3 });
+      paymentDate = new Date(orderCreatedAt.getTime() + payOffsetDays * DAY_MS);
+    }
+
+    //payment_status
+    let paymentStatus;
+
+    if (paymentDate === null) {
+      const elapsedFromOrder = (now - orderCreatedAt) / DAY_MS;  // 주문 시점 기준 경과일
+    
+      if (elapsedFromOrder < 2) {
+        // 아직 시간 충분히 안 지남 → 입금대기(PENDING)
+        paymentStatus = 'PENDING';
+      } else {
+        // 오래됐는데도 아직 결제 X → 실패
+        paymentStatus = 'FAILED';
+      }
+    
+    }
+    
 
     const paymentMethod = faker.helpers.weightedArrayElement([
       { value: 'CARD', weight: 0.5 },
