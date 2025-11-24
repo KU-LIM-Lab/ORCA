@@ -13,7 +13,6 @@ def generate_causal_analysis_graph(llm):
     # Add entry node for conditional routing
     graph.add_node("__entry__", lambda state: state)
     
-    # Add nodes (removed data preprocessing nodes)
     graph.add_node("parse_question", build_parse_question_node(llm))
     graph.add_node("config_selection", build_config_selection_node(llm))
     graph.add_node("dowhy_analysis", build_dowhy_analysis_node())
@@ -22,10 +21,15 @@ def generate_causal_analysis_graph(llm):
     # Conditional routing: check if variables are already provided
     def route_entry(state):
         # If we have treatment and outcome variables, skip parsing
-        if state.get("treatment_variable") and state.get("outcome_variable"):
+        # Use getattr since CausalAnalysisState is a Pydantic model, not a dict
+        treatment = getattr(state, "treatment_variable", None)
+        outcome = getattr(state, "outcome_variable", None)
+        input_question = getattr(state, "input", None)
+        
+        if treatment and outcome:
             return "config_selection"
         # If we have input question, parse it first
-        elif state.get("input"):
+        elif input_question:
             return "parse_question"
         # Otherwise, error
         else:

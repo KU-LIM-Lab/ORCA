@@ -845,11 +845,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
     def _get_dynamic_metric_functions(self, execution_plan: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Get appropriate metric functions for each algorithm in execution_plan"""
         metric_functions = {}
-        
-        # Note: bic-cg score is calculated during GES execution and stored in graph metadata
-        # We just extract it via _compute_algorithm_native_score, no need for custom function
-        # If bic-cg implementation is needed, it should be in tools.py GESTool.discover()
-        
+                
         # Find PC/FCI config to determine global_consistency function
         pc_config = next((c for c in execution_plan if c["alg"] in ["PC", "FCI"]), None)
         if pc_config and pc_config.get("ci_test") == "lrt":

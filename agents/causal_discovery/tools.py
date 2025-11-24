@@ -413,7 +413,9 @@ class CAMTool:
             runtime = time.time() - t0
             return normalize_graph_result("CAM", vars_, edges, {"backend": "cdt"}, runtime)
         except Exception as e:
-            return {"error": f"CAM not available: {e}"}
+            error_msg = f"CAM not available: {type(e).__name__} - {str(e)}"
+            logger.error(error_msg)
+            return {"error": error_msg}
 
 
 class Bootstrapper:
@@ -966,7 +968,7 @@ class GESTool:
     """GES algorithm wrapper. Supports multiple scoring methods
     """
     @staticmethod
-    def discover(df: pd.DataFrame, score_func: str = "bic", **kwargs) -> Dict[str, Any]:
+    def discover(df: pd.DataFrame, score_func: str = "bic-g", **kwargs) -> Dict[str, Any]:
         import time
         t0 = time.time()
         vars_ = list(df.columns)
@@ -977,12 +979,12 @@ class GESTool:
             if score_func in {"bic-g", "bic-cg", "bic-d", "bdeu"}:
                 # --- pgmpy ---
                 try:
-                    from pgmpy.estimators import GES as PGMPY_GES
+                    from pgmpy.estimators import GES
                 except ImportError:
                     logger.error("pgmpy not available for GES scoring. Install with: pip install pgmpy")
                     return {"error": "pgmpy not available"}
                 
-                est = PGMPY_GES(df)
+                est = GES(df)
                 
                 scoring_method = score_func
                 
@@ -993,15 +995,14 @@ class GESTool:
                 params["scoring_method"] = scoring_method
                 
             elif score_func == "generalized_rkhs":
-                # --- causal-learn generalized RKHS  ---
                 try:
-                    from causallearn.search.ScoreBased.GES import ges as CL_GES
+                    from causallearn.search.ScoreBased.GES import ges
                 except ImportError:
                     logger.error("causal-learn not available for GES scoring")
                     return {"error": "causal-learn not available"}
                 
                 data = df.values
-                res = CL_GES(data, score_func="local_score_CV_general")
+                res = ges(data, score_func="local_score_CV_general")
                 G = getattr(res, 'G', None) or (res.get('G', None) if isinstance(res, dict) else None)
                 
                 if G is not None and hasattr(G, 'graph'):

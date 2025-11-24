@@ -22,6 +22,8 @@ class CausalAnalysisState(BaseModel):
     treatment_variable: Optional[str] = None
     outcome_variable: Optional[str] = None
     confounders: Optional[List[str]] = None
+    colliders: Optional[List[str]] = None
+    mediators: Optional[List[str]] = None
     
     # Optional inputs
     input: Optional[str] = None  # Natural language question
@@ -52,3 +54,7 @@ class CausalAnalysisState(BaseModel):
 
     def __setitem__(self, key, value):
         return setattr(self, key, value)
+    
+    def get(self, key, default=None):
+        """Dict-like get method for compatibility with node functions."""
+        return getattr(self, key, default)

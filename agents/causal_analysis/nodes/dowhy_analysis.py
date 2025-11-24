@@ -4,6 +4,7 @@ from typing import Dict, List
 from langchain_core.runnables import RunnableLambda
 
 import pandas as pd
+import numpy as np
 from dowhy import CausalModel
 from tabpfn import TabPFNClassifier
 
@@ -125,8 +126,13 @@ def build_dowhy_analysis_node() -> RunnableLambda:
         
         # Save useful scalar values separately
         try:
-            ci = estimate.get_confidence_intervals()
-            ci = ci.tolist() if hasattr(ci, "tolist") else ci
+            ci_raw = estimate.get_confidence_intervals()
+            ci_arr = np.asarray(ci_raw, dtype=float)
+            
+            if ci_arr.ndim == 2 and ci_arr.shape[0] == 1:
+                ci_arr = ci_arr[0]
+                
+            ci = ci_arr.tolist()
         except Exception:
             ci = None
 

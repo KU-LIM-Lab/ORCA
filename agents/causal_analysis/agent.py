@@ -48,7 +48,6 @@ class CausalAnalysisAgent(SpecialistAgent):
     
     def _register_specialist_tools(self) -> None:
         """Register causal analysis specific tools"""
-        # 2. 커스텀 도구들 등록
         self.register_tool(
             "parse_question",
             self._parse_question_tool,
@@ -75,7 +74,6 @@ class CausalAnalysisAgent(SpecialistAgent):
     
     def step(self, state: AgentState) -> AgentState:
         """Execute one step of the causal analysis process"""
-        # 3. 메인 실행 로직
         current_substep = state.get("current_substep", "full_pipeline")
         
         if current_substep == "parse_question":
@@ -91,7 +89,6 @@ class CausalAnalysisAgent(SpecialistAgent):
         else:
             raise ValueError(f"Unknown substep: {current_substep}")
     
-    # 4. 커스텀 도구 구현
     def _parse_question_tool(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """Parse natural language question to identify causal variables"""
         try:
@@ -131,10 +128,7 @@ class CausalAnalysisAgent(SpecialistAgent):
             df_preprocessed = state.get("df_preprocessed")
             if df_preprocessed is None:
                 raise ValueError("Preprocessed data is required for config selection")
-            
-            # Avoid copying DataFrame into state to prevent msgpack errors
-            # Downstream nodes should load from df_preprocessed/df_redis_key as needed
-            
+                        
             # Build and invoke config_selection node
             config_selection_node = build_config_selection_node(self.llm)
             result_state = config_selection_node.invoke(state)
