@@ -43,23 +43,9 @@ fi
 echo "📋 3단계: 시드 데이터 생성"
 echo "샘플 데이터를 생성합니다..."
 
-cd REEF/seed_R1
-
-# Node.js 패키지 설치
-echo "Node.js 패키지를 설치합니다..."
-npm install
-
-if [ $? -eq 0 ]; then
-    echo "✅ Node.js 패키지 설치 완료"
-else
-    echo "❌ Node.js 패키지 설치 실패"
-    echo "   Node.js가 설치되어 있는지 확인하세요."
-    exit 1
-fi
-
 # 시드 데이터 실행
 echo "시드 데이터를 생성합니다..."
-node run_all_seeds.js
+node REEF/seed_R1/run_all_seeds.js
 
 if [ $? -eq 0 ]; then
     echo "✅ 시드 데이터 생성 완료"
@@ -67,8 +53,6 @@ else
     echo "❌ 시드 데이터 생성 실패"
     exit 1
 fi
-
-cd ../..
 
 # 4단계: Redis 설정
 echo "📋 4단계: Redis 설정"

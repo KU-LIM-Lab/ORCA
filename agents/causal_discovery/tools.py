@@ -95,18 +95,21 @@ class StatsTool:
             gam_pred = gp.predict(x.values.reshape(-1, 1))
             gam_mse = mean_squared_error(y.values, gam_pred)
             
-            # Calculate linearity score (lower MSE ratio = more linear)
-            if gam_mse > 0:
-                linearity_ratio = linear_mse / gam_mse
-                linearity_score = min(1.0, max(0.0, 1.0 - linearity_ratio + 0.5))
+            # Calculate linearity score: linear_mse / (linear_mse + gam_mse)
+            # Always in [0, 1]: closer to 0 when GAM is better, closer to 1 when Linear is better
+            total_mse = linear_mse + gam_mse
+            if total_mse > 0:
+                linearity_score = linear_mse / total_mse
+                linearity_ratio = linear_mse / gam_mse if gam_mse > 0 else float('inf')
             else:
                 linearity_score = 0.5
+                linearity_ratio = 1.0
             
             return {
                 "linearity_score": linearity_score,
                 "linear_mse": linear_mse,
                 "gam_mse": gam_mse,
-                "ratio": linearity_ratio if gam_mse > 0 else 1.0
+                "ratio": linearity_ratio
             }
             
         except Exception as e:

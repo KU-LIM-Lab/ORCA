@@ -11,7 +11,7 @@ import argparse
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Orchestration flow demo (step visibility)")
     parser.add_argument("--query", default="What is the causal effect of gender on used_coupon?", help="Query to run")
-    parser.add_argument("--interactive", action="store_true", help="Run with HITL prompts enabled")
+    parser.add_argument("--interactive", default=True, action="store_true", help="Run with HITL prompts enabled")
     parser.add_argument("--verbose", action="store_true", help="Show detailed execution flow and report")
     return parser.parse_args()
 
@@ -26,7 +26,7 @@ def main():
     
     graph = create_orchestration_graph(
         metrics_collector=collector,
-        orchestration_config={"interactive": bool(args.interactive)}
+        orchestration_config={"interactive": args.interactive}
     )
     
     result = graph.execute(args.query)
