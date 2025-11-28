@@ -45,8 +45,11 @@ class AgentState(TypedDict, total=False):
     ground_truth_causal_graph: Dict[str, Any]
     
     # === HITL State ===
+    interactive: bool  
     user_edits: Dict[str, Any]
     user_feedback: Optional[str]
+    edits: Dict[str, Any]  # HITL edits from user 
+    feedback: str  # HITL feedback from user
     
     # === User Interaction ===
     user_constraints: Dict[str, Any]  # User-provided constraints for causal discovery
@@ -287,6 +290,7 @@ def create_initial_state(query: str, db_id: str = "reef_db", session_id: str = N
         completed_phases=[],
         completed_substeps=[],
         error_log=[],
+        interactive=False,  # Default to non-interactive mode
         user_edits={},
         user_feedback=None,
         user_constraints={},

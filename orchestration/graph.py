@@ -159,16 +159,12 @@ class OrchestrationGraph:
         
         # Create initial state
         initial_state = create_initial_state(query)
-        initial_state["interactive"] = self.interactive
         if context:
             initial_state.update(context)
-            # Runtime ground-truth inputs and skip flags
             skip_steps = list(context.get("skip", []) or [])
-            # If gt_df provided, persist to Redis and avoid keeping DF in state
             if context.get("gt_df") is not None:
                 try:
                     from utils.redis_df import save_df_parquet
-                    import numpy as _np  # avoid polluting global namespace
                     df = context.get("gt_df")
                     # Create a session-specific key
                     sid = session_id or "default_session"
@@ -181,20 +177,17 @@ class OrchestrationGraph:
                     except Exception:
                         pass
                 except Exception:
-                    # If Redis unavailable, fallback to placing DF directly (may serialize error)
                     initial_state["df_preprocessed"] = context.get("gt_df")
-                # Ensure raw gt_df object is not kept in state to avoid msgpack errors
                 if "gt_df" in initial_state:
                     try:
                         del initial_state["gt_df"]
                     except Exception:
                         initial_state["gt_df"] = None
                 initial_state["data_exploration_status"] = "skipped"
-                # Mark common exploration substeps as skippable
                 for s in ["table_selection", "table_retrieval", "data_preprocessing"]:
                     if s not in skip_steps:
                         skip_steps.append(s)
-            # If gt_graph provided, inject selected graph and allow skipping discovery
+
             if context.get("gt_graph") is not None:
                 initial_state["selected_graph"] = context.get("gt_graph")
                 initial_state["causal_discovery_status"] = "skipped"
@@ -208,13 +201,14 @@ class OrchestrationGraph:
                 ]:
                     if s not in skip_steps:
                         skip_steps.append(s)
-            # Pass treatment/outcome if provided
             if context.get("treatment"):
                 initial_state["treatment_variable"] = context.get("treatment")
             if context.get("outcome"):
                 initial_state["outcome_variable"] = context.get("outcome")
             if skip_steps:
                 initial_state["skip_steps"] = skip_steps
+        
+        initial_state["interactive"] = self.interactive
         
         # Execute the graph
         config = {"configurable": {"thread_id": session_id or "default_session"}}
@@ -228,71 +222,202 @@ class OrchestrationGraph:
         current_input = initial_state
         interrupt_count = 0
 
-        # 전체 대화/세션을 관리하는 최상위 루프
-        # While loop로 감싸서 interrupt가 여러 번 발생해도 계속 처리
+        # Main execution loop: handles multiple interrupts
+        # Flow:
+        # 1. Stream graph execution until interrupt or completion
+        # 2. If interrupt: get user input, update state, resume from checkpoint
+        # 3. If completed: exit loop
         while True:
             print(f"\n{'='*60}")
             print(f"🔄 Stream iteration (interrupt count: {interrupt_count})")
             print(f"{'='*60}")
             
-            # Stream 실행 - interrupt 발생 시 자연스럽게 종료됨
+            # Stream graph execution - naturally terminates on interrupt or completion
             found_interrupt = False
             completed = False
             
             for step in self.compiled_graph.stream(current_input, config=config):
                 step_name = list(step.keys())[0]
                 
-                # Interrupt 감지
                 if step_name == '__interrupt__':
                     state_data = step[step_name]
                     interrupt_obj = state_data[0] if isinstance(state_data, tuple) else state_data
+                    payload = interrupt_obj.value if hasattr(interrupt_obj, 'value') else (interrupt_obj if isinstance(interrupt_obj, dict) else {})
+                    
+                    # Ensure payload is a dict
+                    if not isinstance(payload, dict):
+                        payload = {}
                     
                     interrupt_count += 1
                     print(f"\n⏸️  INTERRUPT #{interrupt_count} DETECTED!")
-                    print(f"📋 Interrupt payload:")
-                    print(json.dumps(interrupt_obj.value, indent=2))
-                    print(f"💬 Please provide input (JSON format):")
+                    step_name_from_payload = payload.get('step', 'unknown')
+                    phase_name = payload.get('phase', 'unknown')
+                    description = payload.get('description', 'N/A')
+                    print(f"📋 Step: {step_name_from_payload} ({phase_name})")
+                    print(f"   Description: {description}")
                     
-                    # 사용자 입력 받기
+                    # Show current step results and editable fields before decision
+                    try:
+                        current_state = self.compiled_graph.get_state(config).values
+                        step_name = payload.get('step', '')
+                        
+                        result_fields = {}
+                        if step_name == "table_selection":
+                            result_fields = {"selected_tables": "Selected tables"}
+                        elif step_name == "table_retrieval":
+                            result_fields = {"sql_query": "Generated SQL query"}
+                        elif step_name == "data_preprocessing":
+                            result_fields = {"df_shape": "Data shape", "variable_schema": "Variable schema"}
+                        elif step_name == "algorithm_configuration":
+                            result_fields = {"selected_algorithms": "Selected algorithms"}
+                        elif step_name == "ensemble_synthesis":
+                            result_fields = {"selected_graph": "Selected causal graph"}
+                        elif step_name == "select_configuration":
+                            result_fields = {
+                                "treatment_variable": "Treatment variable",
+                                "outcome_variable": "Outcome variable",
+                                "confounders": "Confounders"
+                            }
+                        
+                        if result_fields:
+                            print("\n📊 Current step results:")
+                            for field, label in result_fields.items():
+                                value = current_state.get(field)
+                                if value:
+                                    if isinstance(value, (list, dict)) and len(str(value)) > 150:
+                                        print(f"   - {label}: {str(value)[:150]}...")
+                                    else:
+                                        print(f"   - {label}: {value}")
+                                else:
+                                    print(f"   - {label}: (not set)")
+                        
+                        # Show editable fields information before decision
+                        from orchestration.executor.agent import ExecutorAgent
+                        all_editable_fields = ExecutorAgent._get_editable_fields()
+                        
+                        relevant_fields = []
+                        if step_name == "table_selection":
+                            relevant_fields = ["selected_tables"]
+                        elif step_name == "table_retrieval":
+                            relevant_fields = ["sql_query"]
+                        elif step_name == "data_preprocessing":
+                            relevant_fields = ["target_columns"]
+                        elif step_name == "algorithm_configuration":
+                            relevant_fields = ["selected_algorithms"]
+                        elif step_name == "ensemble_synthesis":
+                            relevant_fields = ["selected_graph"]
+                        elif step_name == "select_configuration":
+                            relevant_fields = ["treatment_variable", "outcome_variable", "confounders", "instrumental_variables"]
+                        else:
+                            relevant_fields = list(all_editable_fields.keys())
+                        
+                        if relevant_fields:
+                            print("\n📝 Editable fields (if you choose 'edit'):")
+                            for field_name in relevant_fields:
+                                if field_name not in all_editable_fields:
+                                    continue
+                                field_info = all_editable_fields[field_name]
+                                current_value = current_state.get(field_name)
+                                
+                                print(f"   - {field_name} ({field_info['type']}): {field_info['description']}")
+                                if current_value:
+                                    if isinstance(current_value, (list, dict)) and len(str(current_value)) > 100:
+                                        print(f"     Current: {str(current_value)[:100]}...")
+                                    else:
+                                        print(f"     Current: {current_value}")
+                                else:
+                                    print(f"     Current: (not set)")
+                                    if 'example' in field_info:
+                                        print(f"     Example: {field_info['example']}")
+                    except Exception as e:
+                        print(f"\n⚠️  Could not retrieve step information: {e}")
+                    
+                    # Step 1: Get decision
                     while True:
-                        try:
-                            user_answer = input("> ")
-                            user_data = json.loads(user_answer)
-                            user_data["hitl_executed"] = True 
-                            break 
-                        except json.JSONDecodeError:
-                            print("잘못된 JSON 형식입니다. 다시 입력해주세요.")
+                        decision = input("\n💬 Choose decision (approve/edit/rerun/abort): ").strip().lower()
+                        if decision in ["approve", "edit", "rerun", "abort"]:
+                            break
+                        print("❌ Invalid decision. Please choose: approve, edit, rerun, or abort")
                     
-                    print(f"✅ Received: {json.dumps(user_data, indent=2)}")
+                    # Initialize user_data with decision
+                    user_data = {
+                        "decision": decision,
+                        "hitl_decision": decision,  # Also store as hitl_decision for executor
+                        "hitl_executed": True
+                    }
+                    
+                    # Step 2: Get additional info based on decision
+                    if decision == "edit":
+                        # Editable fields were already shown above, just get edits
+                        while True:
+                            try:
+                                edits_input = input("\n💬 Enter edits (JSON format, or '{}' for no edits): ").strip()
+                                if not edits_input:
+                                    edits_input = "{}"
+                                edits = json.loads(edits_input)
+                                if isinstance(edits, dict):
+                                    user_data["edits"] = edits
+                                    break
+                                else:
+                                    print("❌ Edits must be a JSON object (dictionary)")
+                            except json.JSONDecodeError:
+                                print("❌ Invalid JSON format. Please try again.")
+                    
+                    elif decision == "rerun":
+                        # Get feedback
+                        feedback = input("\n💬 Enter feedback (optional): ").strip()
+                        if feedback:
+                            user_data["feedback"] = feedback
+                    
+                    # For approve and abort, no additional input needed
+                    print(f"\n✅ Decision: {decision}")
+                    if decision == "edit" and "edits" in user_data:
+                        print(f"   Edits: {json.dumps(user_data['edits'], indent=2)}")
+                    elif decision == "rerun" and "feedback" in user_data:
+                        print(f"   Feedback: {user_data['feedback']}")
                 
-                    # State 업데이트 (invoke 대신 update_state 사용)
-                    self.compiled_graph.update_state(config, user_data)
-
-                    updated_state = self.compiled_graph.update_state(config, user_data)
-                    # print(updated_state) # disable when not needed
+                    # Update state with user decision - this allows executor to resume and process HITL
+                    current_state = self.compiled_graph.get_state(config).values.copy()
+                    current_state.update(user_data)
+                    self.compiled_graph.update_state(config, current_state)
+                    
+                    # Verify state was updated correctly
+                    verify_state = self.compiled_graph.get_state(config).values
+                    if not verify_state.get("hitl_executed"):
+                        verify_state.update(user_data)
+                        self.compiled_graph.update_state(config, verify_state)
                     
                     found_interrupt = True
-                    # stream이 자연스럽게 종료되므로 break 불필요
-                    # 하지만 for loop을 빠져나가고 while loop에서 재시도
+                    # Stream terminates after interrupt, break to exit for loop
+                    # Resume from checkpoint in next while loop iteration
                     break
                 else:
                     # 일반 노드 실행 완료
                     node_state = step[step_name]
-                    print(f"\n✅ Node '{step_name}' completed")
                     
                     if isinstance(node_state, dict):
+                        print(f"\n✅ Node '{step_name}' completed")
                         print(f"📊 Current state:")
-                        print(f"   - planner_completed: {node_state.get(f'{step_name}_completed', 'N/A')}")
+                        completed_key = f'{step_name}_completed'
+                        # Check both node_state and get_state for completed flag
+                        completed_value = node_state.get(completed_key)
+                        if completed_value is None:
+                            try:
+                                current_state = self.compiled_graph.get_state(config).values
+                                completed_value = current_state.get(completed_key, 'N/A')
+                            except Exception:
+                                completed_value = 'N/A'
+                        print(f"   - {completed_key}: {completed_value}")
                         final_state = node_state
             
-            # Stream이 정상 완료되었는지 확인 (interrupt 없이 끝났는지)
+            # Check if stream completed without interrupts
             if not found_interrupt:
                 print("\n✅ Stream completed without interrupts!")
                 completed = True
                 break
 
-            # Interrupt가 발생했으면 다음 iteration에서 재개
-            # current_input을 None으로 설정하여 checkpoint에서 재개
+            # Interrupt occurred - resume from checkpoint in next iteration
+            # Setting current_input=None makes LangGraph resume from checkpoint
             current_input = None
             print(f"\n🔄 Resuming from checkpoint after interrupt #{interrupt_count}...")
             

@@ -85,6 +85,10 @@ class ExecutorAgent(OrchestratorAgent):
             return obj
 
         # Execute steps based on current_execute_step pointer
+        # This loop handles step execution and HITL gates:
+        # 1. Execute step (if not already executed)
+        # 2. If HITL required, trigger interrupt and return (execution pauses)
+        # 3. On resume, check HITL decision and process accordingly
         while True:
             idx = state.get("current_execute_step", 0)
             if idx >= len(plan)-1:
@@ -92,27 +96,25 @@ class ExecutorAgent(OrchestratorAgent):
                 break
             step = plan[idx]
 
-            # runtime skip flags for substeps
+            # Skip step if in skip list
             skip_list = state.get("skip_steps", []) or []
             if step.get("substep") in skip_list:
-                # Mark as completed and advance pointer without executing
                 state.setdefault("completed_substeps", []).append(step["substep"])
                 state["current_execute_step"] = idx + 1
                 state["current_state_executed"] = False
-                # Best-effort phase status updates
+                # Update phase status
                 phase = step.get("phase")
-                if isinstance(phase, str):
-                    if phase == "data_exploration":
-                        state["data_exploration_status"] = state.get("data_exploration_status", "skipped")
-                    elif phase == "causal_discovery":
-                        state["causal_discovery_status"] = state.get("causal_discovery_status", "skipped")
-                    elif phase == "causal_analysis":
-                        state["causal_analysis_status"] = state.get("causal_analysis_status", "skipped")
+                phase_status_map = {
+                    "data_exploration": "data_exploration_status",
+                    "causal_discovery": "causal_discovery_status",
+                    "causal_analysis": "causal_analysis_status"
+                }
+                if phase in phase_status_map:
+                    state[phase_status_map[phase]] = state.get(phase_status_map[phase], "skipped")
                 continue
 
             # Execute substep
             if not state.get("current_state_executed"):
-                state["hitl_executed"] = False
                 result = self._execute_step(step, state, llm)
                 self.execution_log.append({
                     "phase": step["phase"],
@@ -134,35 +136,37 @@ class ExecutorAgent(OrchestratorAgent):
                 self.results[step["substep"]] = safe_data
                 state["current_state_executed"] = True
 
-                # If the step does not require HITL, mark complete and advance
-                if not step.get("hitl_required", False):
+                # If no HITL required or non-interactive mode, advance to next step
+                if not step.get("hitl_required", False) or not interactive:
                     state.setdefault("completed_substeps", []).append(step["substep"])
                     state["current_execute_step"] = idx + 1
                     state["current_state_executed"] = False
                     continue
-                # Otherwise, fall through to HITL gate logic below
-                # Note: HITL gate will handle interactive vs non-interactive mode
 
-            # If no HITL, mark complete and advance pointer
+            # HITL not required - advance to next step
             if not step.get("hitl_required", False):
                 state.setdefault("completed_substeps", []).append(step["substep"])
                 state["current_execute_step"] = idx + 1
                 state["current_state_executed"] = False
                 continue
 
-            # HITL gate
+            # HITL gate: Process user decision
             if state.get("hitl_executed", False):
-                if state.get("hitl_decision") == "abort":
+                decision = state.get("hitl_decision", "approve")
+                edits = state.get("edits", {})
+                feedback = state.get("feedback", "")
+                
+                if decision == "abort":
                     return AgentResult(
                         success=False,
                         error="Aborted by user",
                         metadata={"substep": step["substep"], "execution_log": self.execution_log}
                     )
 
-                if state.get("hitl_decision") == "edit":
+                if decision == "edit":
                     self._apply_edits(state, edits)
 
-                if state.get("hitl_decision") == "rerun":
+                if decision == "rerun":
                     rerun_ok = False
                     for _ in range(max_rerun):
                         re = self._rerun_step(step, state, feedback, llm)
@@ -186,18 +190,37 @@ class ExecutorAgent(OrchestratorAgent):
                             metadata={"execution_log": self.execution_log}
                         )
                     
-
-                # If decision is approve or unset, wait for explicit advancement via HITL
+                # Decision processed - advance to next step and clear HITL flags
                 state.setdefault("completed_substeps", []).append(step["substep"])
-                state["current_execute_step"] = idx + 1
+                next_step_idx = idx + 1
+                state["current_execute_step"] = next_step_idx
                 state["current_state_executed"] = False
-                continue
+                for key in ["hitl_executed", "hitl_decision", "edits", "feedback"]:
+                    state.pop(key, None)
+                
+                # Return to persist state changes (current_execute_step increment)
+                return AgentResult(
+                    success=True,
+                    data={
+                        "current_execute_step": next_step_idx,
+                        "current_state_executed": False
+                    },
+                    metadata={"substep": step["substep"], "hitl_processed": True}
+                )
             
-            # First time HITL trigger for this step
-            decision, edits, feedback = self._hitl_gate(step, state)
-            # After HITL decision, loop will re-evaluate this step and advance accordingly
+            # Trigger interrupt - this pauses execution and waits for user input in graph.py
+            # Flow:
+            # 1. interrupt() called → graph.py stream loop catches __interrupt__ event
+            # 2. User provides decision → state updated with hitl_executed=True, hitl_decision, etc.
+            # 3. Executor resumes → current_state_executed=True so we skip step execution
+            # 4. Enter HITL gate above → process decision and advance to next step
+            self._hitl_gate(step, state)
+            return AgentResult(
+                success=True,
+                data={},
+                metadata={"substep": step["substep"], "waiting_for_hitl": True}
+            )
             
-        # Finalize result after completing or erroring out earlier
         return AgentResult(
             success=True,
             data={
@@ -384,23 +407,10 @@ class ExecutorAgent(OrchestratorAgent):
         return True
 
 
-    def _hitl_gate(self, step: Dict[str, Any], state: AgentState) -> Tuple[str, Dict[str, Any], str]:
-        """HITL interrupt: returns (decision, edits, feedback).
-        In non-interactive mode, automatically approves without user input.
-        """
-        from langgraph.types import interrupt
-        
-        interactive = bool(state.get("interactive", False))
-        
-        # In non-interactive mode, automatically approve
-        if not interactive:
-            logger.info(f"⏭️  HITL skipped (non-interactive mode): {step.get('substep')} - auto-approved")
-            state["hitl_executed"] = True
-            state["hitl_decision"] = "approve"
-            return "approve", {}, ""
-        
-        # Define editable fields with their expected types/format
-        editable_fields = {
+    @staticmethod
+    def _get_editable_fields() -> Dict[str, Dict[str, Any]]:
+        """Get editable fields definition for HITL edit operations."""
+        return {
             "selected_tables": {
                 "type": "list[str]",
                 "description": "List of table names to use for analysis",
@@ -447,100 +457,21 @@ class ExecutorAgent(OrchestratorAgent):
                 "example": ["col1", "col2", "col3"]
             }
         }
+
+    def _hitl_gate(self, step: Dict[str, Any], state: AgentState) -> None:
+        """HITL interrupt: triggers interrupt with simplified payload.
+        User input will be handled interactively in graph.py and stored in state.
+        """
+        from langgraph.types import interrupt
         
         payload = {
-            "question": f"Review step: {step.get('description', step['substep'])}",
+            "step": step["substep"],
             "phase": step["phase"],
-            "substep": step["substep"],
-            "agent": step["agent"],
-            "action": step["action"],
             "description": step.get("description", ""),
-            "decisions": {
-                "approve": {
-                    "description": "Approve and proceed to next step",
-                    "required_fields": {"decision": "approve", "hitl_executed": True}
-                },
-                "edit": {
-                    "description": "Edit state values before proceeding",
-                    "required_fields": {
-                        "decision": "edit",
-                        "edits": {
-                            "description": "Dictionary of field names and new values",
-                            "editable_fields": editable_fields,
-                            "example": {
-                                "selected_tables": ["users", "orders"],
-                                "treatment_variable": "gender"
-                            }
-                        },
-                        "hitl_executed": True
-                    }
-                },
-                "rerun": {
-                    "description": "Re-run this step with optional feedback",
-                    "required_fields": {
-                        "decision": "rerun",
-                        "feedback": {
-                            "type": "str",
-                            "description": "Feedback message to guide re-execution",
-                            "example": "Try with different parameters"
-                        },
-                        "hitl_executed": True
-                    }
-                },
-                "abort": {
-                    "description": "Abort the entire pipeline execution",
-                    "required_fields": {"decision": "abort", "hitl_executed": True}
-                }
-            },
-            "hint": (
-                "Choose one decision:\n"
-                "- 'approve': Continue to next step\n"
-                "- 'edit': Modify state values (see 'editable_fields' for format)\n"
-                "- 'rerun': Re-execute this step with feedback\n"
-                "- 'abort': Stop the pipeline"
-            ),
-            "response_examples": {
-                "approve": {
-                    "description": "Approve and proceed to next step",
-                    "json": {
-                        "decision": "approve",
-                        "hitl_executed": True
-                    }
-                },
-                "edit": {
-                    "description": "Edit state values before proceeding",
-                    "json": {
-                        "decision": "edit",
-                        "edits": {
-                            "selected_tables": ["users", "orders"],
-                            "treatment_variable": "gender",
-                            "outcome_variable": "used_coupon"
-                        },
-                        "hitl_executed": True
-                    }
-                },
-                "rerun": {
-                    "description": "Re-run this step with feedback",
-                    "json": {
-                        "decision": "rerun",
-                        "feedback": "Please try with different parameters",
-                        "hitl_executed": True
-                    }
-                },
-                "abort": {
-                    "description": "Abort the pipeline",
-                    "json": {
-                        "decision": "abort",
-                        "hitl_executed": True
-                    }
-                }
-            }
+            "decisions": ["approve", "edit", "rerun", "abort"]
         }
-        decision_payload = interrupt(payload)
-        d = decision_payload.get("decision", "approve")
-        edits = decision_payload.get("edits", {}) if d == "edit" else {}
-        feedback = decision_payload.get("feedback", "") if d == "rerun" else ""
-        return d, edits, feedback
+        
+        interrupt(payload)
 
     def _apply_edits(self, state: AgentState, edits: Dict[str, Any]) -> None:
         """Apply only safe, whitelisted edits to state."""
