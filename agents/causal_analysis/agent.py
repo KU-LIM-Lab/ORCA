@@ -19,7 +19,7 @@ class CausalAnalysisAgent(SpecialistAgent):
         
         # 1. 도메인 전문성 설정
         self.set_domain_expertise([
-            "causal_inference",
+            "causal_analysis",
             "doWhy",
             "treatment_effect_estimation",
             "confounder_identification",
@@ -29,7 +29,7 @@ class CausalAnalysisAgent(SpecialistAgent):
         # Set input/output schemas
         self.input_schema = {
             "df_preprocessed": "pandas.DataFrame",
-            "input": "str",
+            "initial_query": "str",
             "db_id": "str",
             "expression_dict": "Dict[str, str]"
         }
@@ -44,7 +44,7 @@ class CausalAnalysisAgent(SpecialistAgent):
     
     def get_required_state_keys(self):
         """Return required state keys for causal analysis."""
-        return ["df_preprocessed", "input"]
+        return ["df_preprocessed", "initial_query"]
     
     def _register_specialist_tools(self) -> None:
         """Register causal analysis specific tools"""
@@ -76,13 +76,14 @@ class CausalAnalysisAgent(SpecialistAgent):
         """Execute one step of the causal analysis process"""
         current_substep = state.get("current_substep", "full_pipeline")
         
+        # Map execution plan substep names to internal method names
         if current_substep == "parse_question":
             return self._execute_parse_question(state)
-        elif current_substep == "config_selection":
+        elif current_substep == "select_configuration":
             return self._execute_config_selection(state)
-        elif current_substep == "dowhy_analysis":
+        elif current_substep == "effect_estimation":
             return self._execute_dowhy_analysis(state)
-        elif current_substep == "generate_answer":
+        elif current_substep == "interpretation":
             return self._execute_generate_answer(state)
         elif current_substep == "full_pipeline":
             return self._execute_full_pipeline(state)
@@ -227,6 +228,77 @@ class CausalAnalysisAgent(SpecialistAgent):
             # 상태 업데이트
             state["strategy"] = result.get("strategy")
             state["config_selection_completed"] = True
+            
+            # Request HITL for strategy review if interactive mode
+            if state.get("interactive", False):
+                payload = {
+                    "question": "Review selected causal analysis strategy",
+                    "strategy": result.get("strategy"),
+                    "parsed_query": state.get("parsed_query"),
+                    "decisions": {
+                        "approve": {
+                            "description": "Use this strategy for causal analysis",
+                            "required_fields": {"hitl_executed": True}
+                        },
+                        "edit": {
+                            "description": "Modify the strategy configuration",
+                            "required_fields": {
+                                "strategy": {
+                                    "type": "dict",
+                                    "description": "Causal analysis strategy configuration",
+                                    "structure": {
+                                        "method": "str (backdoor, frontdoor, instrumental_variable, etc.)",
+                                        "estimand_type": "str (nonparametric-ate, etc.)",
+                                        "estimate_method": "str (propensity_score_matching, regression_discontinuity, etc.)",
+                                        "treatment_variable": "str",
+                                        "outcome_variable": "str",
+                                        "confounders": "list[str]",
+                                        "instrumental_variables": "list[str] (optional)"
+                                    },
+                                    "example": {
+                                        "method": "backdoor",
+                                        "estimand_type": "nonparametric-ate",
+                                        "estimate_method": "propensity_score_matching",
+                                        "treatment_variable": "gender",
+                                        "outcome_variable": "used_coupon",
+                                        "confounders": ["age", "income"]
+                                    }
+                                },
+                                "hitl_executed": True
+                            }
+                        }
+                    },
+                    "hint": (
+                        "Review the selected strategy. To modify:\n"
+                        "- Set 'strategy' as a dict with method, estimand_type, estimate_method\n"
+                        "- Include treatment_variable, outcome_variable, and confounders\n"
+                        "- Optionally include instrumental_variables"
+                    ),
+                    "response_examples": {
+                        "approve": {
+                            "description": "Use this strategy for causal analysis",
+                            "json": {
+                                "hitl_executed": True
+                            }
+                        },
+                        "edit": {
+                            "description": "Modify the strategy configuration",
+                            "json": {
+                                "strategy": {
+                                    "method": "backdoor",
+                                    "estimand_type": "nonparametric-ate",
+                                    "estimate_method": "propensity_score_matching",
+                                    "treatment_variable": "gender",
+                                    "outcome_variable": "used_coupon",
+                                    "confounders": ["age", "income"]
+                                },
+                                "hitl_executed": True
+                            }
+                        }
+                    }
+                }
+                state = self.request_hitl(state, payload=payload, hitl_type="strategy_review")
+                return state
         else:
             state["error"] = result.get("error", "Config selection failed")
         
@@ -271,6 +343,55 @@ class CausalAnalysisAgent(SpecialistAgent):
             state["final_answer"] = self._generate_simple_answer(state)
             state["generate_answer_completed"] = True
         
+        # Request HITL for interpretation review if interactive mode
+        if state.get("interactive", True):
+            payload = {
+                "question": "Review causal analysis interpretation",
+                "final_answer": state.get("final_answer"),
+                "causal_effect_ate": state.get("causal_effect_ate"),
+                "causal_effect_ci": state.get("causal_effect_ci"),
+                "refutation_result": state.get("refutation_result"),
+                "decisions": {
+                    "approve": {
+                        "description": "Accept the interpretation and complete analysis",
+                        "required_fields": {"hitl_executed": True}
+                    },
+                    "edit": {
+                        "description": "Modify the final answer text",
+                        "required_fields": {
+                            "final_answer": {
+                                "type": "str",
+                                "description": "Human-readable explanation of causal analysis results",
+                                "example": "The causal effect of gender on used_coupon is 0.15 (95% CI: [0.10, 0.20])"
+                            },
+                            "hitl_executed": True
+                        }
+                    }
+                },
+                "hint": (
+                    "Review the final interpretation. To modify:\n"
+                    "- Set 'final_answer' as a string with the updated explanation\n"
+                    "- Include treatment variable, outcome variable, ATE, and confidence interval"
+                ),
+                "response_examples": {
+                    "approve": {
+                        "description": "Accept the interpretation and complete analysis",
+                        "json": {
+                            "hitl_executed": True
+                        }
+                    },
+                    "edit": {
+                        "description": "Modify the final answer text",
+                        "json": {
+                            "final_answer": "The causal effect of gender on used_coupon is 0.15 (95% CI: [0.10, 0.20]). This indicates that gender has a positive effect on coupon usage.",
+                            "hitl_executed": True
+                        }
+                    }
+                }
+            }
+            state = self.request_hitl(state, payload=payload, hitl_type="interpretation_review")
+            return state
+        
         return state
     
     def _execute_full_pipeline(self, state: AgentState) -> AgentState:
@@ -286,10 +407,10 @@ class CausalAnalysisAgent(SpecialistAgent):
             if df_preprocessed is None:
                 raise ValueError("df_preprocessed is required for causal analysis")
             
-            # Check if we have input question
-            input_question = state.get("input")
+            # Check if we have input question (initial_query)
+            input_question = state.get("initial_query")
             if not input_question:
-                raise ValueError("input question is required for causal analysis")
+                raise ValueError("initial_query is required for causal analysis")
             
             # Ensure LLM is available
             if not self.llm:

@@ -51,6 +51,7 @@ def format_metadata(table: Dict[str, Any]) -> str:
 
 def get_schema_summary(db_id, table_names: List[str]) -> tuple[str, str, List[Dict[str, Any]]]:
     table_names = redis_client.smembers(f"{db_id}:metadata:table_names")
+    table_names = [t.decode('utf-8') if isinstance(t, bytes) else t for t in table_names]
 
     schema_tables = []
     fk_lines = []

@@ -13,10 +13,16 @@ load_dotenv(dotenv_path=Path(__file__).parents[1] / ".env")
 
 def extract_objective_summary(state, llm: BaseChatModel):
     full_text = state.get("parsed_text") or state.get("input")
+    if not full_text:
+        raise ValueError("Either 'parsed_text' or 'input' is required but not found in state")
+    if not isinstance(full_text, str):
+        full_text = str(full_text)
 
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
     chunks = splitter.split_text(full_text)
-    vectorstore = FAISS.from_texts(chunks, OpenAIEmbeddings())
+    
+    embeddings = OpenAIEmbeddings()
+    vectorstore = FAISS.from_texts(chunks, embeddings)
     top_chunks = vectorstore.similarity_search("What is the purpose of the analysis and what data should be used?", k=5)
     selected = "\n\n".join([doc.page_content for doc in top_chunks])
 

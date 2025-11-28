@@ -298,14 +298,10 @@ class DataExplorerAgent(SpecialistAgent):
                 "current_substep": state.get("preprocessing_substep", "full_pipeline"),
             }
             
-            # Execute data preprocessing using step() method
             updated_state = preprocessor.step(preprocessor_state)
             
-            # Extract results
-            if updated_state.get("error"):
-                return {"error": updated_state.get("error"), "success": False}
-            
-            response = {
+            # If preprocessor requested HITL, propagate flags upward
+            response: Dict[str, Any] = {
                 "warnings": updated_state.get("warnings", []),
                 "df_redis_key": updated_state.get("df_redis_key"),
                 "df_shape": updated_state.get("df_shape"),
@@ -315,8 +311,17 @@ class DataExplorerAgent(SpecialistAgent):
                 "dropped_null_columns": updated_state.get("dropped_null_columns", []),
                 "encoded_columns": updated_state.get("encoded_columns", []),
                 "data_preprocessing_completed": updated_state.get("data_preprocessing_completed", False),
-                "success": True
+                "success": not bool(updated_state.get("error")),
             }
+
+            # Propagate HITL flags if present so orchestration graph can handle them
+            for k in ("__hitl_requested__", "__hitl_payload__", "__hitl_type__"):
+                if k in updated_state:
+                    response[k] = updated_state[k]
+            
+            # If there was an error (other than HITL), surface it
+            if updated_state.get("error"):
+                response["error"] = updated_state.get("error")
             
             return response
             

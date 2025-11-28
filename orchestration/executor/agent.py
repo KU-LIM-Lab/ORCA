@@ -106,11 +106,11 @@ class ExecutorAgent(OrchestratorAgent):
                         state["data_exploration_status"] = state.get("data_exploration_status", "skipped")
                     elif phase == "causal_discovery":
                         state["causal_discovery_status"] = state.get("causal_discovery_status", "skipped")
-                    elif phase == "causal_inference":
-                        state["causal_inference_status"] = state.get("causal_inference_status", "skipped")
+                    elif phase == "causal_analysis":
+                        state["causal_analysis_status"] = state.get("causal_analysis_status", "skipped")
                 continue
 
-            # Execute substep (first-time execution for this step)
+            # Execute substep
             if not state.get("current_state_executed"):
                 state["hitl_executed"] = False
                 result = self._execute_step(step, state, llm)
@@ -134,13 +134,14 @@ class ExecutorAgent(OrchestratorAgent):
                 self.results[step["substep"]] = safe_data
                 state["current_state_executed"] = True
 
-                # If the step does not require HITL or we're in non-interactive mode, mark complete and advance
-                if not step.get("hitl_required", False) or not interactive:
+                # If the step does not require HITL, mark complete and advance
+                if not step.get("hitl_required", False):
                     state.setdefault("completed_substeps", []).append(step["substep"])
                     state["current_execute_step"] = idx + 1
                     state["current_state_executed"] = False
                     continue
                 # Otherwise, fall through to HITL gate logic below
+                # Note: HITL gate will handle interactive vs non-interactive mode
 
             # If no HITL, mark complete and advance pointer
             if not step.get("hitl_required", False):
@@ -218,13 +219,7 @@ class ExecutorAgent(OrchestratorAgent):
         self.current_step += 1
         
         try:
-            # Check dependencies
-            # if not self._check_dependencies(step, state):
-            #     return AgentResult(
-            #         success=False,
-            #         error=f"Dependencies not met for step {substep}",
-            #         metadata={"substep": substep}
-            #     )
+
 
             # Dispatch to specialist agents (minimal integration for causal_discovery)
             start_time = time.time()
@@ -272,16 +267,11 @@ class ExecutorAgent(OrchestratorAgent):
             if agent_name == "causal_analysis":
                 try:
                     # Attempt to run the causal analysis LangGraph subgraph end-to-end
-                    from agents.causal_analysis import generate_causal_analysis_graph
-                    # Use a simple LLM callable if available, otherwise None
-                    try:
-                        # 우선 놔두기는 했는데 이렇게 해서 안되면 위의 data analysis agent 참고
-                        from utils.llm import call_llm as llm
-                    except Exception:
-                        llm = None
-                    compiled = generate_causal_analysis_graph(llm)
-                    # Invoke subgraph with current state
-                    new_state = compiled.invoke(state)
+                    from agents.causal_analysis import CausalAnalysisAgent
+                    ca_agent = CausalAnalysisAgent(llm=llm)
+                    state_copy = dict(state)
+                    state_copy["current_substep"] = substep
+                    new_state = ca_agent.step(state_copy)
                     execution_time = time.time() - start_time
                     success = not bool(new_state.get("error"))
                     return AgentResult(
@@ -395,15 +385,156 @@ class ExecutorAgent(OrchestratorAgent):
 
 
     def _hitl_gate(self, step: Dict[str, Any], state: AgentState) -> Tuple[str, Dict[str, Any], str]:
-        """HITL interrupt: returns (decision, edits, feedback)."""
+        """HITL interrupt: returns (decision, edits, feedback).
+        In non-interactive mode, automatically approves without user input.
+        """
+        from langgraph.types import interrupt
+        
+        interactive = bool(state.get("interactive", False))
+        
+        # In non-interactive mode, automatically approve
+        if not interactive:
+            logger.info(f"⏭️  HITL skipped (non-interactive mode): {step.get('substep')} - auto-approved")
+            state["hitl_executed"] = True
+            state["hitl_decision"] = "approve"
+            return "approve", {}, ""
+        
+        # Define editable fields with their expected types/format
+        editable_fields = {
+            "selected_tables": {
+                "type": "list[str]",
+                "description": "List of table names to use for analysis",
+                "example": ["users", "orders", "products"]
+            },
+            "sql_query": {
+                "type": "str",
+                "description": "SQL query string to fetch data",
+                "example": "SELECT * FROM users WHERE age > 18"
+            },
+            "selected_algorithms": {
+                "type": "list[str]",
+                "description": "List of algorithm names to run (e.g., ['PC', 'GES', 'LiNGAM'])",
+                "example": ["PC", "GES"]
+            },
+            "selected_graph": {
+                "type": "dict",
+                "description": "Causal graph structure with 'nodes' and 'edges'",
+                "example": {"nodes": ["X", "Y"], "edges": [{"from": "X", "to": "Y"}]}
+            },
+            "treatment_variable": {
+                "type": "str",
+                "description": "Name of the treatment/intervention variable",
+                "example": "gender"
+            },
+            "outcome_variable": {
+                "type": "str",
+                "description": "Name of the outcome variable",
+                "example": "used_coupon"
+            },
+            "confounders": {
+                "type": "list[str]",
+                "description": "List of confounder variable names",
+                "example": ["age", "income"]
+            },
+            "instrumental_variables": {
+                "type": "list[str]",
+                "description": "List of instrumental variable names",
+                "example": ["instrument"]
+            },
+            "target_columns": {
+                "type": "list[str]",
+                "description": "List of column names to include in analysis",
+                "example": ["col1", "col2", "col3"]
+            }
+        }
+        
         payload = {
-            "question": "Choose: approve / edit / rerun / abort",
+            "question": f"Review step: {step.get('description', step['substep'])}",
             "phase": step["phase"],
             "substep": step["substep"],
             "agent": step["agent"],
             "action": step["action"],
             "description": step.get("description", ""),
-            "choices": ["approve", "edit", "rerun", "abort"]
+            "decisions": {
+                "approve": {
+                    "description": "Approve and proceed to next step",
+                    "required_fields": {"decision": "approve", "hitl_executed": True}
+                },
+                "edit": {
+                    "description": "Edit state values before proceeding",
+                    "required_fields": {
+                        "decision": "edit",
+                        "edits": {
+                            "description": "Dictionary of field names and new values",
+                            "editable_fields": editable_fields,
+                            "example": {
+                                "selected_tables": ["users", "orders"],
+                                "treatment_variable": "gender"
+                            }
+                        },
+                        "hitl_executed": True
+                    }
+                },
+                "rerun": {
+                    "description": "Re-run this step with optional feedback",
+                    "required_fields": {
+                        "decision": "rerun",
+                        "feedback": {
+                            "type": "str",
+                            "description": "Feedback message to guide re-execution",
+                            "example": "Try with different parameters"
+                        },
+                        "hitl_executed": True
+                    }
+                },
+                "abort": {
+                    "description": "Abort the entire pipeline execution",
+                    "required_fields": {"decision": "abort", "hitl_executed": True}
+                }
+            },
+            "hint": (
+                "Choose one decision:\n"
+                "- 'approve': Continue to next step\n"
+                "- 'edit': Modify state values (see 'editable_fields' for format)\n"
+                "- 'rerun': Re-execute this step with feedback\n"
+                "- 'abort': Stop the pipeline"
+            ),
+            "response_examples": {
+                "approve": {
+                    "description": "Approve and proceed to next step",
+                    "json": {
+                        "decision": "approve",
+                        "hitl_executed": True
+                    }
+                },
+                "edit": {
+                    "description": "Edit state values before proceeding",
+                    "json": {
+                        "decision": "edit",
+                        "edits": {
+                            "selected_tables": ["users", "orders"],
+                            "treatment_variable": "gender",
+                            "outcome_variable": "used_coupon"
+                        },
+                        "hitl_executed": True
+                    }
+                },
+                "rerun": {
+                    "description": "Re-run this step with feedback",
+                    "json": {
+                        "decision": "rerun",
+                        "feedback": "Please try with different parameters",
+                        "hitl_executed": True
+                    }
+                },
+                "abort": {
+                    "description": "Abort the pipeline",
+                    "json": {
+                        "decision": "abort",
+                        "hitl_executed": True
+                    }
+                }
+            }
         }
         decision_payload = interrupt(payload)
         d = decision_payload.get("decision", "approve")
@@ -422,8 +553,6 @@ class ExecutorAgent(OrchestratorAgent):
             "outcome_variable",
             "confounders",
             "instrumental_variables",
-            "filters",
-            "time_window",
             "target_columns",
         }
         for k, v in (edits or {}).items():

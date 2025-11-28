@@ -32,7 +32,10 @@ def build_fetch_data_node(llm: BaseChatModel):
             raise ValueError("Missing 'db_id' in state")
 
 
-        graph_nodes = state["causal_graph"]["nodes"]
+        causal_graph = state.get("selected_graph")
+        if not causal_graph:
+            raise ValueError("The causal graph generated from causal discovery is required for data fetching")
+        graph_nodes = causal_graph["nodes"]
         expression_dict = state["expression_dict"]
         expected_columns_base = [v.split(".")[-1] for v in graph_nodes]        
         

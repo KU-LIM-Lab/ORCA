@@ -156,7 +156,10 @@ class DataPreprocessorAgent(SpecialistAgent):
             return state
 
     def _schema_detection(self, state: AgentState) -> AgentState:
-        """Detect data types and calculate cardinality."""
+        """Detect data types and calculate cardinality.
+
+        """
+
         try:
             # Use cached DataFrame from agent instance
             if self.df is None or self.df.empty:
@@ -188,30 +191,78 @@ class DataPreprocessorAgent(SpecialistAgent):
                 len(schema.get("high_cardinality_vars", [])) > 0
             )
 
-            if hitl_required and state.get("interactive", True):
-                from langgraph.types import interrupt
-
+            if hitl_required and state.get("interactive", False):
                 payload = {
                     "question": "Review detected data types and cardinality",
                     "schema": schema,
                     "warnings": warnings,
-                    "required_fields": ["variable_schema"],
-                    "hint": "Review and approve schema, or edit variable types/cardinality. "
-                           "Set 'variable_schema' in response to override detected schema."
+                    "decisions": {
+                        "approve": {
+                            "description": "Use detected schema as-is",
+                            "required_fields": {"hitl_executed": True}
+                        },
+                        "edit": {
+                            "description": "Override detected schema with custom variable types",
+                            "required_fields": {
+                                "variable_schema": {
+                                    "type": "dict",
+                                    "description": "Schema dictionary with 'variables' key containing variable definitions",
+                                    "structure": {
+                                        "variables": {
+                                            "<variable_name>": {
+                                                "data_type": "Continuous | Nominal | Binary | Ordinal",
+                                                "cardinality": "int (for categorical)",
+                                                "unique_values": "list (for categorical)"
+                                            }
+                                        },
+                                        "statistics": {
+                                            "n_continuous": "int",
+                                            "n_categorical": "int",
+                                            "n_binary": "int"
+                                        }
+                                    },
+                                    "example": {
+                                        "variables": {
+                                            "age": {"data_type": "Continuous"},
+                                            "gender": {"data_type": "Binary", "cardinality": 2}
+                                        },
+                                        "statistics": {"n_continuous": 1, "n_categorical": 0, "n_binary": 1}
+                                    }
+                                },
+                                "hitl_executed": True
+                            }
+                        }
+                    },
+                    "hint": (
+                        "Review the detected schema. To override:\n"
+                        "- Set 'variable_schema' in response with the same structure as 'schema'\n"
+                        "- Each variable should have 'data_type' (Continuous/Nominal/Binary/Ordinal)\n"
+                        "- Categorical variables should include 'cardinality' and optionally 'unique_values'"
+                    ),
+                    "response_examples": {
+                        "approve": {
+                            "description": "Use detected schema as-is",
+                            "json": {
+                                "hitl_executed": True
+                            }
+                        },
+                        "edit": {
+                            "description": "Override detected schema",
+                            "json": {
+                                "variable_schema": {
+                                    "variables": {
+                                        "age": {"data_type": "Continuous"},
+                                        "gender": {"data_type": "Binary", "cardinality": 2, "unique_values": [0, 1]}
+                                    },
+                                    "statistics": {"n_continuous": 1, "n_categorical": 0, "n_binary": 1}
+                                },
+                                "hitl_executed": True
+                            }
+                        }
+                    }
                 }
-
-                try:
-                    user_input = interrupt(payload)
-                    if user_input and isinstance(user_input, dict):
-                        # Apply user edits if provided
-                        if "variable_schema" in user_input:
-                            state["variable_schema"] = user_input["variable_schema"]
-                            state["variable_info"] = user_input["variable_schema"]
-                        if "hitl_executed" not in user_input:
-                            user_input["hitl_executed"] = True
-                        state.update(user_input)
-                except Exception as e:
-                    logger.warning(f"HITL interrupt failed: {e}, continuing with detected schema")
+                state = self.request_hitl(state, payload=payload, hitl_type="schema_review")
+                return state
 
             return state
 

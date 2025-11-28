@@ -83,18 +83,21 @@ class BaseAgent(ABC):
     def on_event(self, event: str, **kwargs) -> None:
         """before/after/error/retry hooks. Default is logger call"""
         if self.logger:
-            # Skip verbose tool events for cleaner output
-            # if event in ["tool_used", "tool_success"]:
-                # return
+            # only log critical errors
+            if event in ["tool_used", "tool_success", "tool_registered", "execution_started", 
+                        "execution_completed", "graph_compiled"]:
+                return
                 
-            self.logger({
-                "agent": self.name, 
-                "type": self.agent_type.value,
-                "status": self.status.value,
-                "event": event, 
-                "timestamp": datetime.now().isoformat(),
-                **kwargs
-            })
+            # Only log errors and failures
+            if event in ["execution_failed", "error", "tool_registration_error"]:
+                self.logger({
+                    "agent": self.name, 
+                    "type": self.agent_type.value,
+                    "status": self.status.value,
+                    "event": event, 
+                    "timestamp": datetime.now().isoformat(),
+                    **kwargs
+                })
 
 
     async def execute_async(self, state: AgentState) -> AgentResult:
@@ -195,9 +198,13 @@ class BaseAgent(ABC):
             tool_func: Function to execute
             description: Description of what the tool does
         """
+        from utils.tools import tool_registry, BaseTool
+        
+        # Check if tool is already registered
+        if tool_registry.get(tool_name):
+            return
+        
         try:
-            from utils.tools import tool_registry, BaseTool
-            
             # Create a simple tool wrapper
             class SimpleTool(BaseTool):
                 def __init__(self, name, func, description):
@@ -210,8 +217,9 @@ class BaseAgent(ABC):
             tool = SimpleTool(tool_name, tool_func, description)
             tool_registry.register(tool)
             
-            self.on_event("tool_registered", tool_name=tool_name)
-            
+        except ValueError:
+            # Tool already registered (race condition), ignore
+            pass
         except Exception as e:
             self.on_event("tool_registration_error", tool_name=tool_name, error=str(e))
             raise
@@ -231,6 +239,22 @@ class BaseAgent(ABC):
         """Check if this agent requires HITL at the given phase/substep"""
         # Override in subclasses to define HITL requirements
         return False
+
+    def request_hitl(self, state: AgentState, payload: Dict[str, Any], hitl_type: str = "generic") -> AgentState:
+        """
+        Request a Human-In-The-Loop (HITL) interrupt.
+
+        Agents set flags on the shared AgentState,
+        and a LangGraph node (e.g., `_executor_node` in `orchestration/graph.py`) 
+        is responsible for calling `interrupt()` in the LangGraph context.
+        """
+        if not isinstance(state, dict):
+            raise TypeError("state must be a dict when requesting HITL")
+
+        state["__hitl_requested__"] = True
+        state["__hitl_payload__"] = payload
+        state["__hitl_type__"] = hitl_type
+        return state
 
 
 class OrchestratorAgent(BaseAgent):
@@ -303,10 +327,10 @@ class OrchestratorAgent(BaseAgent):
             },
             {
                 "phase": PipelinePhase.CAUSAL_DISCOVERY.value,
-                "substep": "algorithm_tiering",
+                "substep": "algorithm_configuration",
                 "agent": "causal_discovery",
-                "action": "tier_algorithms",
-                "description": "Tier algorithms based on data profile compatibility",
+                "action": "configure_algorithms",
+                "description": "Configure algorithms based on data profile compatibility",
                 "required_state_keys": ["data_profiling_completed", "data_profile"],
                 "timeout": 60,
                 "hitl_required": True,
@@ -317,30 +341,30 @@ class OrchestratorAgent(BaseAgent):
                 "substep": "run_algorithms_portfolio",
                 "agent": "causal_discovery",
                 "action": "run_algorithm_portfolio",
-                "description": "Run algorithms from all tiers in parallel",
-                "required_state_keys": ["algorithm_tiering_completed", "algorithm_tiers"],
+                "description": "Run algorithms from execution plan in parallel",
+                "required_state_keys": ["algorithm_configuration_completed", "execution_plan"],
                 "timeout": 600,
                 "hitl_required": True,
                 "hitl_executed": False
             },
             {
                 "phase": PipelinePhase.CAUSAL_DISCOVERY.value,
-                "substep": "candidate_pruning",
+                "substep": "graph_scoring",
                 "agent": "causal_discovery",
-                "action": "prune_candidates",
-                "description": "Prune candidates using CI testing and structural consistency",
+                "action": "score_graphs",
+                "description": "Calculate scores (global_consistency, sampling_stability, structural_stability) for all graphs",
                 "required_state_keys": ["run_algorithms_portfolio_completed", "algorithm_results"],
                 "timeout": 180,
                 "hitl_required": True,
                 "hitl_executed": False
             },
             {
-                "phase": PipelinePhase.CAUSAL_DISCOVERY,
-                "substep": "scorecard_evaluation",
+                "phase": PipelinePhase.CAUSAL_DISCOVERY.value,
+                "substep": "graph_evaluation",
                 "agent": "causal_discovery",
-                "action": "evaluate_scorecard",
-                "description": "Evaluate candidates using composite scorecard",
-                "required_state_keys": ["candidate_pruning_completed", "pruned_candidates"],
+                "action": "evaluate_graphs",
+                "description": "Evaluate and rank graphs using composite scorecard",
+                "required_state_keys": ["graph_scoring_completed", "scored_graphs"],
                 "timeout": 120,
                 "hitl_required": True,
                 "hitl_executed": False
@@ -351,7 +375,7 @@ class OrchestratorAgent(BaseAgent):
                 "agent": "causal_discovery",
                 "action": "synthesize_ensemble",
                 "description": "Synthesize ensemble with PAG-like and DAG outputs",
-                "required_state_keys": ["scorecard_evaluation_completed", "top_candidates"],
+                "required_state_keys": ["graph_evaluation_completed", "ranked_graphs"],
                 "timeout": 180,
                 "hitl_required": True,
                 "hitl_executed": False
@@ -360,11 +384,22 @@ class OrchestratorAgent(BaseAgent):
             # Causal Inference Phase
             {
                 "phase": PipelinePhase.CAUSAL_INFERENCE.value,
+                "substep": "parse_question",
+                "agent": "causal_analysis",
+                "action": "parse_question",
+                "description": "Parse natural language question to identify causal variables",
+                "required_state_keys": ["initial_query", "selected_graph", "df_preprocessed"],
+                "timeout": 120,
+                "hitl_required": False,
+                "hitl_executed": False
+            },
+            {
+                "phase": PipelinePhase.CAUSAL_INFERENCE.value,
                 "substep": "select_configuration",
-                "agent": "causal_inference",
+                "agent": "causal_analysis",
                 "action": "select_config",
                 "description": "Select inference configuration",
-                "required_state_keys": ["selected_graph", "df_preprocessed"],
+                "required_state_keys": ["parsed_query", "selected_graph", "df_preprocessed"],
                 "timeout": 120,
                 "hitl_required": True,
                 "hitl_executed": False
@@ -372,7 +407,7 @@ class OrchestratorAgent(BaseAgent):
             {
                 "phase": PipelinePhase.CAUSAL_INFERENCE.value,
                 "substep": "effect_estimation",
-                "agent": "causal_inference",
+                "agent": "causal_analysis",
                 "action": "estimate_effects",
                 "description": "Estimate causal effects",
                 "required_state_keys": ["treatment_variable", "outcome_variable", "selected_graph"],
@@ -382,7 +417,7 @@ class OrchestratorAgent(BaseAgent):
             {
                 "phase": PipelinePhase.CAUSAL_INFERENCE.value,
                 "substep": "interpretation",
-                "agent": "causal_inference",
+                "agent": "causal_analysis",
                 "action": "interpret_results",
                 "description": "Interpret and validate results",
                 "required_state_keys": ["causal_estimates"],
@@ -424,7 +459,7 @@ class OrchestratorAgent(BaseAgent):
             return PipelinePhase.CAUSAL_DISCOVERY
         
         # Check if causal inference is already completed
-        if not state.get("causal_inference_status") == "completed":
+        if not state.get("causal_analysis_status") == "completed":
             return PipelinePhase.CAUSAL_INFERENCE
         
         # Default to report generation
@@ -488,7 +523,7 @@ class SpecialistAgent(BaseAgent):
             "causal_discovery": {
                 PipelinePhase.CAUSAL_DISCOVERY: ["assumption_method_matrix", "algorithm_scoring", "final_graph_selection"]
             },
-            "causal_inference": {
+            "causal_analysis": {
                 PipelinePhase.CAUSAL_INFERENCE: ["select_configuration", "interpretation"]
             }
         }
@@ -522,5 +557,16 @@ class SubgraphAgent(BaseAgent):
             
         if not self.compiled_graph:
             raise RuntimeError("Graph not compiled")
-            
-        return self.compiled_graph.invoke(state)
+        
+        # Extract only required state keys for the subgraph
+        required_keys = self.get_required_state_keys()
+        subgraph_state = {key: state.get(key) for key in required_keys if key in state}
+        
+        # Execute the subgraph with minimal state
+        result = self.compiled_graph.invoke(subgraph_state)
+        
+        # Merge results back into the main state
+        if isinstance(result, dict):
+            state.update(result)
+        
+        return state

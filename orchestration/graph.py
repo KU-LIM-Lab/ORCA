@@ -83,8 +83,34 @@ class OrchestrationGraph:
     
     def _executor_node(self, state: AgentState) -> AgentState:
         """Executor node execution"""
+        from langgraph.types import interrupt
+        
         result = self.executor.step(state)
         state.update(result)
+        
+        # Check if any agent requested HITL via state flag
+        # This happens when agents like DataPreprocessorAgent are called from within
+        # regular Python methods (not LangGraph nodes), so they can't call interrupt() directly
+        if state.get("__hitl_requested__"):
+            payload = state.get("__hitl_payload__", {})
+            hitl_type = state.get("__hitl_type__", "unknown")
+            
+            # Clear the flags
+            state.pop("__hitl_requested__", None)
+            state.pop("__hitl_payload__", None)
+            state.pop("__hitl_type__", None)
+            
+            # Now we're in a LangGraph node, so interrupt() will work properly
+            # This will be caught by the stream() loop as __interrupt__ event
+            user_input = interrupt(payload)
+            
+            if user_input and isinstance(user_input, dict):
+                # Apply user input to state
+                state.update(user_input)
+                # If schema was provided for schema_review, it's already in state
+                if "variable_schema" in user_input and hitl_type == "schema_review":
+                    state["variable_info"] = user_input["variable_schema"]
+        
         # state["executor_completed"] = True
         return state
     
@@ -174,10 +200,10 @@ class OrchestrationGraph:
                 initial_state["causal_discovery_status"] = "skipped"
                 for s in [
                     "data_profiling",
-                    "algorithm_tiering",
+                    "algorithm_configuration",
                     "run_algorithms_portfolio",
-                    "candidate_pruning",
-                    "scorecard_evaluation",
+                    "graph_scoring",
+                    "graph_evaluation",
                     "ensemble_synthesis",
                 ]:
                     if s not in skip_steps:

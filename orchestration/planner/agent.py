@@ -16,7 +16,7 @@ class PlannerAgent(OrchestratorAgent):
         self.standard_pipeline = [
             "data_exploration",
             "causal_discovery", 
-            "causal_inference",
+            "causal_analysis",
             "report_generation"
         ]
         
@@ -36,8 +36,8 @@ class PlannerAgent(OrchestratorAgent):
                 "timeout": 600,
                 "required_outputs": ["causal_graph", "algorithm_scores"]
             },
-            "causal_inference": {
-                "agent": "causal_inference",
+            "causal_analysis": {
+                "agent": "causal_analysis",
                 "action": "estimate_causal_effects",
                 "description": "인과 효과 추정", 
                 "timeout": 900,
@@ -123,16 +123,26 @@ class PlannerAgent(OrchestratorAgent):
             #     "edit_hint": "Set analysis_mode to 'full_pipeline' or 'data_exploration'"
             # })
 
-        else :
-            if state.get("allow_start_without_ground_truth") is None :
+        else:
+            if state.get("allow_start_without_ground_truth") is None:
                 # a) Check required ground-truth inputs at the very first planning step
-                has_gt_df = state.get("ground_truth_dataframe_path") or state.get("ground_truth_dataframe") or state.get("gt_df") or state.get("df_preprocessed")
-                has_gt_graph = state.get("ground_truth_causal_graph_path") or state.get("ground_truth_causal_graph") or state.get("gt_graph") or state.get("selected_graph")
-                
+                df_keys = [
+                    "ground_truth_dataframe_path",
+                    "ground_truth_dataframe",
+                    "gt_df",
+                ]
+                graph_keys = [
+                    "ground_truth_causal_graph_path",
+                    "ground_truth_causal_graph",
+                    "gt_graph",
+                ]
+                has_gt_df = any(state.get(k) is not None for k in df_keys)
+                has_gt_graph = any(state.get(k) is not None for k in graph_keys)
+
                 if not (has_gt_df and has_gt_graph):
                     state["allow_start_without_ground_truth"] = True
 
-                # If GT df provided, mark exploration as skippable (non-interruptive)
+                # If GT df provided, mark exploration as skippable
                 if has_gt_df:
                     state["data_exploration_status"] = state.get("data_exploration_status", "skipped")
                     for s in ["table_selection", "table_retrieval", "data_preprocessing"]:
@@ -145,10 +155,10 @@ class PlannerAgent(OrchestratorAgent):
                     state["causal_discovery_status"] = state.get("causal_discovery_status", "skipped")
                     for s in [
                         "data_profiling",
-                        "algorithm_tiering",
+                        "algorithm_configuration",
                         "run_algorithms_portfolio",
-                        "candidate_pruning",
-                        "scorecard_evaluation",
+                        "graph_scoring",
+                        "graph_evaluation",
                         "ensemble_synthesis",
                     ]:
                         state.setdefault("skip_steps", [])

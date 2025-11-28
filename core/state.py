@@ -213,7 +213,7 @@ class AgentState(TypedDict, total=False):
     sensitivity_analysis: Dict[str, Any]
     
     # Causal Inference Phase Status
-    causal_inference_status: str  # "completed", "failed", "pending"
+    causal_analysis_status: str  # "completed", "failed", "pending"
     
     # === Causal Analysis (pipeline variant) ===
     parsed_query: Dict[str, Any]
@@ -325,7 +325,7 @@ def create_initial_state(query: str, db_id: str = "reef_db", session_id: str = N
         confidence_intervals={},
         interpretation_results={},
         sensitivity_analysis={},
-        causal_inference_status="pending",
+        causal_analysis_status="pending",
         final_report={},
         recommendations=[],
         session_id=session_id,
@@ -363,7 +363,7 @@ def get_agent_specific_state(state: AgentState, agent_type: str) -> Dict[str, An
         "causal_discovery": ["data_assumptions", "assumption_method_scores", "algorithm_scores", 
                             "selected_algorithms", "algorithm_results", "candidate_graphs",
                             "intermediate_scores", "selected_graph", "variable_schema"],
-        "causal_inference": ["treatment_variable", "outcome_variable", "confounders",
+        "causal_analysis": ["treatment_variable", "outcome_variable", "confounders",
                             "inference_method", "causal_estimates", "confidence_intervals",
                             "interpretation_results", "sensitivity_analysis"],
         "orchestrator": ["current_phase", "completed_phases", "agent_execution_log"]
@@ -381,7 +381,7 @@ def get_phase_status(state: AgentState, phase: PipelinePhase) -> str:
         PipelinePhase.METADATA_CREATION: state.get("metadata_creation_status", "pending"),
         PipelinePhase.DATA_EXPLORATION: state.get("data_exploration_status", "pending"),
         PipelinePhase.CAUSAL_DISCOVERY: state.get("causal_discovery_status", "pending"),
-        PipelinePhase.CAUSAL_INFERENCE: state.get("causal_inference_status", "pending"),
+        PipelinePhase.CAUSAL_INFERENCE: state.get("causal_analysis_status", "pending"),
         PipelinePhase.REPORT_GENERATION: state.get("final_report", {}).get("status", "pending")
     }
     

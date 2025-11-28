@@ -56,17 +56,37 @@ fi
 
 # 4단계: Redis 설정
 echo "📋 4단계: Redis 설정"
-echo "Redis 서버를 시작합니다..."
+echo "Redis 서버 상태를 확인합니다..."
 
-# Redis 시작 (백그라운드)
-redis-server --daemonize yes
-
-if [ $? -eq 0 ]; then
-    echo "✅ Redis 서버 시작 완료"
+# Redis가 이미 실행 중인지 확인
+if redis-cli ping > /dev/null 2>&1; then
+    echo "✅ Redis 서버가 이미 실행 중입니다 (포트 6379)"
+    echo "   기존 Redis 서버를 사용합니다."
 else
-    echo "❌ Redis 서버 시작 실패"
-    echo "   Redis가 설치되어 있는지 확인하세요."
-    exit 1
+    echo "Redis 서버를 시작합니다..."
+    
+    # redis-stack-server 우선 시도, 없으면 redis-server 사용
+    if command -v redis-stack-server > /dev/null 2>&1; then
+        echo "   redis-stack-server를 사용합니다..."
+        redis-stack-server --daemonize yes
+    elif command -v redis-server > /dev/null 2>&1; then
+        echo "   redis-server를 사용합니다..."
+        redis-server --daemonize yes
+    else
+        echo "❌ Redis 서버를 찾을 수 없습니다."
+        echo "   redis-stack-server 또는 redis-server가 설치되어 있는지 확인하세요."
+        exit 1
+    fi
+    
+    # 시작 확인
+    sleep 1
+    if redis-cli ping > /dev/null 2>&1; then
+        echo "✅ Redis 서버 시작 완료"
+    else
+        echo "❌ Redis 서버 시작 실패"
+        echo "   Redis가 설치되어 있는지 확인하세요."
+        exit 1
+    fi
 fi
 
 # 5단계: 연결 테스트

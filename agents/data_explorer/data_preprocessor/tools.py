@@ -118,27 +118,60 @@ def detect_schema_tool(
         n_unique = len(unique_vals)
         
         # Detect data type
-        if pd.api.types.is_numeric_dtype(df[col]):
+        # Check bool type first (pandas bool is considered numeric, but should be treated as categorical)
+        if pd.api.types.is_bool_dtype(df[col]):
+            # Boolean column - always binary categorical
+            var_info["data_type"] = "Binary"
+            var_info["cardinality"] = 2
+            var_info["unique_values"] = sorted([bool(v) for v in unique_vals])
+            n_binary += 1
+        elif pd.api.types.is_numeric_dtype(df[col]):
             # Numeric column
-            if n_unique == 2:
-                # Binary numeric
-                var_info["data_type"] = "Binary"
-                var_info["cardinality"] = 2
-                var_info["unique_values"] = sorted(unique_vals.tolist())  # For HITL
-                n_binary += 1
-            elif n_unique <= 10:
-                # Low cardinality numeric - could be ordinal or binary
-                # Heuristic: if values are integers in a small range, treat as ordinal
-                if pd.api.types.is_integer_dtype(df[col]):
-                    var_info["data_type"] = "Ordinal"
-                    var_info["cardinality"] = n_unique
-                    var_info["unique_values"] = sorted(unique_vals.tolist())  # For HITL
-                    n_categorical += 1
+            # Float types are always continuous (even with few unique values)
+            if pd.api.types.is_float_dtype(df[col]):
+                var_info["data_type"] = "Continuous"
+                n_continuous += 1
+            # Integer types: check if truly binary (0/1 or boolean-like)
+            elif pd.api.types.is_integer_dtype(df[col]):
+                if n_unique == 2:
+                    # Check if values are 0/1 or boolean-like
+                    unique_list = sorted(unique_vals.tolist())
+                    is_binary = (
+                        unique_list == [0, 1] or
+                        unique_list == [0.0, 1.0] or
+                        (len(unique_list) == 2 and all(v in [0, 1, True, False] for v in unique_list))
+                    )
+                    if is_binary:
+                        var_info["data_type"] = "Binary"
+                        var_info["cardinality"] = 2
+                        var_info["unique_values"] = unique_list
+                        n_binary += 1
+                    else:
+                        # Integer with 2 unique values but not 0/1 -> likely continuous with small sample
+                        var_info["data_type"] = "Continuous"
+                        n_continuous += 1
+                elif n_unique <= 10:
+                    # If range is small (e.g., 1-5) and sequential, might be ordinal
+                    unique_list = sorted(unique_vals.tolist())
+                    min_val, max_val = unique_list[0], unique_list[-1]
+                    range_size = max_val - min_val + 1
+                    
+                    # If range is small and values are sequential, likely ordinal
+                    if range_size <= 10 and range_size == n_unique:
+                        var_info["data_type"] = "Ordinal"
+                        var_info["cardinality"] = n_unique
+                        var_info["unique_values"] = unique_list
+                        n_categorical += 1
+                    else:
+                        # Likely continuous (count data, IDs, etc.) with few samples
+                        var_info["data_type"] = "Continuous"
+                        n_continuous += 1
                 else:
+                    # High cardinality integer -> continuous
                     var_info["data_type"] = "Continuous"
                     n_continuous += 1
             else:
-                # Continuous numeric
+                # Other numeric types (shouldn't happen often) -> continuous
                 var_info["data_type"] = "Continuous"
                 n_continuous += 1
         else:

@@ -1,16 +1,19 @@
 # tests/orchestration_flow.py
 """
-Complete orchestration flow example showing how the system works
+Complete example showing how the system works
 """
+import os
+# Fix OpenMP duplicate library error on macOS
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
 from orchestration.graph import create_orchestration_graph
 from monitoring.metrics.collector import MetricsCollector, set_metrics_collector
 from core.state import create_initial_state
-import os
 import argparse
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Orchestration flow demo (step visibility)")
-    parser.add_argument("--query", default="What is the causal effect of gender on used_coupon?", help="Query to run")
+    parser.add_argument("--query", default=None, help="Query to run (if not provided, will prompt from terminal)")
     parser.add_argument("--interactive", default=True, action="store_true", help="Run with HITL prompts enabled")
     parser.add_argument("--verbose", action="store_true", help="Show detailed execution flow and report")
     return parser.parse_args()
@@ -19,6 +22,19 @@ def _parse_args() -> argparse.Namespace:
 def main():
     """Demonstrate the complete orchestration flow"""
     args = _parse_args()
+    
+    # Get query from argument or terminal input
+    query = args.query
+    if not query:
+        print("\n🤖 ORCA Orchestration Flow Demo")
+        print("=" * 60)
+        print("Enter your causal analysis query (or 'exit' to quit)")
+        print("Example: What is the causal effect of gender on used_coupon?")
+        print("=" * 60)
+        query = input("\n🧑 Query: ").strip()
+        if not query or query.lower() in ["exit", "quit"]:
+            print("👋 Goodbye!")
+            return
     
     collector = MetricsCollector("orchestration_demo")
     set_metrics_collector(collector)
@@ -29,7 +45,7 @@ def main():
         orchestration_config={"interactive": args.interactive}
     )
     
-    result = graph.execute(args.query)
+    result = graph.execute(query)
     print(f"Status: {result.get('execution_status')}")
     print(f"Steps completed: {len(result.get('execution_log', []))}")
     

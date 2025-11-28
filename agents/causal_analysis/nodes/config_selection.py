@@ -41,7 +41,7 @@ def build_config_selection_node(llm: BaseChatModel) -> RunnableLambda:
     def invoke(state: Dict) -> Dict:
         df = _load_dataframe_from_state(state)
         parsed_vars = state.get("parsed_query") or {}
-        question = state.get("input", "")
+        question = state.get("initial_query")
 
         # Check if df is valid DataFrame
         if df is not None and hasattr(df, 'head'):

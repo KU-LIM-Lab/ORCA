@@ -327,6 +327,31 @@ class CausalDiscoveryAgent(SpecialistAgent):
             if variable_schema:
                 state["variable_schema"] = variable_schema
             
+            # Request HITL for data profile review if interactive mode
+            if state.get("interactive", False):
+                payload = {
+                    "question": "Review data profiling results",
+                    "data_profile": data_profile,
+                    "warnings": [],
+                    "decisions": {
+                        "approve": {
+                            "description": "Proceed with algorithm configuration using this profile",
+                            "required_fields": {"hitl_executed": True}
+                        }
+                    },
+                    "hint": "Review the data profile to understand data characteristics. This will be used for algorithm configuration.",
+                    "response_examples": {
+                        "approve": {
+                            "description": "Proceed with algorithm configuration",
+                            "json": {
+                                "hitl_executed": True
+                            }
+                        }
+                    }
+                }
+                state = self.request_hitl(state, payload=payload, hitl_type="data_profiling_review")
+                return state
+            
             logger.info("Data profiling completed")
             return state
             
@@ -419,10 +444,9 @@ class CausalDiscoveryAgent(SpecialistAgent):
         if data_type in ["Pure Continuous", "Mixed"]:
             try:
                 if data_type == "Pure Continuous" and cont_vars:
-                    test_df = df[cont_vars]
+                    test_df = df[cont_vars].copy()  # Explicit copy to avoid modifying original
                 elif data_type == "Mixed":
-                    # 범주형 변수 원-핫 인코딩
-                    test_df = df.copy()
+                    test_df = df.copy()  # Deep copy to ensure original df is not modified
                     for cat_var in cat_vars:
                         if cat_var in test_df.columns:
                             dummies = pd.get_dummies(test_df[cat_var], prefix=cat_var, drop_first=True)
@@ -436,7 +460,8 @@ class CausalDiscoveryAgent(SpecialistAgent):
                     if selected_cols:
                         test_df = test_df[selected_cols]
                 else:
-                    test_df = df
+                    # Fallback: use original df (but make copy for safety)
+                    test_df = df.copy()
                 
                 if test_df.shape[0] >= 10 and test_df.shape[1] >= 2:
                     # Ramsey RESET test 
@@ -534,6 +559,68 @@ class CausalDiscoveryAgent(SpecialistAgent):
             state["execution_plan"] = execution_plan
             state["algorithm_configuration_completed"] = True
             
+            # Request HITL for execution plan review if interactive mode
+            if state.get("interactive", False):
+                payload = {
+                    "question": "Review algorithm execution plan",
+                    "execution_plan": execution_plan,
+                    "data_profile": data_profile,
+                    "decisions": {
+                        "approve": {
+                            "description": "Use this execution plan as-is",
+                            "required_fields": {"hitl_executed": True}
+                        },
+                        "edit": {
+                            "description": "Modify the execution plan",
+                            "required_fields": {
+                                "execution_plan": {
+                                    "type": "list[dict]",
+                                    "description": "List of algorithm configurations",
+                                    "structure": {
+                                        "alg": "str (algorithm name: PC, GES, LiNGAM, ANM, FCI, CAM, LiM, TSCM)",
+                                        "ci_test": "str (optional, for PC/FCI: fisherz, gsq, kernel_kcit, lrt)",
+                                        "score": "str (optional, for GES: bic-g, bic-d, bic-cg, generalized_rkhs)"
+                                    },
+                                    "example": [
+                                        {"alg": "PC", "ci_test": "fisherz"},
+                                        {"alg": "GES", "score": "bic-g"},
+                                        {"alg": "LiNGAM"}
+                                    ]
+                                },
+                                "hitl_executed": True
+                            }
+                        }
+                    },
+                    "hint": (
+                        "Review the execution plan. To modify:\n"
+                        "- Set 'execution_plan' as a list of dicts\n"
+                        "- Each dict should have 'alg' (algorithm name)\n"
+                        "- PC/FCI can include 'ci_test' (fisherz/gsq/kernel_kcit/lrt)\n"
+                        "- GES can include 'score' (bic-g/bic-d/bic-cg/generalized_rkhs)"
+                    ),
+                    "response_examples": {
+                        "approve": {
+                            "description": "Use this execution plan as-is",
+                            "json": {
+                                "hitl_executed": True
+                            }
+                        },
+                        "edit": {
+                            "description": "Modify the execution plan",
+                            "json": {
+                                "execution_plan": [
+                                    {"alg": "PC", "ci_test": "fisherz"},
+                                    {"alg": "GES", "score": "bic-g"},
+                                    {"alg": "LiNGAM"}
+                                ],
+                                "hitl_executed": True
+                            }
+                        }
+                    }
+                }
+                state = self.request_hitl(state, payload=payload, hitl_type="execution_plan_review")
+                return state
+            
             logger.info(f"Algorithm configuration completed. Execution plan: {len(execution_plan)} algorithms")
             return state
             
@@ -566,14 +653,14 @@ class CausalDiscoveryAgent(SpecialistAgent):
         global_linearity_pvalue = global_scores.get("s_global_linearity_pvalue", np.nan)
         pairwise_linearity_median = pairwise_scores.get("s_pairwise_linearity_median", np.nan)
         
-        is_mostly_linear = True  # 기본 가정
+        is_mostly_linear = None  # 기본 가정
         
         if data_type_profile == "Pure Continuous" and not np.isnan(pairwise_linearity_median):
             # 1st priority: Pure Continuous uses Pairwise (GLM vs GAM) score
-            is_mostly_linear = pairwise_linearity_median >= 0.6
+            is_mostly_linear = True if pairwise_linearity_median >= 0.6 else False
         elif not np.isnan(global_linearity_pvalue):
             # 2nd priority: Mixed data or failed Pairwise uses Global (Ramsey RESET) score
-            is_mostly_linear = global_linearity_pvalue >= 0.05
+            is_mostly_linear = True if global_linearity_pvalue >= 0.05 else False   
         
         
         # Scenario 6: High Cardinality
@@ -833,6 +920,64 @@ class CausalDiscoveryAgent(SpecialistAgent):
             state["ranked_graphs"] = ranked_graphs
             state["top_candidates"] = top_candidates
             state["graph_evaluation_completed"] = True
+            
+            # Request HITL for graph evaluation review if interactive mode
+            if state.get("interactive", False):
+                payload = {
+                    "question": "Review graph evaluation results",
+                    "scorecard": scorecard[:5],  # Top 5 for review
+                    "ranked_graphs": ranked_graphs[:5],
+                    "top_candidates": top_candidates,
+                    "decisions": {
+                        "approve": {
+                            "description": "Proceed with ensemble synthesis using top candidates",
+                            "required_fields": {"hitl_executed": True}
+                        },
+                        "edit": {
+                            "description": "Override top candidates selection",
+                            "required_fields": {
+                                "top_candidates": {
+                                    "type": "list[dict]",
+                                    "description": "List of candidate graphs to use for ensemble",
+                                    "structure": {
+                                        "algorithm": "str",
+                                        "graph": "dict (with 'nodes' and 'edges')",
+                                        "composite_score": "float"
+                                    }
+                                },
+                                "hitl_executed": True
+                            }
+                        }
+                    },
+                    "hint": (
+                        "Review the graph evaluation results. To override top candidates:\n"
+                        "- Set 'top_candidates' as a list of candidate dicts\n"
+                        "- Each candidate should have 'algorithm', 'graph', and 'composite_score'"
+                    ),
+                    "response_examples": {
+                        "approve": {
+                            "description": "Proceed with top candidates",
+                            "json": {
+                                "hitl_executed": True
+                            }
+                        },
+                        "edit": {
+                            "description": "Override top candidates",
+                            "json": {
+                                "top_candidates": [
+                                    {
+                                        "algorithm": "PC",
+                                        "graph": {"nodes": ["X", "Y"], "edges": [{"from": "X", "to": "Y"}]},
+                                        "composite_score": 0.85
+                                    }
+                                ],
+                                "hitl_executed": True
+                            }
+                        }
+                    }
+                }
+                state = self.request_hitl(state, payload=payload, hitl_type="graph_evaluation_review")
+                return state
             
             logger.info(f"Graph evaluation completed. Top candidate: {top_candidates[0]['algorithm'] if top_candidates else 'None'}")
             return state
@@ -1115,6 +1260,81 @@ class CausalDiscoveryAgent(SpecialistAgent):
             state["synthesis_reasoning"] = reasoning
             state["causal_discovery_status"] = "completed"
             state["ensemble_synthesis_completed"] = True
+            
+            # Request HITL for final graph review if interactive mode
+            if state.get("interactive", False):
+                payload = {
+                    "question": "Review final causal graph from ensemble synthesis",
+                    "selected_graph": dag_result,
+                    "consensus_pag": pag_result,
+                    "synthesis_reasoning": reasoning,
+                    "top_algorithm": top_algorithm,
+                    "decisions": {
+                        "approve": {
+                            "description": "Use this graph for causal analysis",
+                            "required_fields": {"hitl_executed": True}
+                        },
+                        "edit": {
+                            "description": "Override the selected graph",
+                            "required_fields": {
+                                "selected_graph": {
+                                    "type": "dict",
+                                    "description": "Causal graph structure",
+                                    "structure": {
+                                        "graph": {
+                                            "nodes": "list[str]",
+                                            "edges": "list[dict] (each with 'from' and 'to')"
+                                        },
+                                        "metadata": {
+                                            "graph_type": "DAG | PAG",
+                                            "construction_method": "str"
+                                        }
+                                    },
+                                    "example": {
+                                        "graph": {
+                                            "nodes": ["X", "Y", "Z"],
+                                            "edges": [{"from": "X", "to": "Y"}, {"from": "Z", "to": "Y"}]
+                                        },
+                                        "metadata": {"graph_type": "DAG"}
+                                    }
+                                },
+                                "hitl_executed": True
+                            }
+                        }
+                    },
+                    "hint": (
+                        "Review the final causal graph. To override:\n"
+                        "- Set 'selected_graph' with 'graph' (nodes/edges) and 'metadata'\n"
+                        "- 'graph.nodes' should be a list of variable names\n"
+                        "- 'graph.edges' should be a list of dicts with 'from' and 'to' keys"
+                    ),
+                    "response_examples": {
+                        "approve": {
+                            "description": "Use this graph for causal analysis",
+                            "json": {
+                                "hitl_executed": True
+                            }
+                        },
+                        "edit": {
+                            "description": "Override the selected graph",
+                            "json": {
+                                "selected_graph": {
+                                    "graph": {
+                                        "nodes": ["X", "Y", "Z"],
+                                        "edges": [
+                                            {"from": "X", "to": "Y"},
+                                            {"from": "Z", "to": "Y"}
+                                        ]
+                                    },
+                                    "metadata": {"graph_type": "DAG"}
+                                },
+                                "hitl_executed": True
+                            }
+                        }
+                    }
+                }
+                state = self.request_hitl(state, payload=payload, hitl_type="final_graph_review")
+                return state
             
             logger.info(f"Ensemble synthesis completed. Top algorithm: {top_algorithm}")
             return state

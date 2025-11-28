@@ -1,5 +1,10 @@
 import logging
 import sys
+import os
+import warnings
+# Fix OpenMP duplicate library error on macOS
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
 from typing import Optional, Dict, Any
 import argparse
 
@@ -19,7 +24,8 @@ def run_full_pipeline(
     db_id: str = "reef_db",
     planner_config: Optional[Dict[str, Any]] = None,
     executor_config: Optional[Dict[str, Any]] = None,
-    use_synthetic_df: bool = True,
+    orchestration_config: Optional[Dict[str, Any]] = None,
+    use_synthetic_df: bool = False,
 ) -> Dict[str, Any]:
     # 1) Initialize system (db + metadata)
     init = initialize_system(db_id, "postgresql", {})
@@ -30,6 +36,7 @@ def run_full_pipeline(
     graph = create_orchestration_graph(
         planner_config=planner_config,
         executor_config=executor_config,
+        orchestration_config=orchestration_config,
         metrics_collector=None,
     )
     graph.compile()
@@ -38,16 +45,14 @@ def run_full_pipeline(
     state = create_initial_state(query, db_id)
     state["analysis_mode"] = "full_pipeline"
     if use_synthetic_df:
-        # Store dataframe externally and pass only a key to keep state serializable for checkpointing
         df, _meta = generate_er_synthetic(n_nodes=5, edge_prob=0.3, n_samples=300, seed=123)
         try:
             from utils.redis_client import redis_client
             key = f"{db_id}:df_preprocessed"
-            # Save as JSON to avoid binary; small demo
             redis_client.set(key, df.to_json(orient="split"))
             state["df_preprocessed_key"] = key
         except Exception:
-            # Fallback: keep inline (may break checkpointing if large)
+            warnings.warn("Failed to save dataframe to Redis", stacklevel=2)
             state["df_preprocessed"] = df
 
     # Optional seeds to pass planner gating for data exploration
@@ -55,12 +60,8 @@ def run_full_pipeline(
     state.setdefault("table_metadata", {})
 
     # 4) Execute
-    # Note: graph.execute() internally uses compiled_graph.invoke() (or stream() for interactive mode)
-    # Similar to main_agent.py's app.invoke() pattern, but wrapped with planner+executor orchestration
     result_state = graph.execute(query, context=state)
 
-    # 5) Minimal debug print
-    logger.info("Pipeline completed. keys=%s", list(result_state.keys()))
     logger.info("Selected algorithms: %s", result_state.get("selected_algorithms"))
     logger.info("Selected graph edges: %d", len(result_state.get("selected_graph", {}).get("edges", [])))
     if result_state.get("final_report"):
@@ -96,14 +97,16 @@ if __name__ == "__main__":
             sys.exit(0)
 
     planner_cfg: Dict[str, Any] = {}
-    executor_cfg: Dict[str, Any] = {"interactive": bool(args.interactive)}
+    executor_cfg: Dict[str, Any] = {}
+    orchestration_cfg: Dict[str, Any] = {"interactive": bool(args.interactive)}
 
     output = run_full_pipeline(
         query,
         db_id=args.db_id,
         planner_config=planner_cfg,
         executor_config=executor_cfg,
-        use_synthetic_df=True,
+        orchestration_config=orchestration_cfg,
+        use_synthetic_df=False,
     )
     if output["success"]:
         logger.info("Success")

@@ -7,7 +7,13 @@ from prompts.table_recommender_prompts import table_rec_prompt as prompt, table_
 from utils.vectordb import VectorStore
 
 def recommend_tables(state, llm: BaseChatModel):
-    objective = state["objective_summary"]
+    objective = state.get("objective_summary")
+    if not objective:
+        raise ValueError("objective_summary is required but not found in state")
+    if not isinstance(objective, str):
+        # Convert to string if it's not already
+        objective = str(objective)
+    
     db_id = state.get("db_id", "daa")
 
     vector_store = VectorStore(db_id=db_id)

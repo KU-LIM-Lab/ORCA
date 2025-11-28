@@ -1,5 +1,8 @@
 from pathlib import Path
 import sys, os, yaml, argparse, datetime, traceback
+# Fix OpenMP duplicate library error on macOS
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -13,9 +16,9 @@ from utils.llm import get_llm
 from utils.load_causal_graph import load_causal_graph
 from utils.prettify import print_final_output_explorer, print_final_output_recommender, print_final_output_sql, print_final_output_causal
 
-from agents.table_explorer import generate_description_graph
-from agents.table_recommender import generate_table_recommendation_graph
-from agents.text2sql_generator import generate_text2sql_graph 
+from agents.data_explorer.table_explorer import generate_description_graph
+from agents.data_explorer.table_recommender import generate_table_recommendation_graph
+from agents.data_explorer.text2sql_generator import generate_text2sql_graph 
 from agents.causal_analysis import generate_causal_analysis_graph
 from experiments.causal_analysis.causal_pre_information import DEFAULT_EXPRESSION_DICT
 
