@@ -71,6 +71,7 @@ tmp/
 temp/
 *.tmp
 *.png
+*.md
 
 # Node.js (for seed data)
 node_modules/
