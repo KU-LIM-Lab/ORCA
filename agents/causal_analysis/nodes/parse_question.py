@@ -61,7 +61,7 @@ def build_parse_question_node(llm: BaseChatModel) -> Callable:
             }
         
         # Use LLM to identify from question and data
-        question = state.get("initial_query")
+        question = state.get("input") or state.get("initial_query")
         df = _load_dataframe_from_state(state)
         
         # Prepare data sample
@@ -119,7 +119,7 @@ def build_parse_question_node(llm: BaseChatModel) -> Callable:
         Build NetworkX DiGraph from selected_graph (or causal_graph) in state.
         Handles different graph formats.
         """
-        causal_graph = state.get("selected_graph")
+        causal_graph = state.get("selected_graph") or state.get("causal_graph")
         if not causal_graph:
             return None
         

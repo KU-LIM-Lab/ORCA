@@ -35,6 +35,10 @@ def build_config_selection_node(llm: BaseChatModel) -> RunnableLambda:
                     return df
             except Exception as e:
                 print(f"⚠️ Failed to load DataFrame from Redis key {redis_key}: {e}")
+        else:
+            df = state.get("df_preprocessed")
+            if df is not None:
+                return df
         
         return None
 

@@ -103,10 +103,12 @@ def test_causal_analysis_pipeline() -> int:
     print("\n[4/5] Preparing input state...")
     question = f"What is the causal effect of {treatment} on {outcome}?"
     
-    state_input = {
+    state_input = { # 어디까지 정보로 줄지 결정할 수 있음
         "input": question,
         "df_preprocessed": df,
         "causal_graph": causal_graph,
+        "treatment_variable": treatment,
+        "outcome_variable": outcome,
     }
     
     print(f"  ✓ Question: {question}")

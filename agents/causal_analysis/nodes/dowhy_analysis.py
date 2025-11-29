@@ -38,7 +38,7 @@ def build_dowhy_analysis_node() -> RunnableLambda:
 
 
         # Create CausalModel
-        causal_graph = state.get("selected_graph")
+        causal_graph = state.get("selected_graph") or state.get("causal_graph")
         if not causal_graph:
             raise ValueError("The causal graph generated is required for DoWhy analysis")
         dot_graph = causal_graph.get("dot_graph")

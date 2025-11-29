@@ -193,7 +193,7 @@ class AgentState(TypedDict, total=False):
     ensemble_synthesis_completed: bool
     
     # 5. Final graph decision
-    selected_graph: Dict[str, Any]  # Final selected causal graph
+    selected_graph: Dict[str, Any]  
     graph_selection_reasoning: str  # Graph selection reasoning
     
     # Causal Discovery Phase Status
@@ -264,7 +264,9 @@ class CausalInferenceState(TypedDict, total=False):
     """State specific to Causal Inference Agent"""
     treatment_variable: str
     outcome_variable: str
+    mediators: List[str]
     confounders: List[str]
+    colliders: List[str]
     instrumental_variables: List[str]
     estimation_method: str
     identification_strategy: str

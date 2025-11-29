@@ -1,9 +1,9 @@
 # tests/orchestration_flow.py
 """
 Complete example showing how the system works
+main.py 를 쓰면 됨 
 """
 import os
-# Fix OpenMP duplicate library error on macOS
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 from orchestration.graph import create_orchestration_graph
