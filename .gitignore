@@ -105,3 +105,4 @@ data/raw/
 data/synthetic_cd/
 data/synthetic_ci/
 tests/results/
+experiments/results/

@@ -137,7 +137,6 @@ def build_dowhy_analysis_node() -> RunnableLambda:
             ci = ci_arr.tolist()
         except Exception:
             ci = None
-
         state["causal_effect_ate"] = float(getattr(estimate, "value", None)) if getattr(estimate, "value", None) is not None else None
         state["causal_effect_ci"] = ci
 

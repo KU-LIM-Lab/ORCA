@@ -1,0 +1,33 @@
+global:
+  results_dir: experiments/results/effect_estimation
+  seed: 0
+
+experiments:
+  - name: ihdp_oracle
+    dataset: ihdp
+    data_path: data/raw/ihdp/ihdp_npci_1-1000.train.npz
+    setting: oracle_graph
+    # runs: null  # use all available runs (default)
+    methods: [orca, doubleml, causal_forest, t_learner] 
+ 
+  - name: ci_oracle
+    dataset: synthetic_ci
+    base_dir: data/synthetic_ci
+    scenarios:
+      - CI-1_Baseline
+      - CI-2_Nonlinear_T
+      - CI-3_Nonlinear_Y
+      - CI-4_CATE
+      - CI-5_Complex
+    setting: oracle_graph
+    # runs: null  # use all available runs (default)
+    methods: [orca, doubleml, causal_forest, t_learner]
+
+  - name: ci_agentgraph
+    dataset: synthetic_ci
+    base_dir: data/synthetic_ci
+    scenarios: [CI-4_CATE, CI-5_Complex]
+    setting: agent_graph
+    # runs: null  # use all available runs (default)
+    methods: [orca, doubleml, causal_forest, t_learner]
+    discovery_result_dir: experiments/results/discovery # optional
