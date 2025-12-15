@@ -3,7 +3,7 @@
 from typing import Any, Dict, Optional, List
 import pandas as pd
 import logging
-
+import numpy as np
 from core.base import SpecialistAgent, AgentType
 from core.state import AgentState
 from utils.database import Database
@@ -13,6 +13,7 @@ from .tools import (
     encode_categorical_tool,
     detect_schema_tool
 )
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,12 @@ class DataPreprocessorAgent(SpecialistAgent):
         self.df: Optional[pd.DataFrame] = None
         self.df_redis_key: Optional[str] = None
         self._data_fetched: bool = False
+
+    def make_df_redis_key_by_time(self,db_id: str, prefix: str = "df") -> str:
+        now = datetime.now()
+        ts = now.strftime("%Y%m%d_%H%M%S")
+        ms = int(now.microsecond / 1000)
+        return f"{prefix}:{db_id}:{ts}_{ms:03d}"
 
     def get_required_state_keys(self):
         """Return required state keys for preprocessing."""
@@ -85,15 +92,17 @@ class DataPreprocessorAgent(SpecialistAgent):
             db_id = state.get("db_id")
             if not db_id:
                 raise ValueError("Missing 'db_id' in state")
-
+            
+            # self.df_redis_key = self.make_df_redis_key_by_time(db_id)
             final_sql = state.get("final_sql") or state.get("sql_query")
-            df_raw_key = state.get("df_redis_key") or self.df_redis_key
             session_id = state.get("session_id", "default_session")
+            self.df_redis_key = f"{db_id}:raw_df:{session_id}"
+            df_raw_key = state.get("df_redis_key") or self.df_redis_key
             force_refresh = bool(state.get("force_refresh", False))
 
             # Initialize metadata
             metadata = {
-                "df_redis_key": None,
+                "df_redis_key": self.df_redis_key,
                 "df_shape": None,
                 "columns": None,
                 "df_cached": False,
@@ -261,6 +270,9 @@ class DataPreprocessorAgent(SpecialistAgent):
                         }
                     }
                 }
+                if isinstance(payload, (pd.Series, pd.Index)):
+                    return payload.tolist()
+                # payload = _to_jsonable(payload)
                 state = self.request_hitl(state, payload=payload, hitl_type="schema_review")
                 return state
 
@@ -344,24 +356,27 @@ class DataPreprocessorAgent(SpecialistAgent):
         state = self._fetch(state)
         if state.get("error"):
             return state
+        
+        
 
         state = self._schema_detection(state)
         if state.get("error"):
             return state
 
+        logger.info("Cleaning null skipped. Original data preserved for causal discovery algorithms.")
         state = self._clean_nulls(state)
         if state.get("error"):
             return state
 
         # Skip encoding if flag is set (for causal discovery with mixed data)
         skip_encoding = state.get("skip_one_hot_encoding", False)
-        if skip_encoding:
-            logger.info("One-hot encoding skipped. Original data preserved for causal discovery algorithms.")
-            state["encoded_columns"] = []
-        else:
-            state = self._encode(state)
-            if state.get("error"):
-                return state
+        # if skip_encoding:
+        logger.info("One-hot encoding skipped. Original data preserved for causal discovery algorithms.")
+        state["encoded_columns"] = []
+        # else:
+        #     state = self._encode(state)
+        #     if state.get("error"):
+        #         return state
 
         # Mark as completed
         state["data_preprocessing_completed"] = True

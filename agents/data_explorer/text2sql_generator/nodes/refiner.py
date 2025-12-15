@@ -1,5 +1,6 @@
 import re
 from prompts.text2sql_generator_prompts import refiner_template, refiner_feedback_template
+from prompts.text2sql_for_causal_prompts import refiner_template_for_causal, refiner_feedback_template_for_causal
 from utils.llm import call_llm
 from utils.database import Database
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -11,19 +12,30 @@ def refiner_node(state, llm: BaseChatModel):
     sql = state.get('pred') or state.get('final_sql')
     llm_review = state.get('llm_review')
     try_times = state.get('try_times', 0)
+    mode = state.get('analysis_mode','full_pipeline')
 
     if llm_review and try_times == 0:
         error_info = state.get('error', {})
         
         print("Refining SQL with feedback...")
-        prompt = refiner_feedback_template.format(
-            query=state['query'],
-            evidence=state.get('evidence'),
-            desc_str=state['desc_str'],
-            fk_str=state['fk_str'],
-            sql=state['final_sql'],
-            review_feedback=llm_review
-        )
+        if mode == 'data_exploration':
+            prompt = refiner_feedback_template.format(
+                query=state['query'],
+                evidence=state.get('evidence'),
+                desc_str=state['desc_str'],
+                fk_str=state['fk_str'],
+                sql=state['final_sql'],
+                review_feedback=llm_review
+            )
+        elif mode == 'full_pipeline':
+            prompt = refiner_feedback_template_for_causal.format(
+                query=state['query'],
+                evidence=state.get('evidence'),
+                desc_str=state['desc_str'],
+                fk_str=state['fk_str'],
+                sql=state['final_sql'],
+                review_feedback=llm_review
+            )
         
         llm_reply = call_llm(prompt, llm=llm)
         all_sqls = []
@@ -74,16 +86,26 @@ def refiner_node(state, llm: BaseChatModel):
                 'error': error_info['error'],
                 'send_to': 'review_node'
             }
-    
-        prompt = refiner_template.format(
-            query=state['query'],
-            evidence=state.get('evidence'),
-            desc_str=state['desc_str'],
-            fk_str=state['fk_str'],
-            sql=error_info['sql'],
-            sql_error=error_info.get('error', ''),
-            exception_class=error_info.get('exception_class', '')
-        )
+        if mode == 'data_exploration':
+            prompt = refiner_template.format(
+                query=state['query'],
+                evidence=state.get('evidence'),
+                desc_str=state['desc_str'],
+                fk_str=state['fk_str'],
+                sql=error_info['sql'],
+                sql_error=error_info.get('error', ''),
+                exception_class=error_info.get('exception_class', '')
+            )
+        elif mode == 'full_pipeline':
+            prompt = refiner_template_for_causal.format(
+                query=state['query'],
+                evidence=state.get('evidence'),
+                desc_str=state['desc_str'],
+                fk_str=state['fk_str'],
+                sql=error_info['sql'],
+                sql_error=error_info.get('error', ''),
+                exception_class=error_info.get('exception_class', '')
+            )
 
         llm_reply = call_llm(prompt)
         all_sqls = []

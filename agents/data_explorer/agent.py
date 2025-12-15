@@ -192,7 +192,10 @@ class DataExplorerAgent(SpecialistAgent):
                 "db_id": state.get("db_id"),
                 "query": state.get("initial_query"),
                 "messages": [],
-                "evidence": f"Selected tables: {', '.join(selected_tables)}"
+                "evidence": f"Selected tables: {', '.join(selected_tables)}",
+                # Text2SQL subgraph nodes expect analysis_mode to select prompt templates.
+                # Default to full_pipeline when the parent state doesn't specify it.
+                "analysis_mode": state.get("analysis_mode", "full_pipeline"),
             }
             
             # Execute SQL generation

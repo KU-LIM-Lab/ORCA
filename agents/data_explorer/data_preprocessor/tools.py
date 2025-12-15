@@ -8,6 +8,7 @@ All tools take a DataFrame as input and return a processed DataFrame.
 from typing import Dict, List, Tuple, Any, Optional
 import pandas as pd
 import numpy as np
+from collections import Counter
 
 
 def clean_nulls_tool(
@@ -99,6 +100,17 @@ def detect_schema_tool(
                 "n_binary": 0
             }
         }
+    
+    if df.columns.duplicated().any():
+        def _make_unique_columns(cols):
+            counts = Counter()
+            new_cols = []
+            for c in cols:
+                counts[c] += 1
+                new_cols.append(c if counts[c] == 1 else f"{c}__{counts[c]-1}")
+            return new_cols
+        df = df.copy()
+        df.columns = _make_unique_columns(df.columns)
     
     variables = {}
     n_continuous = 0
