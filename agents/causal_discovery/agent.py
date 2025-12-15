@@ -1261,6 +1261,22 @@ class CausalDiscoveryAgent(SpecialistAgent):
             state["causal_discovery_status"] = "completed"
             state["ensemble_synthesis_completed"] = True
             
+            # Visualize and save DAG
+            try:
+                from .tools import GraphVisualizer
+                visualization_result = GraphVisualizer.save_graph(
+                    dag_result, 
+                    output_dir="outputs/images/causal_graphs",
+                    formats=["png", "svg"]
+                )
+                if "error" not in visualization_result:
+                    state["graph_visualization_path"] = visualization_result.get("saved_paths", {})
+                    logger.info(f"DAG visualization saved: {visualization_result.get('saved_paths', {})}")
+                else:
+                    logger.warning(f"DAG visualization failed: {visualization_result.get('error', 'Unknown error')}")
+            except Exception as e:
+                logger.warning(f"Failed to visualize DAG: {e}")
+            
             # Request HITL for final graph review if interactive mode
             if state.get("interactive", False):
                 payload = {

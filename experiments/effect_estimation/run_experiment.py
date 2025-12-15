@@ -5,10 +5,12 @@ import json
 import os
 from pathlib import Path
 from typing import Dict, Any, Tuple, List
+import time
 
 import numpy as np
 import pandas as pd
 import yaml
+from tqdm import tqdm
 
 from experiments.effect_estimation.methods import get_method, METHOD_REGISTRY
 
@@ -256,6 +258,67 @@ def compute_metrics(
 
 # === 4. Main experiment loop ===
 
+def _save_summary_intermediate(all_records: List[Dict[str, Any]], results_dir: Path, 
+                               dataset: str, setting: str) -> None:
+    """Save intermediate summary from current all_records."""
+    if not all_records:
+        return
+    
+    try:
+        df = pd.DataFrame(all_records)
+        group_cols = ["dataset", "scenario", "setting", "method"]
+        agg_dict = {
+            "ate_abs_error": ["mean", "std"],
+            "ate_sq_error": ["mean", "std"],
+            "ate_bias": ["mean", "std"],
+            "ate_ci_covered": ["mean"],
+            "cate_pehe": ["mean", "std"],
+            "cate_mse": ["mean", "std"],
+        }
+        
+        # Filter columns that exist in the dataframe
+        available_cols = df.columns.tolist()
+        filtered_agg_dict = {
+            col: funcs for col, funcs in agg_dict.items()
+            if col in available_cols
+        }
+        
+        if not filtered_agg_dict:
+            return
+        
+        summary = df.groupby(group_cols).agg(filtered_agg_dict)
+        summary.columns = ["_".join([c for c in col if c]) for col in summary.columns.values]
+        summary = summary.reset_index()
+        
+        # Add additional performance metrics
+        # 1. Coverage rate as percentage
+        if "ate_ci_covered_mean" in summary.columns:
+            summary["ate_ci_covered_percent"] = summary["ate_ci_covered_mean"] * 100
+        
+        # 2. RMSE (Root Mean Squared Error) = sqrt(MSE)
+        if "ate_sq_error_mean" in summary.columns:
+            summary["ate_rmse"] = np.sqrt(summary["ate_sq_error_mean"])
+        
+        # 3. Absolute bias (mean of absolute bias values)
+        if "ate_bias_mean" in summary.columns:
+            summary["ate_abs_bias"] = np.abs(summary["ate_bias_mean"])
+        
+        # 4. CI width statistics (if available)
+        if "ate_ci_width" in df.columns:
+            ci_width_agg = df.groupby(group_cols)["ate_ci_width"].agg(["mean", "std"])
+            summary = summary.merge(ci_width_agg, left_on=group_cols, right_index=True, how="left")
+            summary = summary.rename(columns={"mean": "ate_ci_width_mean", "std": "ate_ci_width_std"})
+        
+        summary_dir = results_dir / "summary"
+        summary_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = summary_dir / f"summary_{dataset}_{setting}.csv"
+        
+        summary.to_csv(summary_path, index=False)
+        print(f"[INFO] Intermediate summary saved: {summary_path} ({len(all_records)} records)")
+    except Exception as e:
+        print(f"[WARNING] Failed to save intermediate summary: {e}")
+
+
 def run_experiments(
     dataset: str,
     methods: List[str],
@@ -267,6 +330,7 @@ def run_experiments(
     synthetic_base_dir: str | None = None,
     scenarios: List[str] | None = None,
     seed: int = 0,
+    save_interval: int = 50,
 ):
     if results_dir is None:
         results_dir = Path("experiments/results/effect_estimation")
@@ -310,8 +374,24 @@ def run_experiments(
         
         print(f"Running experiments on IHDP with methods={methods}, setting={setting}, replications={replication_indices} (out of {n_replications} available)")
         
-        for run_id in replication_indices:
-            X, T, Y, tau_true_cate, tau_true_ate, meta = load_ihdp_dataset(ihdp_path, replicate_idx=run_id)
+        # Outer progress bar for replications
+        replication_pbar = tqdm(
+            replication_indices,
+            desc="Replications",
+            unit="rep",
+            position=0,
+            leave=True,
+            ncols=100
+        )
+        
+        for run_id in replication_pbar:
+            replication_pbar.set_description(f"Replication {run_id}")
+            
+            try:
+                X, T, Y, tau_true_cate, tau_true_ate, meta = load_ihdp_dataset(ihdp_path, replicate_idx=run_id)
+            except Exception as e:
+                tqdm.write(f"[ERROR] Failed to load IHDP dataset for replication {run_id}: {e}")
+                continue
 
             # ORCA df / causal_graph (Oracle setting uses all confounders)
             df = pd.DataFrame(X, columns=[f"W{i}" for i in range(X.shape[1])])
@@ -326,9 +406,21 @@ def run_experiments(
             else:
                 raise ValueError(f"Unknown setting: {setting}")
 
-            for method_name in methods:
+            # Inner progress bar for methods
+            methods_pbar = tqdm(
+                methods,
+                desc=f"  Methods (rep {run_id})",
+                unit="method",
+                position=1,
+                leave=False,
+                ncols=100
+            )
+            
+            for method_name in methods_pbar:
+                methods_pbar.set_description(f"  {method_name} (rep {run_id})")
+                
                 if method_name not in METHOD_REGISTRY:
-                    print(f"Skipping unknown method: {method_name}")
+                    tqdm.write(f"Skipping unknown method: {method_name}")
                     continue
                 method_fn = get_method(method_name)
 
@@ -346,7 +438,14 @@ def run_experiments(
                         }
                     )
 
-                result = method_fn(X, T, Y, context=context)
+                try:
+                    result = method_fn(X, T, Y, context=context)
+                except Exception as e:
+                    tqdm.write(f"  [ERROR] Method {method_name} failed for replication {run_id}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    # Continue with next method
+                    continue
                 metrics = compute_metrics(
                     tau_hat_ate=result.get("tau_hat_ate"),
                     tau_hat_cate=result.get("tau_hat_cate"),
@@ -370,8 +469,11 @@ def run_experiments(
                 out_dir = results_dir / "IHDP" / setting / f"run_{run_id:03d}"
                 out_dir.mkdir(parents=True, exist_ok=True)
                 out_path = out_dir / f"{method_name}.json"
-                with open(out_path, "w") as f:
-                    json.dump(run_record, f, indent=2)
+                try:
+                    with open(out_path, "w") as f:
+                        json.dump(run_record, f, indent=2)
+                except Exception as e:
+                    tqdm.write(f"  [ERROR] Failed to save results for {method_name} replication {run_id}: {e}")
 
                 # Create flat record for summary
                 flat = {
@@ -384,6 +486,10 @@ def run_experiments(
                     **metrics,
                 }
                 all_records.append(flat)
+                
+                # Save intermediate summary periodically
+                if save_interval > 0 and len(all_records) % save_interval == 0:
+                    _save_summary_intermediate(all_records, results_dir, dataset.lower(), setting)
 
     elif dataset.lower() == "synthetic_ci":
         if synthetic_base_dir is None:
@@ -397,12 +503,24 @@ def run_experiments(
 
         print(f"Running experiments on Synthetic CI scenarios={ [d.name for d in scenario_dirs] }, methods={methods}, setting={setting}")
 
-        for scenario_dir in scenario_dirs:
+        # Outer progress bar for scenarios
+        scenario_pbar = tqdm(
+            scenario_dirs,
+            desc="Scenarios",
+            unit="scenario",
+            position=0,
+            leave=True,
+            ncols=100
+        )
+        
+        for scenario_dir in scenario_pbar:
+            scenario_pbar.set_description(f"Scenario: {scenario_dir.name}")
+            
             # Get available runs for this scenario
             available_runs = get_available_runs(scenario_dir)
             
             if not available_runs:
-                print(f"Warning: No valid run directories found in {scenario_dir}. Skipping.")
+                tqdm.write(f"Warning: No valid run directories found in {scenario_dir}. Skipping.")
                 continue
             
             # Determine which run indices to use
@@ -411,7 +529,7 @@ def run_experiments(
                 scenario_run_indices = [idx for idx in run_indices if idx in available_runs]
                 if len(scenario_run_indices) != len(run_indices):
                     missing = [idx for idx in run_indices if idx not in scenario_run_indices]
-                    print(f"Warning: Some run indices not found in {scenario_dir.name}: {missing}")
+                    tqdm.write(f"Warning: Some run indices not found in {scenario_dir.name}: {missing}")
             elif runs is not None and runs > 0:
                 # Use first N runs
                 scenario_run_indices = available_runs[:min(runs, len(available_runs))]
@@ -420,15 +538,30 @@ def run_experiments(
                 scenario_run_indices = available_runs
             
             if not scenario_run_indices:
-                print(f"Warning: No valid run indices for {scenario_dir.name}. Skipping.")
+                tqdm.write(f"Warning: No valid run indices for {scenario_dir.name}. Skipping.")
                 continue
             
-            print(f"  Scenario {scenario_dir.name}: using runs {scenario_run_indices} (out of {len(available_runs)} available)")
+            # Middle progress bar for runs
+            runs_pbar = tqdm(
+                scenario_run_indices,
+                desc=f"  Runs ({scenario_dir.name})",
+                unit="run",
+                position=1,
+                leave=False,
+                ncols=100
+            )
             
-            for run_id in scenario_run_indices:
-                X, T, Y, tau_true_cate, tau_true_ate, meta = load_synthetic_ci_dataset(
-                    scenario_dir, run_idx=run_id
-                )
+            for run_id in runs_pbar:
+                runs_pbar.set_description(f"  Run {run_id} ({scenario_dir.name})")
+                
+                try:
+                    X, T, Y, tau_true_cate, tau_true_ate, meta = load_synthetic_ci_dataset(
+                        scenario_dir, run_idx=run_id
+                    )
+                except Exception as e:
+                    tqdm.write(f"[ERROR] Failed to load synthetic CI dataset for scenario {scenario_dir.name}, run {run_id}: {e}")
+                    continue
+                    
                 df = meta["df"]
                 
                 if setting == "oracle_graph":
@@ -439,9 +572,21 @@ def run_experiments(
                 else:
                     raise ValueError(f"Unknown setting: {setting}")
 
-                for method_name in methods:
+                # Inner progress bar for methods
+                methods_pbar = tqdm(
+                    methods,
+                    desc=f"    Methods (run {run_id})",
+                    unit="method",
+                    position=2,
+                    leave=False,
+                    ncols=100
+                )
+                
+                for method_name in methods_pbar:
+                    methods_pbar.set_description(f"    {method_name} (run {run_id})")
+                    
                     if method_name not in METHOD_REGISTRY:
-                        print(f"Skipping unknown method: {method_name}")
+                        tqdm.write(f"Skipping unknown method: {method_name}")
                         continue
                     method_fn = get_method(method_name)
 
@@ -459,7 +604,15 @@ def run_experiments(
                             }
                         )
 
-                    result = method_fn(X, T, Y, context=context)
+                    try:
+                        result = method_fn(X, T, Y, context=context)
+                    except Exception as e:
+                        tqdm.write(f"    [ERROR] Method {method_name} failed for scenario {scenario_dir.name}, run {run_id}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        # Continue with next method
+                        continue
+                        
                     metrics = compute_metrics(
                         tau_hat_ate=result.get("tau_hat_ate"),
                         tau_hat_cate=result.get("tau_hat_cate"),
@@ -485,8 +638,11 @@ def run_experiments(
                     out_dir = results_dir / "synthetic_ci" / scenario_dir.name / setting / f"run_{run_id:03d}"
                     out_dir.mkdir(parents=True, exist_ok=True)
                     out_path = out_dir / f"{method_name}.json"
-                    with open(out_path, "w") as f:
-                        json.dump(run_record, f, indent=2)
+                    try:
+                        with open(out_path, "w") as f:
+                            json.dump(run_record, f, indent=2)
+                    except Exception as e:
+                        tqdm.write(f"    [ERROR] Failed to save results for {method_name}, scenario {scenario_dir.name}, run {run_id}: {e}")
 
                     # Create flat record for summary
                     flat = {
@@ -498,6 +654,10 @@ def run_experiments(
                         **metrics,
                     }
                     all_records.append(flat)
+                    
+                    # Save intermediate summary periodically
+                    if save_interval > 0 and len(all_records) % save_interval == 0:
+                        _save_summary_intermediate(all_records, results_dir, dataset.lower(), setting)
 
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
@@ -517,6 +677,25 @@ def run_experiments(
         summary = df.groupby(group_cols).agg(agg_dict)
         summary.columns = ["_".join([c for c in col if c]) for col in summary.columns.values]
         summary = summary.reset_index()
+        
+        # Add additional performance metrics
+        # 1. Coverage rate as percentage
+        if "ate_ci_covered_mean" in summary.columns:
+            summary["ate_ci_covered_percent"] = summary["ate_ci_covered_mean"] * 100
+        
+        # 2. RMSE (Root Mean Squared Error) = sqrt(MSE)
+        if "ate_sq_error_mean" in summary.columns:
+            summary["ate_rmse"] = np.sqrt(summary["ate_sq_error_mean"])
+        
+        # 3. Absolute bias (mean of absolute bias values)
+        if "ate_bias_mean" in summary.columns:
+            summary["ate_abs_bias"] = np.abs(summary["ate_bias_mean"])
+        
+        # 4. CI width statistics (if available)
+        if "ate_ci_width" in df.columns:
+            ci_width_agg = df.groupby(group_cols)["ate_ci_width"].agg(["mean", "std"])
+            summary = summary.merge(ci_width_agg, left_on=group_cols, right_index=True, how="left")
+            summary = summary.rename(columns={"mean": "ate_ci_width_mean", "std": "ate_ci_width_std"})
 
         summary_dir = results_dir / "summary"
         summary_dir.mkdir(parents=True, exist_ok=True)
@@ -558,6 +737,12 @@ def main():
         type=str,
         default=None,
         help="Run only a specific experiment by name. If omitted, run all experiments.",
+    )
+    parser.add_argument(
+        "--save-interval",
+        type=int,
+        default=50,
+        help="Save intermediate summary every N records (default: 50). Set to 0 to disable intermediate saving.",
     )
 
     args = parser.parse_args()
@@ -618,6 +803,7 @@ def main():
                 synthetic_base_dir=None,
                 scenarios=None,
                 seed=seed,
+                save_interval=args.save_interval,
             )
         
         elif dataset.lower() == "synthetic_ci":
@@ -640,6 +826,7 @@ def main():
                 synthetic_base_dir=base_dir,
                 scenarios=scenarios,
                 seed=seed,
+                save_interval=args.save_interval,
             )
         
         else:

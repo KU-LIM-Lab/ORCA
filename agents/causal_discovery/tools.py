@@ -2045,3 +2045,245 @@ class EnsembleTool:
                    (e.get("from") == var2 and e.get("to") == var1):
                     return {"from": e["from"], "to": e["to"]}
         return None
+
+class GraphVisualizer:
+    """Graph visualization tools for causal DAGs"""
+    
+    @staticmethod
+    def visualize_dag(dag_dict: Dict[str, Any]) -> Optional[nx.DiGraph]:
+        """Convert DAG dictionary to NetworkX DiGraph
+        
+        Args:
+            dag_dict: DAG dictionary with 'graph' key containing 'variables' and 'edges',
+                     or with 'variables' and 'edges' at top level
+            
+        Returns:
+            NetworkX DiGraph or None if conversion fails
+        """
+        try:
+            # Support both structures: {"graph": {...}} and direct structure
+            if "graph" in dag_dict:
+                graph_data = dag_dict["graph"]
+                variables = graph_data.get("variables", [])
+                edges = graph_data.get("edges", [])
+            else:
+                # Direct structure: variables and edges at top level
+                variables = dag_dict.get("variables", [])
+                edges = dag_dict.get("edges", [])
+            
+            # If variables not found, extract from edges
+            if not variables and edges:
+                variables_set = set()
+                for edge in edges:
+                    from_var = str(edge.get("from", ""))
+                    to_var = str(edge.get("to", ""))
+                    if from_var:
+                        variables_set.add(from_var)
+                    if to_var:
+                        variables_set.add(to_var)
+                variables = list(variables_set)
+            
+            if not variables:
+                logger.warning("No variables found in DAG")
+                return None
+            
+            G = nx.DiGraph()
+            G.add_nodes_from(variables)
+            
+            # Add edges
+            for edge in edges:
+                from_var = str(edge.get("from", ""))
+                to_var = str(edge.get("to", ""))
+                
+                if from_var and to_var and from_var in variables and to_var in variables:
+                    edge_attrs = {}
+                    if "weight" in edge:
+                        edge_attrs["weight"] = float(edge["weight"])
+                    if "confidence" in edge:
+                        edge_attrs["confidence"] = float(edge["confidence"])
+                    
+                    G.add_edge(from_var, to_var, **edge_attrs)
+            
+            return G
+            
+        except Exception as e:
+            logger.error(f"Failed to convert DAG to NetworkX graph: {e}")
+            return None
+    
+    @staticmethod
+    def save_graph(dag_dict: Dict[str, Any], output_dir: str = "outputs/images/causal_graphs", 
+                   formats: List[str] = ["png", "svg"]) -> Dict[str, Any]:
+        """Save DAG visualization to file(s)
+        
+        Args:
+            dag_dict: DAG dictionary to visualize
+            output_dir: Output directory path
+            formats: List of formats to save (e.g., ["png", "svg"])
+            
+        Returns:
+            Dictionary with saved file paths or error information
+        """
+        try:
+            import os
+            import matplotlib
+            matplotlib.use('Agg')  # Non-interactive backend
+            import matplotlib.pyplot as plt
+            from datetime import datetime
+            
+            os.makedirs(output_dir, exist_ok=True)
+            
+            G = GraphVisualizer.visualize_dag(dag_dict)
+            if G is None:
+                return {"error": "Failed to convert DAG to NetworkX graph"}
+            
+            if len(G.nodes()) == 0:
+                logger.warning("Empty graph, skipping visualization")
+                return {"error": "Empty graph"}
+            
+            # Generate timestamp for filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            base_filename = f"causal_graph_{timestamp}"
+            
+            saved_paths = {}
+            
+            # Try different layout algorithms
+            try:
+                # Try hierarchical layout first (good for DAGs)
+                pos = GraphVisualizer._hierarchical_layout(G)
+            except Exception:
+                try:
+                    # Fallback to spring layout
+                    pos = nx.spring_layout(G, k=1.5, iterations=50, seed=42)
+                except Exception:
+                    # Final fallback to circular layout
+                    pos = nx.circular_layout(G)
+            
+            # Create figure
+            fig, ax = plt.subplots(figsize=(12, 10))
+            
+            # Draw nodes
+            node_colors = ['#4A90E2' for _ in G.nodes()]
+            node_sizes = [2000 for _ in G.nodes()]
+            
+            nx.draw_networkx_nodes(G, pos, node_color=node_colors, 
+                                 node_size=node_sizes, alpha=0.9, ax=ax)
+            
+            # Draw edges
+            edge_colors = ['#666666' for _ in G.edges()]
+            edge_widths = [2.0 for _ in G.edges()]
+            
+            # Adjust edge width based on weight/confidence if available
+            for i, (u, v, data) in enumerate(G.edges(data=True)):
+                if "weight" in data:
+                    edge_widths[i] = 1.0 + abs(float(data["weight"])) * 2.0
+                elif "confidence" in data:
+                    edge_widths[i] = 1.0 + float(data["confidence"]) * 2.0
+            
+            nx.draw_networkx_edges(G, pos, edge_color=edge_colors, 
+                                 width=edge_widths, alpha=0.6, arrows=True, 
+                                 arrowsize=20, arrowstyle='->', ax=ax)
+            
+            # Draw labels
+            nx.draw_networkx_labels(G, pos, font_size=10, font_weight='bold', ax=ax)
+            
+            # Set title
+            metadata = dag_dict.get("metadata", {})
+            graph_type = metadata.get("graph_type", "DAG")
+            construction_method = metadata.get("construction_method", "unknown")
+            title = f"Causal {graph_type} - {construction_method}"
+            ax.set_title(title, fontsize=14, fontweight='bold', pad=20)
+            
+            ax.axis('off')
+            plt.tight_layout()
+            
+            # Save in requested formats
+            for fmt in formats:
+                if fmt.lower() == "png":
+                    filepath = os.path.join(output_dir, f"{base_filename}.png")
+                    plt.savefig(filepath, format='png', dpi=300, bbox_inches='tight')
+                    saved_paths["png"] = filepath
+                    logger.info(f"Saved DAG visualization to {filepath}")
+                elif fmt.lower() == "svg":
+                    filepath = os.path.join(output_dir, f"{base_filename}.svg")
+                    plt.savefig(filepath, format='svg', bbox_inches='tight')
+                    saved_paths["svg"] = filepath
+                    logger.info(f"Saved DAG visualization to {filepath}")
+                elif fmt.lower() == "pdf":
+                    filepath = os.path.join(output_dir, f"{base_filename}.pdf")
+                    plt.savefig(filepath, format='pdf', bbox_inches='tight')
+                    saved_paths["pdf"] = filepath
+                    logger.info(f"Saved DAG visualization to {filepath}")
+            
+            plt.close(fig)
+            
+            return {
+                "success": True,
+                "saved_paths": saved_paths,
+                "n_nodes": len(G.nodes()),
+                "n_edges": len(G.edges())
+            }
+            
+        except ImportError as e:
+            error_msg = f"Visualization dependencies not available: {e}"
+            logger.warning(error_msg)
+            return {"error": error_msg}
+        except Exception as e:
+            error_msg = f"Failed to save graph visualization: {e}"
+            logger.error(error_msg)
+            return {"error": error_msg}
+    
+    @staticmethod
+    def _hierarchical_layout(G: nx.DiGraph) -> Dict[str, Tuple[float, float]]:
+        """Generate hierarchical layout for DAG using topological sort
+        
+        Args:
+            G: NetworkX DiGraph (assumed to be a DAG, verified in construct_dag)
+            
+        Returns:
+            Dictionary mapping nodes to (x, y) positions
+        """
+        try:
+            # Get topological levels
+            levels = {}
+            for node in nx.topological_sort(G):
+                # Find the maximum level of predecessors
+                pred_levels = [levels.get(pred, -1) for pred in G.predecessors(node)]
+                levels[node] = max(pred_levels, default=-1) + 1
+            
+            # Assign positions based on levels
+            pos = {}
+            level_nodes = {}
+            for node, level in levels.items():
+                if level not in level_nodes:
+                    level_nodes[level] = []
+                level_nodes[level].append(node)
+            
+            # Position nodes
+            max_level = max(levels.values()) if levels else 0
+            for level, nodes in level_nodes.items():
+                y = max_level - level  # Reverse so top level is at top
+                n_nodes = len(nodes)
+                for i, node in enumerate(sorted(nodes)):  # Sort for consistency
+                    x = i - (n_nodes - 1) / 2.0  # Center nodes in level
+                    pos[node] = (x, y)
+            
+            # Scale positions
+            if pos:
+                xs = [p[0] for p in pos.values()]
+                ys = [p[1] for p in pos.values()]
+                x_range = max(xs) - min(xs) if max(xs) != min(xs) else 1.0
+                y_range = max(ys) - min(ys) if max(ys) != min(ys) else 1.0
+                
+                # Normalize to reasonable range
+                scale = 3.0
+                for node in pos:
+                    pos[node] = (
+                        (pos[node][0] - min(xs)) / x_range * scale - scale/2,
+                        (pos[node][1] - min(ys)) / y_range * scale - scale/2
+                    )
+            
+            return pos
+            
+        except Exception as e:
+            logger.warning(f"Hierarchical layout failed: {e}, using spring layout")
+            return nx.spring_layout(G, k=1.5, iterations=50, seed=42)
