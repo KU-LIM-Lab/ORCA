@@ -1,6 +1,7 @@
 from utils.llm import call_llm
 from langchain_core.language_models.chat_models import BaseChatModel
 from prompts.text2sql_generator_prompts import review_noresult_template, review_result_template
+from prompts.text2sql_for_causal_prompts import review_noresult_template_for_causal, review_result_template_for_causal
 
 
 def review_node(state, llm: BaseChatModel):
@@ -11,6 +12,7 @@ def review_node(state, llm: BaseChatModel):
     desc_str = state.get("desc_str")
     llm_review = state.get("llm_review", None)
     evidence = state.get("evidence", "")
+    mode = state.get('analysis_mode','full_pipeline')
 
     # if error
     if error:
@@ -24,12 +26,20 @@ def review_node(state, llm: BaseChatModel):
     else:
         # if no result
         if not result or (isinstance(result, str) and "no rows" in result.lower()):
-            prompt = review_noresult_template.format(
-                query=query,
-                desc_str=desc_str,
-                sql=sql,
-                evidence=evidence
-            )
+            if mode == 'data_exploration':
+                prompt = review_noresult_template.format(
+                    query=query,
+                    desc_str=desc_str,
+                    sql=sql,
+                    evidence=evidence
+                )
+            elif mode == 'full_pipeline':
+                prompt = review_noresult_template_for_causal.format(
+                    query=query,
+                    desc_str=desc_str,
+                    sql=sql,
+                    evidence=evidence
+                )
             print(f"Reviewing the SQL logic...")
             reply = call_llm(prompt, llm = llm)
             
@@ -57,10 +67,16 @@ def review_node(state, llm: BaseChatModel):
                                 }]}
 
         # if result
-        prompt = review_result_template.format(
-            query=query,
-            result=str(result)[:500]
-        )
+        if mode == 'data_exploration':
+            prompt = review_result_template.format(
+                query=query,
+                result=str(result)[:500]
+            )
+        elif mode == 'full_pipeline':
+            prompt = review_result_template_for_causal.format(
+                query=query,
+                result=str(result)[:500]
+            )
        
         print(f"Reviewing the final answer...")
         reply = call_llm(prompt, llm = llm)

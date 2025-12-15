@@ -47,6 +47,8 @@ def clean_nulls_node(state: Dict) -> Dict:
         state["df_cached"] = True
         state["df_raw"] = None
         state["_done_clean_nulls"] = True
+
+        print(tuple(cleaned_df.shape))
     except Exception as exc:
         state.setdefault("warnings", []).append(f"clean_nulls failed: {exc}")
 

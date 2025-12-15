@@ -1,7 +1,7 @@
 from langgraph.graph import StateGraph, END
 from .state import AgentState
-from .nodes.selector import selector_node
-from .nodes.decomposer import decomposer_node
+from .nodes.selector_patched import selector_node
+from .nodes.decomposer_patched import decomposer_node
 from .nodes.refiner import refiner_node
 from .nodes.review import review_node
 from .nodes.system import system_node

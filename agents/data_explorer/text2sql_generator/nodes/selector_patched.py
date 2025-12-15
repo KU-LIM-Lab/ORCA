@@ -24,6 +24,25 @@ def extract_metadata(table_name: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         "max": col_schema.get("max")
     } for col, col_schema in columns_schema.items()]
 
+    # If the causal selector provided explicit treatment/outcome mapping,
+    # force their tables to keep_all so downstream can retrieve the full table variables.
+    # def _extract_table_name(x):
+    #     if not x:
+    #         return None
+    #     if isinstance(x, str):
+    #         # allow "table.column" or "table"
+    #         return x.split(".")[0].strip()
+    #     if isinstance(x, dict):
+    #         return x.get("table") or x.get("table_name") or x.get("relation") or x.get("tbl")
+    #     return None
+
+    # t_table = _extract_table_name(treatment)
+    # y_table = _extract_table_name(outcome)
+    # for _tbl in [t_table, y_table]:
+    #     if _tbl and _tbl in table_columns:
+    #         extracted[_tbl] = "keep_all"
+
+
     return {
         "table_name": table_name,
         "description": meta.get("description", ""),
@@ -43,6 +62,17 @@ def format_metadata(table: Dict[str, Any]) -> str:
         ex_str = f" Value examples: {[repr(e) for e in col.get('examples', [])[:5]]}" if col.get("examples") else ""
         range_str = f" (Range: {col['min']} ~ {col['max']})" if col["min"] or col["max"] else ""
         lines.append(f"  ({col['name']}, {desc}.{ex_str}{range_str}),")
+
+    if lines[-1].endswith(","):
+        lines[-1] = lines[-1][:-1]
+    lines.append("]")
+    return "\n".join(lines)
+
+def format_metadata2(table: Dict[str, Any]) -> str:
+    lines = [f"# Table: {table['table_name']}", "["]
+    
+    for col in table["columns"]:
+        lines.append(f"  ({col['name']}")
 
     if lines[-1].endswith(","):
         lines[-1] = lines[-1][:-1]
@@ -74,36 +104,63 @@ def get_schema_summary(db_id, table_names: List[str]) -> tuple[str, str, List[Di
     return schema_str, fk_str, schema_tables
 
 
-def prune_schema_with_llm(db_id: str, schema_info: str, fk_info: str, query: str, evidence: str, llm: BaseChatModel, mode:str):
+def prune_schema_with_llm(db_id: str, schema_info: str, fk_info: str, query: str, evidence: str, llm: BaseChatModel, mode: str):
+    """Ask the LLM to prune schema. Supports both legacy and causal outputs.
 
-    if mode == 'data_exploration':
+    Legacy output (data_exploration):
+        {table_name: "keep_all" | "drop_all" | [col, ...], ...}
+
+    Causal output (full_pipeline) can be either legacy dict or the structured form:
+        {
+          "selected_schema": { ...legacy dict... },
+          "treatment": {"table": "...", "column": "..."}  # or "table.column"
+          "outcome":   {"table": "...", "column": "..."}  # or "table.column"
+        }
+
+    Returns:
+        (selected_schema: Dict[str, Any], treatment: Any, outcome: Any)
+    """
+
+    if mode == "data_exploration":
         prompt = selector_template.format(
             db_id=db_id,
             desc_str=schema_info,
             fk_str=fk_info,
             query=query,
-            evidence=evidence
+            evidence=evidence,
         )
-    elif mode == 'full_pipeline':
+    else:
+        # default to causal selector in full_pipeline and unknown modes
         prompt = selector_template_for_causal.format(
             db_id=db_id,
             desc_str=schema_info,
             fk_str=fk_info,
             query=query,
-            evidence=evidence
+            evidence=evidence,
         )
+
     res = call_llm(prompt, llm=llm)
 
     try:
         m = re.search(r"```json\s*([\s\S]+?)```", res)
         if not m:
             m = re.search(r"```([\s\S]+?)```", res)
-        if m:
-            res = m.group(1).strip()
-        return json.loads(res)
+        res_json = m.group(1).strip() if m else res.strip()
+
+        obj = json.loads(res_json)
+
+        # Structured causal output
+        if isinstance(obj, dict) and "selected_schema" in obj:
+            return obj.get("selected_schema", {}), obj.get("treatment"), obj.get("outcome")
+
+        # Legacy output
+        if isinstance(obj, dict):
+            return obj, None, None
+
+        return {}, None, None
     except Exception:
         print("❌ Failed to parse pruned schema:", res)
-        return {}
+        return {}, None, None
 
 
 def apply_pruning(schema_tables: List[Dict[str, Any]], extracted: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -139,11 +196,17 @@ def selector_node(state, llm: BaseChatModel):
     schema_info, fk_info, schema_tables = get_schema_summary(db_id, table_names)
     too_large = schema_info.count("# Table:") > 6 or schema_info.count("(") > 30
 
+    treatment_info, outcome_info = None, None
+    # Full column list for each table (used downstream to expand keep_all)
+    table_columns = {t.get('table_name'): [c.get('name') for c in t.get('columns', [])] for t in schema_tables}
+
     if too_large:
         print("📦 Schema too large. Pruning with LLM...")
-        extracted = prune_schema_with_llm(db_id, schema_info, fk_info, query, evidence, llm, mode)
+        extracted, treatment_info, outcome_info = prune_schema_with_llm(db_id, schema_info, fk_info, query, evidence, llm, mode)
         pruned_tables = apply_pruning(schema_tables, extracted)
         schema_info = "\n\n".join(format_metadata(t) for t in pruned_tables)
+        # extracted = "\n\n".join(format_metadata2(t) for t in pruned_tables)
+        
     else:
         extracted = {t["table_name"]: "keep_all" for t in schema_tables}
 
@@ -153,6 +216,9 @@ def selector_node(state, llm: BaseChatModel):
         "fk_str": fk_info,
         "extracted_schema": extracted,
         "pruned": too_large,
+        "treatment": treatment_info,
+        "outcome": outcome_info,
+        "table_columns": table_columns,
         "send_to": "decomposer_node",
         'messages': state.get("messages", []) + [
             {

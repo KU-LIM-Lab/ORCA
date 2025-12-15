@@ -53,5 +53,8 @@ def fetch_node(state: Dict) -> Dict:
     state["columns"] = list(df.columns) if df is not None else None
     state["df_cached"] = loaded_from_cache and redis_key is not None
 
+    print(tuple(df.shape))
+    print(list(df.columns))
+
     return state
 

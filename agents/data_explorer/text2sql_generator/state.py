@@ -5,6 +5,7 @@ class AgentState(TypedDict):
     db_id: str 
     query: str
     evidence: Optional[str] # if needed, related to the query
+    analysis_mode: str
 
     desc_str: Optional[str]
     fk_str: Optional[str]
