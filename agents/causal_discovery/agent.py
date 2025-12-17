@@ -70,7 +70,7 @@ ALGORITHM_LIST = [
     "ANM",        # additive noise (fully identifiable)
     "GES",        # score-based (BIC/generalized)
     "PC",         # constraint-based
-    "CAM",        # additive models
+    # "CAM",      # additive models (temporarily disabled)
     "FCI",        # allows latent confounders (PAG)
     "LiM",        # Linear Mixed model for mixed data
     "TSCM"        # Tree-Structured Causal Model for mixed data
@@ -89,7 +89,7 @@ ALGORITHM_FAMILIES_REP = {
 # Full algorithm sets per family (when run_all_tier_algorithms=True)
 ALGORITHM_FAMILIES_ALL = {
     "Linear": ["LiNGAM"],
-    "Nonlinear-FCM": ["ANM", "CAM"],
+    "Nonlinear-FCM": ["ANM"],
     "Constraint-based": ["PC"],
     "Score-based": ["GES"],
     "Latent-robust": ["FCI"]
@@ -573,14 +573,14 @@ class CausalDiscoveryAgent(SpecialistAgent):
                         "edit": {
                             "description": "Modify the execution plan",
                             "required_fields": {
-                                "execution_plan": {
-                                    "type": "list[dict]",
-                                    "description": "List of algorithm configurations",
-                                    "structure": {
-                                        "alg": "str (algorithm name: PC, GES, LiNGAM, ANM, FCI, CAM, LiM, TSCM)",
-                                        "ci_test": "str (optional, for PC/FCI: fisherz, gsq, kernel_kcit, lrt)",
-                                        "score": "str (optional, for GES: bic-g, bic-d, bic-cg, generalized_rkhs)"
-                                    },
+                        "execution_plan": {
+                            "type": "list[dict]",
+                            "description": "List of algorithm configurations",
+                            "structure": {
+                                "alg": "str (algorithm name: PC, GES, LiNGAM, ANM, FCI, LiM, TSCM)",
+                                "ci_test": "str (optional, for PC/FCI: fisherz, gsq, kernel_kcit, lrt)",
+                                "score": "str (optional, for GES: bic-g, bic-d, bic-cg, generalized_rkhs)"
+                            },
                                     "example": [
                                         {"alg": "PC", "ci_test": "fisherz"},
                                         {"alg": "GES", "score": "bic-g"},
@@ -708,7 +708,8 @@ class CausalDiscoveryAgent(SpecialistAgent):
             execution_plan.extend([
                 {"alg": "PC", "ci_test": "kernel_kcit"},
                 {"alg": "GES", "score": "generalized_rkhs"},
-                {"alg": "CAM"},
+                # CAM temporarily disabled from execution plan
+                # {"alg": "CAM"},
                 {"alg": "FCI", "ci_test": "kernel_kcit"}
             ])
             

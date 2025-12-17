@@ -52,9 +52,9 @@ def _generate_graph_adj(
         else:
             G.add_edge(v, u)
     
-    adj = np.zeros((n_nodes, n_nodes), dtype=float)
+    adj = np.zeros((n_nodes, n_nodes), dtype=int)
     for i, j in G.edges():
-        adj[i, j] = 1.0
+        adj[i, j] = 1
     return adj
 
 def _simulate_sem_cd(
@@ -72,7 +72,7 @@ def _simulate_sem_cd(
     weights = rng.uniform(0.5, 1.5, size=adj.shape) * (rng.choice([-1.0, 1.0], size=adj.shape))
     weights = weights * (adj > 0)
 
-    X = np.zeros((n_samples, n), dtype=float)
+    X = np.zeros((n_samples, n), dtype=int)
 
     if noise_type == "non-gaussian":
         noise_data = rng.laplace(0.0, 1.0, size=(n_samples, n))
@@ -108,86 +108,180 @@ def _simulate_sem_cd(
 
     return df, G_truth
 
-def generate_cd_benchmarks(base_dir: str = "data/synthetic_cd", main_seed: int = 42, n_repeats: int = 5):
-    """
-    Generates and saves all Causal Discovery (CD) benchmark datasets.
+def _parse_int_list_csv(s: str) -> list[int]:
+    """Parse comma-separated integers like '3,5,10' into a list."""
+    items = [x.strip() for x in s.split(",") if x.strip()]
+    out: list[int] = []
+    for x in items:
+        try:
+            out.append(int(x))
+        except ValueError as e:
+            raise ValueError(f"Invalid integer in list: '{x}' from '{s}'") from e
+    if not out:
+        raise ValueError("d_list cannot be empty")
+    return out
+
+
+def _determine_n_samples(d: int, n_policy: str, n_fixed: int, n_coef: float) -> int:
+    """Return n as a function of d according to a policy."""
+    if n_policy == "fixed":
+        n = int(n_fixed)
+    elif n_policy == "linear":
+        n = int(round(n_coef * d))
+    elif n_policy == "dlogd":
+        n = int(round(n_coef * d * float(np.log(max(d, 2)))))
+    else:
+        raise ValueError(f"Unknown n_policy: {n_policy}. Choose from fixed|linear|dlogd")
+
+    return max(10, n)
+
+def generate_cd_benchmarks(
+    base_dir: str = "data/synthetic_cd",
+    main_seed: int = 42,
+    n_repeats: int = 5,
+    d_list: list[int] | None = None,
+    n_policy: str = "linear",
+    n_fixed: int = 2000,
+    n_coef: float = 100.0,
+    avg_degree: float = 8.0,
+    m_override: int | None = None,
+):
+    """Generates and saves Causal Discovery (CD) benchmark datasets.
+
+    This generator supports a grid over:
+      - scenario templates (graph/scm/noise)
+      - dimensions d in d_list
+      - repeats (run_000..)
+
+    n can be scaled with d via n_policy:
+      - fixed:  n = n_fixed
+      - linear: n = n_coef * d
+      - dlogd:  n = n_coef * d * log(d)
+
+    Graph sparsity is controlled via avg_degree (undirected average degree before orientation).
+    For ER graphs, p is derived as avg_degree/(d-1). For SF graphs, m is set to round(avg_degree/2)
+    unless m_override is provided.
     """
     print(f"--- 1. Generating Causal Discovery (CD) Benchmarks ({n_repeats} repeats) ---")
-    
-    scenarios = {
-        "CD-1_Baseline":   {"graph": "er", "scm": "linear", "noise": "gaussian", "n": 2000, "d": 20, "p": 0.2, "m": 2},
-        "CD-2_Graph":      {"graph": "sf", "scm": "linear", "noise": "gaussian", "n": 2000, "d": 20, "p": 0.2, "m": 2},
-        "CD-3_Noise":      {"graph": "er", "scm": "linear", "noise": "non-gaussian", "n": 2000, "d": 20, "p": 0.2, "m": 2},
-        "CD-4_SCM":        {"graph": "er", "scm": "non-linear", "noise": "gaussian", "n": 2000, "d": 20, "p": 0.2, "m": 2},
-        "CD-5_Complex":    {"graph": "sf", "scm": "non-linear", "noise": "non-gaussian", "n": 2000, "d": 20, "p": 0.2, "m": 2},
-        "CD-6_Scaling_ER": {"graph": "er", "scm": "linear", "noise": "gaussian", "n": 100, "d": 500, "avg_degree": 4, "m": 2},
-        "CD-7_Scaling_SF": {"graph": "sf", "scm": "linear", "noise": "gaussian", "n": 100, "d": 500, "p": 0.2, "m": 4},
+
+    if d_list is None:
+        d_list = [2, 3, 5, 10, 30, 50, 100]
+
+    # Scenario templates
+    scenario_templates = {
+        "CD-1_Baseline": {"graph": "er", "scm": "linear", "noise": "gaussian"},
+        "CD-2_Graph": {"graph": "sf", "scm": "linear", "noise": "gaussian"},
+        "CD-3_Noise": {"graph": "er", "scm": "linear", "noise": "non-gaussian"},
+        "CD-4_SCM": {"graph": "er", "scm": "non-linear", "noise": "gaussian"},
+        "CD-5_Complex": {"graph": "sf", "scm": "non-linear", "noise": "non-gaussian"},
     }
 
     master_rng = np.random.default_rng(main_seed)
 
-    for i, (name, config) in enumerate(scenarios.items()):
-        print(f"\nGenerating Scenario: {name} ({n_repeats} repeats)...")
-        scenario_base_dir = os.path.join(base_dir, name)
+    for name, tmpl in scenario_templates.items():
+        print(f"\nGenerating Scenario: {name} over d_list={d_list} ({n_repeats} repeats each)...")
 
-        for r in range(n_repeats):
-            run_seed = master_rng.integers(1e9)
-            rng = np.random.default_rng(run_seed)
+        for d in d_list:
+            scenario_d_base_dir = os.path.join(base_dir, name, f"d_{d}")
+            os.makedirs(scenario_d_base_dir, exist_ok=True)
 
-            run_dir = os.path.join(scenario_base_dir, f"run_{r:03d}")
-            os.makedirs(run_dir, exist_ok=True)
+            n_samples = _determine_n_samples(d=d, n_policy=n_policy, n_fixed=n_fixed, n_coef=n_coef)
 
-            run_config = config.copy()
-            run_config["seed"] = int(run_seed)
+            for r in range(n_repeats):
+                run_seed = int(master_rng.integers(1_000_000_000))
+                rng = np.random.default_rng(run_seed)
 
-            adj = _generate_graph_adj(
-                n_nodes=run_config["d"],
-                rng=rng,
-                graph_type=run_config["graph"],
-                p=run_config.get("p"),
-                avg_degree=run_config.get("avg_degree", 2.0),
-                m=run_config.get("m", 2)
-            )
+                run_dir = os.path.join(scenario_d_base_dir, f"run_{r:03d}")
+                os.makedirs(run_dir, exist_ok=True)
 
-            df, G_truth = _simulate_sem_cd(
-                adj,
-                n_samples=run_config["n"],
-                rng=rng,
-                scm_type=run_config["scm"],
-                noise_type=run_config["noise"]
-            )
+                # Determine graph parameters
+                graph_type = tmpl["graph"]
+                p_used: float | None = None
+                m_used: int | None = None
 
-            # --- 저장 ---
-            df.to_csv(os.path.join(run_dir, "data.csv"), index=False)
-            nx.write_gml(G_truth, os.path.join(run_dir, "graph_truth.gml"))
+                if graph_type == "er":
+                    p_used = float(avg_degree / (d - 1)) if d > 1 else 0.0
+                    adj = _generate_graph_adj(
+                        n_nodes=d,
+                        rng=rng,
+                        graph_type="er",
+                        p=None,
+                        avg_degree=avg_degree,
+                        m=2,
+                    )
+                elif graph_type == "sf":
+                    m_auto = max(1, int(round(avg_degree / 2.0)))
+                    m_used = int(m_override) if m_override is not None else int(m_auto)
+                    adj = _generate_graph_adj(
+                        n_nodes=d,
+                        rng=rng,
+                        graph_type="sf",
+                        p=None,
+                        avg_degree=avg_degree,
+                        m=m_used,
+                    )
+                else:
+                    raise ValueError(f"Unknown graph_type: {graph_type}")
 
-            adj_int = np.zeros((run_config["d"], run_config["d"]), dtype=int)
-            for u_name, v_name in G_truth.edges():
-                u_idx = int(u_name[1:])  # "V12" -> 12
-                v_idx = int(v_name[1:])
-                adj_int[u_idx, v_idx] = 1
+                df, G_truth = _simulate_sem_cd(
+                    adj,
+                    n_samples=n_samples,
+                    rng=rng,
+                    scm_type=tmpl["scm"],
+                    noise_type=tmpl["noise"],
+                )
 
-            np.save(os.path.join(run_dir, "adj.npy"), adj_int)
+                # Save data
+                df.to_csv(os.path.join(run_dir, "data.csv"), index=False)
+                nx.write_gml(G_truth, os.path.join(run_dir, "graph_truth.gml"))
 
-            # adj_int에서 edges.csv 생성
-            u_nodes, v_nodes = np.where(adj_int > 0)
-            pd.DataFrame({"u": u_nodes, "v": v_nodes}).to_csv(
-                os.path.join(run_dir, "edges.csv"), index=False
-            )
+                # Build integer adjacency from G_truth
+                adj_int = np.zeros((d, d), dtype=int)
+                for u_name, v_name in G_truth.edges():
+                    u_idx = int(u_name[1:])  # "V12" -> 12
+                    v_idx = int(v_name[1:])
+                    adj_int[u_idx, v_idx] = 1
 
-            clean_config = {k: v for k, v in run_config.items() if isinstance(v, (int, float, str, bool, list, dict))}
-            
-            num_edges = int(adj_int.sum())
-            clean_config["num_edges"] = num_edges
-            clean_config["avg_degree_realized"] = float(num_edges / run_config["d"]) if run_config["d"] > 0 else 0.0
+                np.save(os.path.join(run_dir, "adj.npy"), adj_int)
 
-            with open(os.path.join(run_dir, "config.json"), "w") as f:
-                json.dump(clean_config, f, indent=2)
+                u_nodes, v_nodes = np.where(adj_int > 0)
+                pd.DataFrame({"u": u_nodes, "v": v_nodes}).to_csv(
+                    os.path.join(run_dir, "edges.csv"), index=False
+                )
+
+                # Save config
+                num_edges = int(adj_int.sum())
+                # Realized average out-degree (directed) = num_edges/d
+                avg_degree_realized = float(num_edges / d) if d > 0 else 0.0
+
+                run_config = {
+                    "scenario": name,
+                    "graph": graph_type,
+                    "scm": tmpl["scm"],
+                    "noise": tmpl["noise"],
+                    "n": int(n_samples),
+                    "d": int(d),
+                    "seed": int(run_seed),
+                    "n_policy": n_policy,
+                    "n_fixed": int(n_fixed),
+                    "n_coef": float(n_coef),
+                    "avg_degree_target": float(avg_degree),
+                    "p_used": float(p_used) if p_used is not None else None,
+                    "m_used": int(m_used) if m_used is not None else None,
+                    "num_edges": num_edges,
+                    "avg_degree_realized": avg_degree_realized,
+                }
+
+                # Remove Nones for cleaner json
+                clean_config = {k: v for k, v in run_config.items() if v is not None}
+
+                with open(os.path.join(run_dir, "config.json"), "w") as f:
+                    json.dump(clean_config, f, indent=2)
 
     print("Causal Discovery benchmarks generated.")
 
 
-# --- 2. Causal Inference (CI) 벤치마크 생성기 ---
+# --- 2. Causal Inference (CI) Benchmark ---
 
 def generate_ci_synthetic(
     n_samples: int,
@@ -276,7 +370,7 @@ def generate_ci_benchmarks(base_dir: str = "data/synthetic_ci", main_seed: int =
                 rng=rng
             )
 
-            # --- 저장 ---
+            # Save data
             df_data.to_csv(os.path.join(run_dir, "data.csv"), index=False)
 
             clean_config = {k: v for k, v in run_config.items() if isinstance(v, (int, float, str, bool, list, dict))}
@@ -292,8 +386,6 @@ def generate_ci_benchmarks(base_dir: str = "data/synthetic_ci", main_seed: int =
             
     print("Causal Inference benchmarks generated.")
 
-
-# --- 3. 메인 실행 ---
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -318,11 +410,59 @@ if __name__ == "__main__":
         default=5,
         help="Number of datasets (repeats/runs) to generate per scenario."
     )
+    parser.add_argument(
+        "--d_list",
+        type=str,
+        default="3,5,10,30,50,100",
+        help="Comma-separated list of dimensions for CD (e.g., '3,5,10,30,50,100')."
+    )
+    parser.add_argument(
+        "--n_policy",
+        type=str,
+        choices=["fixed", "linear", "dlogd"],
+        default="linear",
+        help="CD sample-size scaling policy as a function of d."
+    )
+    parser.add_argument(
+        "--n_fixed",
+        type=int,
+        default=2000,
+        help="CD fixed n when n_policy='fixed'."
+    )
+    parser.add_argument(
+        "--n_coef",
+        type=float,
+        default=100.0,
+        help="CD coefficient for n_policy (linear: n=n_coef*d, dlogd: n=n_coef*d*log(d))."
+    )
+    parser.add_argument(
+        "--avg_degree",
+        type=float,
+        default=8.0,
+        help="Target average degree (undirected before orientation). For ER this implies expected edges ≈ d*avg_degree/2."
+    )
+    parser.add_argument(
+        "--m_override",
+        type=int,
+        default=None,
+        help="Optional override for SF m (default is round(avg_degree/2))."
+    )
     
     args = parser.parse_args()
     
     if args.suite == "cd" or args.suite == "all":
-        generate_cd_benchmarks(base_dir="data/synthetic_cd", main_seed=args.seed, n_repeats=args.n_repeats)
+        d_list = _parse_int_list_csv(args.d_list)
+        generate_cd_benchmarks(
+            base_dir="data/synthetic_cd",
+            main_seed=args.seed,
+            n_repeats=args.n_repeats,
+            d_list=d_list,
+            n_policy=args.n_policy,
+            n_fixed=args.n_fixed,
+            n_coef=args.n_coef,
+            avg_degree=args.avg_degree,
+            m_override=args.m_override,
+        )
         
     if args.suite == "ci" or args.suite == "all":
         generate_ci_benchmarks(base_dir="data/synthetic_ci", main_seed=args.seed, n_repeats=args.n_repeats)

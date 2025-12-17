@@ -1,0 +1,50 @@
+global:
+  results_dir: experiments/results/graph_discovery
+  seed: 0
+
+experiments:
+  # 1) Minimal sanity-check experiment to verify each method runs
+  - name: all_methods_synthetic
+    dataset: synthetic_cd
+    methods:
+      - notears_linear
+      - notears_nonlinear
+      - autocd
+      - lingam
+      - anm
+      - orca
+    # Restrict to a single run for quick checks
+    scenarios: [] # [] → all scenarios
+    d_list: null # null → all dimensionalities
+    runs: 1 # run_id < 1 → only first run
+    run_indices: null
+    results_dir: experiments/results/graph_discovery
+    seed: 0
+
+  # 2) Full synthetic_cd benchmark: all scenarios / d / runs
+  - name: full_synthetic_cd
+    dataset: synthetic_cd
+    methods:
+      - notears_linear
+      - notears_nonlinear
+      - autocd
+      - lingam
+      - anm
+      - orca
+    #   → iter_synthetic_cd_runs will iterate over all available data
+    results_dir: experiments/results/graph_discovery
+    seed: 0
+
+  # 3) Full bnlearn benchmark: all available bnlearn datasets
+  - name: full_bnlearn
+    dataset: bnlearn
+    methods:
+      - notears_linear
+      - notears_nonlinear
+      - autocd
+      - lingam
+      - anm
+      - orca
+    # will iterate over all bnlearn datasets found on disk.
+    results_dir: experiments/results/graph_discovery
+    seed: 0
