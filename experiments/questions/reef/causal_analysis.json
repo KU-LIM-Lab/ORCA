@@ -15,7 +15,8 @@
     "estimation_method": "backdoor.linear_regression",
     "treatment_type": "continuous",
     "outcome_type": "continuous",
-    "n_samples": 49
+    "n_samples": 49,
+    "sql_query": "SELECT\n  c.category_popularity_score AS category_popularity_score,\n  b.brand_strength_score      AS brand_strength_score\nFROM brands b\nJOIN categories c ON b.category_id = c.category_id\nWHERE c.category_popularity_score IS NOT NULL\n  AND b.brand_strength_score IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of age on avg_browsing_time?",
@@ -33,7 +34,8 @@
     "estimation_method": "backdoor.linear_regression",
     "treatment_type": "count",
     "outcome_type": "continuous",
-    "n_samples": 10000
+    "n_samples": 10000,
+    "sql_query": "SELECT\n  u.age AS age,\n  u.avg_browsing_time AS avg_browsing_time\nFROM users u\nWHERE u.age IS NOT NULL\n  AND u.avg_browsing_time IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of gender on avg_browsing_time?",
@@ -51,7 +53,8 @@
     "estimation_method": "backdoor.linear_regression",
     "treatment_type": "binary",
     "outcome_type": "continuous",
-    "n_samples": 10000
+    "n_samples": 10000,
+    "sql_query": "SELECT\n  u.gender AS gender,\n  u.avg_browsing_time AS avg_browsing_time\nFROM users u\nWHERE u.gender IS NOT NULL\n  AND u.avg_browsing_time IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of avg_browsing_time on is_active?",
@@ -62,14 +65,15 @@
     "instrumental_variables": [],
     "ground_truth_ate": 0.003170673018552228,
     "confidence_interval": [
-      0.003057485402633342,
-      0.0033221130203922727
+      0.0030448263113192625,
+      0.003324486001147431
     ],
     "p_value": null,
     "estimation_method": "backdoor.generalized_linear_model",
     "treatment_type": "continuous",
     "outcome_type": "binary",
-    "n_samples": 10000
+    "n_samples": 10000,
+    "sql_query": "SELECT\n  u.avg_browsing_time AS avg_browsing_time,\n  u.is_active         AS is_active\nFROM users u\nWHERE u.avg_browsing_time IS NOT NULL\n  AND u.is_active IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of signup_days_ago on is_active?",
@@ -78,16 +82,17 @@
     "confounders": [],
     "mediators": [],
     "instrumental_variables": [],
-    "ground_truth_ate": -0.000779119275184259,
+    "ground_truth_ate": -0.0007790752966546632,
     "confidence_interval": [
-      -0.0007983691365486267,
-      -0.0007571303072121394
+      -0.000801917994772583,
+      -0.0007569594801427604
     ],
     "p_value": null,
     "estimation_method": "backdoor.generalized_linear_model",
     "treatment_type": "continuous",
     "outcome_type": "binary",
-    "n_samples": 10000
+    "n_samples": 10000,
+    "sql_query": "SELECT\n  EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - u.created_at)) / 86400.0 AS signup_days_ago,\n  u.is_active AS is_active\nFROM users u\nWHERE u.created_at IS NOT NULL\n  AND u.is_active IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of sku_price on unit_price?",
@@ -105,7 +110,8 @@
     "estimation_method": "backdoor.linear_regression",
     "treatment_type": "continuous",
     "outcome_type": "continuous",
-    "n_samples": 29972
+    "n_samples": 29972,
+    "sql_query": "SELECT\n  s.price      AS sku_price,\n  oi.unit_price AS unit_price\nFROM order_items oi\nJOIN sku s ON oi.sku_id = s.sku_id\nWHERE s.price IS NOT NULL\n  AND oi.unit_price IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of quantity on total_price?",
@@ -125,7 +131,8 @@
     "estimation_method": "backdoor.linear_regression",
     "treatment_type": "count",
     "outcome_type": "continuous",
-    "n_samples": 29972
+    "n_samples": 29972,
+    "sql_query": "SELECT\n  oi.quantity   AS quantity,\n  oi.unit_price AS unit_price,\n  oi.total_price AS total_price\nFROM order_items oi\nWHERE oi.quantity IS NOT NULL\n  AND oi.total_price IS NOT NULL\n  AND oi.unit_price IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of unit_price on total_price?",
@@ -145,7 +152,8 @@
     "estimation_method": "backdoor.linear_regression",
     "treatment_type": "continuous",
     "outcome_type": "continuous",
-    "n_samples": 29972
+    "n_samples": 29972,
+    "sql_query": "SELECT\n  oi.unit_price  AS unit_price,\n  oi.quantity    AS quantity,\n  oi.total_price AS total_price\nFROM order_items oi\nWHERE oi.unit_price IS NOT NULL\n  AND oi.total_price IS NOT NULL\n  AND oi.quantity IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of order_item_total_price on subtotal_amount?",
@@ -163,7 +171,8 @@
     "estimation_method": "backdoor.linear_regression",
     "treatment_type": "continuous",
     "outcome_type": "continuous",
-    "n_samples": 29972
+    "n_samples": 29972,
+    "sql_query": "SELECT\n  oi.total_price AS order_item_total_price,\n  o.subtotal_amount AS subtotal_amount\nFROM order_items oi\nJOIN orders o ON oi.order_id = o.order_id\nWHERE oi.total_price IS NOT NULL\n  AND o.subtotal_amount IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of subtotal_amount on total_amount?",
@@ -181,7 +190,8 @@
     "estimation_method": "backdoor.linear_regression",
     "treatment_type": "continuous",
     "outcome_type": "continuous",
-    "n_samples": 10000
+    "n_samples": 10000,
+    "sql_query": "SELECT\n  o.subtotal_amount AS subtotal_amount,\n  o.total_amount    AS total_amount\nFROM orders o\nWHERE o.subtotal_amount IS NOT NULL\n  AND o.total_amount IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of discount_amount on total_amount?",
@@ -201,7 +211,8 @@
     "estimation_method": "backdoor.linear_regression",
     "treatment_type": "continuous",
     "outcome_type": "continuous",
-    "n_samples": 10000
+    "n_samples": 10000,
+    "sql_query": "SELECT\n  o.discount_amount AS discount_amount,\n  o.subtotal_amount AS subtotal_amount,\n  o.total_amount AS total_amount\nFROM orders o\nWHERE o.discount_amount IS NOT NULL\n  AND o.total_amount IS NOT NULL\n  AND o.subtotal_amount IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of point_balance on point_used?",
@@ -219,7 +230,8 @@
     "estimation_method": "backdoor.linear_regression",
     "treatment_type": "continuous",
     "outcome_type": "continuous",
-    "n_samples": 10000
+    "n_samples": 10000,
+    "sql_query": "SELECT\n  u.point_balance AS point_balance,\n  o.point_used    AS point_used\nFROM orders o\nJOIN users u ON o.user_id = u.user_id\nWHERE u.point_balance IS NOT NULL\n  AND o.point_used IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of point_used on total_amount?",
@@ -240,7 +252,8 @@
     "estimation_method": "backdoor.linear_regression",
     "treatment_type": "continuous",
     "outcome_type": "continuous",
-    "n_samples": 10000
+    "n_samples": 10000,
+    "sql_query": "SELECT\n  o.point_used AS point_used,\n  o.subtotal_amount AS subtotal_amount,\n  o.discount_amount AS discount_amount,\n  o.total_amount AS total_amount\nFROM orders o\nWHERE o.point_used IS NOT NULL\n  AND o.total_amount IS NOT NULL\n  AND o.subtotal_amount IS NOT NULL\n  AND o.discount_amount IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of order_created_at on payment_delay_days?",
@@ -258,7 +271,8 @@
     "estimation_method": "backdoor.linear_regression",
     "treatment_type": "continuous",
     "outcome_type": "continuous",
-    "n_samples": 9024
+    "n_samples": 9024,
+    "sql_query": "SELECT\n  EXTRACT(EPOCH FROM o.created_at) AS order_created_at_epoch,\n  EXTRACT(EPOCH FROM (p.payment_date - o.created_at)) / 86400.0 AS payment_delay_days\nFROM orders o\nJOIN payment p ON p.order_id = o.order_id\nWHERE o.created_at IS NOT NULL\n  AND p.payment_date IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of payment_delay_days on payment_completed?",
@@ -278,7 +292,8 @@
     "estimation_method": "backdoor.generalized_linear_model",
     "treatment_type": "continuous",
     "outcome_type": "count",
-    "n_samples": 9024
+    "n_samples": 9024,
+    "sql_query": "SELECT\n  EXTRACT(EPOCH FROM (p.payment_date - o.created_at)) / 86400.0 AS payment_delay_days,\n  CASE WHEN p.payment_status = 'COMPLETED' THEN 1 ELSE 0 END AS payment_completed,\n  o.total_amount AS order_total_amount\nFROM payment p\nJOIN orders o ON p.order_id = o.order_id\nWHERE p.payment_date IS NOT NULL\n  AND p.payment_status IS NOT NULL\n  AND o.created_at IS NOT NULL\n  AND o.total_amount IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of payment_date on shipped_delay_days?",
@@ -289,14 +304,15 @@
     "instrumental_variables": [],
     "ground_truth_ate": -1.968494700577139e-09,
     "confidence_interval": [
-      -3.9166146854214505e-09,
-      -2.037684362185278e-11
+      -3.916614685421454e-09,
+      -2.0376843621859397e-11
     ],
     "p_value": null,
     "estimation_method": "backdoor.linear_regression",
     "treatment_type": "continuous",
     "outcome_type": "continuous",
-    "n_samples": 9024
+    "n_samples": 9024,
+    "sql_query": "SELECT\n  EXTRACT(EPOCH FROM (s.shipped_at - p.payment_date)) / 86400.0 AS shipped_delay_days,\n  EXTRACT(EPOCH FROM p.payment_date) AS payment_date_epoch\nFROM shipping s\nJOIN payment p ON s.order_id = p.order_id\nWHERE s.shipped_at IS NOT NULL\n  AND p.payment_date IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of shipped_at on delivery_time_days?",
@@ -314,7 +330,8 @@
     "estimation_method": "backdoor.linear_regression",
     "treatment_type": "continuous",
     "outcome_type": "continuous",
-    "n_samples": 9024
+    "n_samples": 9024,
+    "sql_query": "SELECT\n  EXTRACT(EPOCH FROM s.shipped_at) AS shipped_at_epoch,\n  EXTRACT(EPOCH FROM (s.delivered_at - s.shipped_at)) / 86400.0 AS delivery_time_days\nFROM shipping s\nWHERE s.shipped_at IS NOT NULL\n  AND s.delivered_at IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of delivery_time_days on review_lag_days?",
@@ -325,14 +342,15 @@
     "instrumental_variables": [],
     "ground_truth_ate": 0.01947216901399962,
     "confidence_interval": [
-      -0.166444861133687,
-      0.20538919916169018
+      -0.16644486113368517,
+      0.2053891991616873
     ],
     "p_value": null,
     "estimation_method": "backdoor.linear_regression",
     "treatment_type": "continuous",
     "outcome_type": "continuous",
-    "n_samples": 3000
+    "n_samples": 3000,
+    "sql_query": "SELECT\n  EXTRACT(EPOCH FROM (s.delivered_at - s.shipped_at)) / 86400.0 AS delivery_time_days,\n  EXTRACT(EPOCH FROM (r.created_at - s.delivered_at)) / 86400.0 AS review_lag_days\nFROM shipping s\nJOIN review r ON r.order_id = s.order_id\nWHERE s.shipped_at IS NOT NULL\n  AND s.delivered_at IS NOT NULL\n  AND r.created_at IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of review_created_at_days_ago on review_score?",
@@ -343,16 +361,17 @@
     ],
     "mediators": [],
     "instrumental_variables": [],
-    "ground_truth_ate": -0.0006226315582438247,
+    "ground_truth_ate": -0.000622634515602627,
     "confidence_interval": [
-      -0.0006969901452542615,
-      -0.0005440906207105911
+      -0.0006972940637055558,
+      -0.0005521199092521911
     ],
     "p_value": null,
     "estimation_method": "backdoor.generalized_linear_model",
     "treatment_type": "continuous",
     "outcome_type": "count",
-    "n_samples": 3000
+    "n_samples": 3000,
+    "sql_query": "SELECT\n  EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - r.created_at)) / 86400.0 AS review_days_ago,\n  r.score AS review_score,\n  EXTRACT(EPOCH FROM (p.payment_date - o.created_at)) / 86400.0 AS payment_delay_days\nFROM review r\nJOIN orders o ON r.order_id = o.order_id\nLEFT JOIN payment p ON p.order_id = o.order_id\nWHERE r.created_at IS NOT NULL\n  AND r.score IS NOT NULL\n  AND o.created_at IS NOT NULL\n  AND p.payment_date IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of promo_start_at on coupon_start_date?",
@@ -370,7 +389,8 @@
     "estimation_method": "backdoor.linear_regression",
     "treatment_type": "continuous",
     "outcome_type": "continuous",
-    "n_samples": 100
+    "n_samples": 100,
+    "sql_query": "SELECT\n  EXTRACT(EPOCH FROM pr.start_at) AS promo_start_epoch,\n  EXTRACT(EPOCH FROM c.start_date) AS coupon_start_epoch\nFROM promotion pr\nJOIN coupon c ON c.promo_id = pr.promo_id\nWHERE pr.start_at IS NOT NULL\n  AND c.start_date IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of discount_strength on discount_amount?",
@@ -390,7 +410,8 @@
     "estimation_method": "backdoor.linear_regression",
     "treatment_type": "continuous",
     "outcome_type": "continuous",
-    "n_samples": 19
+    "n_samples": 19,
+    "sql_query": "SELECT\n  c.discount_strength AS discount_strength,\n  o.subtotal_amount AS subtotal_amount,\n  o.discount_amount AS discount_amount\nFROM orders o\nJOIN coupon c ON o.coupon_used = c.coupon_id\nWHERE c.discount_strength IS NOT NULL\n  AND o.subtotal_amount IS NOT NULL\n  AND o.discount_amount IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of coupon_used on total_amount?",
@@ -413,7 +434,8 @@
     "estimation_method": "backdoor.linear_regression",
     "treatment_type": "binary",
     "outcome_type": "continuous",
-    "n_samples": 10000
+    "n_samples": 10000,
+    "sql_query": "SELECT\n  CASE WHEN o.coupon_used IS NOT NULL THEN 1 ELSE 0 END AS used_coupon,\n  o.subtotal_amount AS subtotal_amount,\n  o.point_used AS point_used,\n  o.discount_amount AS discount_amount,\n  o.total_amount AS total_amount\nFROM orders o\nWHERE o.subtotal_amount IS NOT NULL\n  AND o.point_used IS NOT NULL\n  AND o.discount_amount IS NOT NULL\n  AND o.total_amount IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of discount_amount on payment_completed?",
@@ -426,14 +448,15 @@
     "instrumental_variables": [],
     "ground_truth_ate": 0.0021905033997312584,
     "confidence_interval": [
-      -0.09539666011397097,
-      0.0061634434193903465
+      -0.09428085170246314,
+      0.006165408031828745
     ],
     "p_value": null,
     "estimation_method": "backdoor.generalized_linear_model",
     "treatment_type": "continuous",
     "outcome_type": "binary",
-    "n_samples": 10000
+    "n_samples": 10000,
+    "sql_query": "SELECT\n  o.discount_amount AS discount_amount,\n  o.total_amount AS order_total_amount,\n  CASE WHEN p.payment_status = 'COMPLETED' THEN 1 ELSE 0 END AS payment_completed\nFROM orders o\nJOIN payment p ON p.order_id = o.order_id\nWHERE o.discount_amount IS NOT NULL\n  AND o.total_amount IS NOT NULL\n  AND p.payment_status IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of total_amount on payment_failed?",
@@ -446,14 +469,15 @@
     "instrumental_variables": [],
     "ground_truth_ate": 7.543968929393796e-05,
     "confidence_interval": [
-      1.963511607337709e-05,
-      0.0001581535177740956
+      1.7744724924259603e-05,
+      0.00014667911044224935
     ],
     "p_value": null,
     "estimation_method": "backdoor.generalized_linear_model",
     "treatment_type": "continuous",
     "outcome_type": "binary",
-    "n_samples": 10000
+    "n_samples": 10000,
+    "sql_query": "SELECT\n  o.total_amount AS total_amount,\n  u.age AS user_age,\n  CASE WHEN p.payment_status = 'FAILED' THEN 1 ELSE 0 END AS payment_failed\nFROM orders o\nJOIN users u ON o.user_id = u.user_id\nJOIN payment p ON p.order_id = o.order_id\nWHERE o.total_amount IS NOT NULL\n  AND u.age IS NOT NULL\n  AND p.payment_status IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of point_used on payment_completed?",
@@ -467,14 +491,15 @@
     "instrumental_variables": [],
     "ground_truth_ate": 7.965143458965596e-05,
     "confidence_interval": [
-      -4.568730010134914e-05,
-      0.00019557103282796806
+      -4.711314781202791e-05,
+      0.00020718095643301737
     ],
     "p_value": null,
     "estimation_method": "backdoor.generalized_linear_model",
     "treatment_type": "continuous",
     "outcome_type": "binary",
-    "n_samples": 10000
+    "n_samples": 10000,
+    "sql_query": "SELECT\n  o.point_used AS point_used,\n  o.subtotal_amount AS subtotal_amount,\n  o.discount_amount AS discount_amount,\n  CASE WHEN p.payment_status = 'COMPLETED' THEN 1 ELSE 0 END AS payment_completed\nFROM orders o\nJOIN payment p ON p.order_id = o.order_id\nWHERE o.point_used IS NOT NULL\n  AND o.subtotal_amount IS NOT NULL\n  AND o.discount_amount IS NOT NULL\n  AND p.payment_status IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of payment_delay_days on delivery_time_days?",
@@ -496,7 +521,8 @@
     "estimation_method": "backdoor.linear_regression",
     "treatment_type": "continuous",
     "outcome_type": "continuous",
-    "n_samples": 9024
+    "n_samples": 9024,
+    "sql_query": "SELECT\n  EXTRACT(EPOCH FROM (p.payment_date - o.created_at)) / 86400.0 AS payment_delay_days,\n  o.total_amount AS order_total_amount,\n  EXTRACT(EPOCH FROM (s.shipped_at - p.payment_date)) / 86400.0 AS shipped_delay_days,\n  EXTRACT(EPOCH FROM (s.delivered_at - s.shipped_at)) / 86400.0 AS delivery_time_days\nFROM orders o\nJOIN payment p ON p.order_id = o.order_id\nJOIN shipping s ON s.order_id = o.order_id\nWHERE o.created_at IS NOT NULL\n  AND p.payment_date IS NOT NULL\n  AND o.total_amount IS NOT NULL\n  AND s.shipped_at IS NOT NULL\n  AND s.delivered_at IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of delivery_time_days on review_score?",
@@ -511,14 +537,15 @@
     "instrumental_variables": [],
     "ground_truth_ate": -0.05470209058615971,
     "confidence_interval": [
-      -0.08050052900184745,
-      -0.03428732846567595
+      -0.07678930909392978,
+      -0.03087693617829146
     ],
     "p_value": null,
     "estimation_method": "backdoor.generalized_linear_model",
     "treatment_type": "continuous",
     "outcome_type": "count",
-    "n_samples": 3000
+    "n_samples": 3000,
+    "sql_query": "SELECT\n  EXTRACT(EPOCH FROM (s.delivered_at - s.shipped_at)) / 86400.0 AS delivery_time_days,\n  EXTRACT(EPOCH FROM (p.payment_date - o.created_at)) / 86400.0 AS payment_delay_days,\n  EXTRACT(EPOCH FROM (r.created_at - s.delivered_at)) / 86400.0 AS review_lag_days,\n  r.score AS review_score\nFROM orders o\nJOIN payment p ON p.order_id = o.order_id\nJOIN shipping s ON s.order_id = o.order_id\nJOIN review r ON r.order_id = o.order_id\nWHERE o.created_at IS NOT NULL\n  AND p.payment_date IS NOT NULL\n  AND s.shipped_at IS NOT NULL\n  AND s.delivered_at IS NOT NULL\n  AND r.created_at IS NOT NULL\n  AND r.score IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of sku_price on order_total?",
@@ -542,6 +569,7 @@
     "estimation_method": "backdoor.linear_regression",
     "treatment_type": "continuous",
     "outcome_type": "continuous",
-    "n_samples": 29972
+    "n_samples": 29972,
+    "sql_query": "SELECT\n  s.price AS sku_price,\n  oi.quantity AS quantity,\n  oi.unit_price AS unit_price,\n  oi.total_price AS total_price,\n  o.subtotal_amount AS subtotal_amount,\n  o.total_amount AS order_total\nFROM order_items oi\nJOIN sku s ON oi.sku_id = s.sku_id\nJOIN orders o ON oi.order_id = o.order_id\nWHERE s.price IS NOT NULL\n  AND oi.quantity IS NOT NULL\n  AND oi.unit_price IS NOT NULL\n  AND oi.total_price IS NOT NULL\n  AND o.subtotal_amount IS NOT NULL\n  AND o.total_amount IS NOT NULL\n"
   }
 ]

@@ -226,7 +226,8 @@ def process_single_query(
             "estimation_method": result["estimator"],
             "treatment_type": result["treatment_type"],
             "outcome_type": result["outcome_type"],
-            "n_samples": result["n_samples"]
+            "n_samples": result["n_samples"],
+            "sql_query" : sql_query
         }
         
         if verbose:
