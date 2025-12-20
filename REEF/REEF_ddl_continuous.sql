@@ -411,6 +411,7 @@ ALTER TABLE public.coupon_usage OWNER TO postgres;
 
 CREATE TABLE public.review (
     review_id uuid NOT NULL,
+    order_id uuid NOT NULL,
     product_id uuid NOT NULL,
     user_id uuid NOT NULL,
     title character varying(100) NOT NULL,

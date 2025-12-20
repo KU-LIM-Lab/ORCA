@@ -1,0 +1,547 @@
+[
+  {
+    "question": "What is the causal effect of category_popularity_score on brand_strength_score?",
+    "treatment": "category_popularity_score",
+    "outcome": "brand_strength_score",
+    "confounders": [],
+    "mediators": [],
+    "instrumental_variables": [],
+    "ground_truth_ate": 1.054178054586227,
+    "confidence_interval": [
+      0.6161588280899798,
+      1.4921972810824742
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.linear_regression",
+    "treatment_type": "continuous",
+    "outcome_type": "continuous",
+    "n_samples": 49
+  },
+  {
+    "question": "What is the causal effect of age on avg_browsing_time?",
+    "treatment": "age",
+    "outcome": "avg_browsing_time",
+    "confounders": [],
+    "mediators": [],
+    "instrumental_variables": [],
+    "ground_truth_ate": -0.5968691689891088,
+    "confidence_interval": [
+      -0.6030775487109593,
+      -0.590660789267191
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.linear_regression",
+    "treatment_type": "count",
+    "outcome_type": "continuous",
+    "n_samples": 10000
+  },
+  {
+    "question": "What is the causal effect of gender on avg_browsing_time?",
+    "treatment": "gender",
+    "outcome": "avg_browsing_time",
+    "confounders": [],
+    "mediators": [],
+    "instrumental_variables": [],
+    "ground_truth_ate": -7.879656316620032,
+    "confidence_interval": [
+      -8.177843730333544,
+      -7.58146890290651
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.linear_regression",
+    "treatment_type": "binary",
+    "outcome_type": "continuous",
+    "n_samples": 10000
+  },
+  {
+    "question": "What is the causal effect of avg_browsing_time on is_active?",
+    "treatment": "avg_browsing_time",
+    "outcome": "is_active",
+    "confounders": [],
+    "mediators": [],
+    "instrumental_variables": [],
+    "ground_truth_ate": 0.003170673018552228,
+    "confidence_interval": [
+      0.003057485402633342,
+      0.0033221130203922727
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.generalized_linear_model",
+    "treatment_type": "continuous",
+    "outcome_type": "binary",
+    "n_samples": 10000
+  },
+  {
+    "question": "What is the causal effect of signup_days_ago on is_active?",
+    "treatment": "signup_days_ago",
+    "outcome": "is_active",
+    "confounders": [],
+    "mediators": [],
+    "instrumental_variables": [],
+    "ground_truth_ate": -0.000779119275184259,
+    "confidence_interval": [
+      -0.0007983691365486267,
+      -0.0007571303072121394
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.generalized_linear_model",
+    "treatment_type": "continuous",
+    "outcome_type": "binary",
+    "n_samples": 10000
+  },
+  {
+    "question": "What is the causal effect of sku_price on unit_price?",
+    "treatment": "sku_price",
+    "outcome": "unit_price",
+    "confounders": [],
+    "mediators": [],
+    "instrumental_variables": [],
+    "ground_truth_ate": 1.0000000000000049,
+    "confidence_interval": [
+      1.0000000000000044,
+      1.0000000000000044
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.linear_regression",
+    "treatment_type": "continuous",
+    "outcome_type": "continuous",
+    "n_samples": 29972
+  },
+  {
+    "question": "What is the causal effect of quantity on total_price?",
+    "treatment": "quantity",
+    "outcome": "total_price",
+    "confounders": [
+      "unit_price"
+    ],
+    "mediators": [],
+    "instrumental_variables": [],
+    "ground_truth_ate": 27.45427646516161,
+    "confidence_interval": [
+      27.434942089734818,
+      27.473610840588393
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.linear_regression",
+    "treatment_type": "count",
+    "outcome_type": "continuous",
+    "n_samples": 29972
+  },
+  {
+    "question": "What is the causal effect of unit_price on total_price?",
+    "treatment": "unit_price",
+    "outcome": "total_price",
+    "confounders": [
+      "quantity"
+    ],
+    "mediators": [],
+    "instrumental_variables": [],
+    "ground_truth_ate": 2.0005254563843886,
+    "confidence_interval": [
+      1.991249668679353,
+      2.009801244089417
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.linear_regression",
+    "treatment_type": "continuous",
+    "outcome_type": "continuous",
+    "n_samples": 29972
+  },
+  {
+    "question": "What is the causal effect of order_item_total_price on subtotal_amount?",
+    "treatment": "order_item_total_price",
+    "outcome": "subtotal_amount",
+    "confounders": [],
+    "mediators": [],
+    "instrumental_variables": [],
+    "ground_truth_ate": 0.9717885557911359,
+    "confidence_interval": [
+      0.9334828725185758,
+      1.010094239063593
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.linear_regression",
+    "treatment_type": "continuous",
+    "outcome_type": "continuous",
+    "n_samples": 29972
+  },
+  {
+    "question": "What is the causal effect of subtotal_amount on total_amount?",
+    "treatment": "subtotal_amount",
+    "outcome": "total_amount",
+    "confounders": [],
+    "mediators": [],
+    "instrumental_variables": [],
+    "ground_truth_ate": 0.49411929550420797,
+    "confidence_interval": [
+      0.4819610299511906,
+      0.5062775610572251
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.linear_regression",
+    "treatment_type": "continuous",
+    "outcome_type": "continuous",
+    "n_samples": 10000
+  },
+  {
+    "question": "What is the causal effect of discount_amount on total_amount?",
+    "treatment": "discount_amount",
+    "outcome": "total_amount",
+    "confounders": [
+      "subtotal_amount"
+    ],
+    "mediators": [],
+    "instrumental_variables": [],
+    "ground_truth_ate": -0.7248587156570636,
+    "confidence_interval": [
+      -1.5332199473128367,
+      0.0835025159986984
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.linear_regression",
+    "treatment_type": "continuous",
+    "outcome_type": "continuous",
+    "n_samples": 10000
+  },
+  {
+    "question": "What is the causal effect of point_balance on point_used?",
+    "treatment": "point_balance",
+    "outcome": "point_used",
+    "confounders": [],
+    "mediators": [],
+    "instrumental_variables": [],
+    "ground_truth_ate": 1.1127982588732266e-06,
+    "confidence_interval": [
+      -9.380455938351217e-05,
+      9.603015591413382e-05
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.linear_regression",
+    "treatment_type": "continuous",
+    "outcome_type": "continuous",
+    "n_samples": 10000
+  },
+  {
+    "question": "What is the causal effect of point_used on total_amount?",
+    "treatment": "point_used",
+    "outcome": "total_amount",
+    "confounders": [
+      "subtotal_amount",
+      "discount_amount"
+    ],
+    "mediators": [],
+    "instrumental_variables": [],
+    "ground_truth_ate": -0.999999989223312,
+    "confidence_interval": [
+      -1.0000000233350774,
+      -0.9999999551115507
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.linear_regression",
+    "treatment_type": "continuous",
+    "outcome_type": "continuous",
+    "n_samples": 10000
+  },
+  {
+    "question": "What is the causal effect of order_created_at on payment_delay_days?",
+    "treatment": "order_created_at_epoch",
+    "outcome": "payment_delay_days",
+    "confounders": [],
+    "mediators": [],
+    "instrumental_variables": [],
+    "ground_truth_ate": -1.0703726793792612e-09,
+    "confidence_interval": [
+      -2.1640483748174178e-09,
+      2.3301547066057772e-11
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.linear_regression",
+    "treatment_type": "continuous",
+    "outcome_type": "continuous",
+    "n_samples": 9024
+  },
+  {
+    "question": "What is the causal effect of payment_delay_days on payment_completed?",
+    "treatment": "payment_delay_days",
+    "outcome": "payment_completed",
+    "confounders": [
+      "order_total_amount"
+    ],
+    "mediators": [],
+    "instrumental_variables": [],
+    "ground_truth_ate": 0.0,
+    "confidence_interval": [
+      0.0,
+      0.0
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.generalized_linear_model",
+    "treatment_type": "continuous",
+    "outcome_type": "count",
+    "n_samples": 9024
+  },
+  {
+    "question": "What is the causal effect of payment_date on shipped_delay_days?",
+    "treatment": "payment_date_epoch",
+    "outcome": "shipped_delay_days",
+    "confounders": [],
+    "mediators": [],
+    "instrumental_variables": [],
+    "ground_truth_ate": -1.968494700577139e-09,
+    "confidence_interval": [
+      -3.9166146854214505e-09,
+      -2.037684362185278e-11
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.linear_regression",
+    "treatment_type": "continuous",
+    "outcome_type": "continuous",
+    "n_samples": 9024
+  },
+  {
+    "question": "What is the causal effect of shipped_at on delivery_time_days?",
+    "treatment": "shipped_at_epoch",
+    "outcome": "delivery_time_days",
+    "confounders": [],
+    "mediators": [],
+    "instrumental_variables": [],
+    "ground_truth_ate": -1.223277479311946e-09,
+    "confidence_interval": [
+      -2.0205621733937982e-09,
+      -4.2598849781621323e-10
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.linear_regression",
+    "treatment_type": "continuous",
+    "outcome_type": "continuous",
+    "n_samples": 9024
+  },
+  {
+    "question": "What is the causal effect of delivery_time_days on review_lag_days?",
+    "treatment": "delivery_time_days",
+    "outcome": "review_lag_days",
+    "confounders": [],
+    "mediators": [],
+    "instrumental_variables": [],
+    "ground_truth_ate": 0.01947216901399962,
+    "confidence_interval": [
+      -0.166444861133687,
+      0.20538919916169018
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.linear_regression",
+    "treatment_type": "continuous",
+    "outcome_type": "continuous",
+    "n_samples": 3000
+  },
+  {
+    "question": "What is the causal effect of review_created_at_days_ago on review_score?",
+    "treatment": "review_days_ago",
+    "outcome": "review_score",
+    "confounders": [
+      "payment_delay_days"
+    ],
+    "mediators": [],
+    "instrumental_variables": [],
+    "ground_truth_ate": -0.0006226315582438247,
+    "confidence_interval": [
+      -0.0006969901452542615,
+      -0.0005440906207105911
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.generalized_linear_model",
+    "treatment_type": "continuous",
+    "outcome_type": "count",
+    "n_samples": 3000
+  },
+  {
+    "question": "What is the causal effect of promo_start_at on coupon_start_date?",
+    "treatment": "promo_start_epoch",
+    "outcome": "coupon_start_epoch",
+    "confounders": [],
+    "mediators": [],
+    "instrumental_variables": [],
+    "ground_truth_ate": 0.9999999999999993,
+    "confidence_interval": [
+      0.999999999999965,
+      1.0000000000000333
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.linear_regression",
+    "treatment_type": "continuous",
+    "outcome_type": "continuous",
+    "n_samples": 100
+  },
+  {
+    "question": "What is the causal effect of discount_strength on discount_amount?",
+    "treatment": "discount_strength",
+    "outcome": "discount_amount",
+    "confounders": [
+      "subtotal_amount"
+    ],
+    "mediators": [],
+    "instrumental_variables": [],
+    "ground_truth_ate": 27.025331533996095,
+    "confidence_interval": [
+      19.257180876166906,
+      34.793482191825284
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.linear_regression",
+    "treatment_type": "continuous",
+    "outcome_type": "continuous",
+    "n_samples": 19
+  },
+  {
+    "question": "What is the causal effect of coupon_used on total_amount?",
+    "treatment": "used_coupon",
+    "outcome": "total_amount",
+    "confounders": [
+      "subtotal_amount",
+      "point_used"
+    ],
+    "mediators": [
+      "discount_amount"
+    ],
+    "instrumental_variables": [],
+    "ground_truth_ate": -24.492575493909698,
+    "confidence_interval": [
+      -24.827847833861664,
+      -24.157303153957738
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.linear_regression",
+    "treatment_type": "binary",
+    "outcome_type": "continuous",
+    "n_samples": 10000
+  },
+  {
+    "question": "What is the causal effect of discount_amount on payment_completed?",
+    "treatment": "discount_amount",
+    "outcome": "payment_completed",
+    "confounders": [
+      "order_total_amount"
+    ],
+    "mediators": [],
+    "instrumental_variables": [],
+    "ground_truth_ate": 0.0021905033997312584,
+    "confidence_interval": [
+      -0.09539666011397097,
+      0.0061634434193903465
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.generalized_linear_model",
+    "treatment_type": "continuous",
+    "outcome_type": "binary",
+    "n_samples": 10000
+  },
+  {
+    "question": "What is the causal effect of total_amount on payment_failed?",
+    "treatment": "total_amount",
+    "outcome": "payment_failed",
+    "confounders": [
+      "user_age"
+    ],
+    "mediators": [],
+    "instrumental_variables": [],
+    "ground_truth_ate": 7.543968929393796e-05,
+    "confidence_interval": [
+      1.963511607337709e-05,
+      0.0001581535177740956
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.generalized_linear_model",
+    "treatment_type": "continuous",
+    "outcome_type": "binary",
+    "n_samples": 10000
+  },
+  {
+    "question": "What is the causal effect of point_used on payment_completed?",
+    "treatment": "point_used",
+    "outcome": "payment_completed",
+    "confounders": [
+      "subtotal_amount",
+      "discount_amount"
+    ],
+    "mediators": [],
+    "instrumental_variables": [],
+    "ground_truth_ate": 7.965143458965596e-05,
+    "confidence_interval": [
+      -4.568730010134914e-05,
+      0.00019557103282796806
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.generalized_linear_model",
+    "treatment_type": "continuous",
+    "outcome_type": "binary",
+    "n_samples": 10000
+  },
+  {
+    "question": "What is the causal effect of payment_delay_days on delivery_time_days?",
+    "treatment": "payment_delay_days",
+    "outcome": "delivery_time_days",
+    "confounders": [
+      "order_total_amount"
+    ],
+    "mediators": [
+      "shipped_delay_days"
+    ],
+    "instrumental_variables": [],
+    "ground_truth_ate": 4.412787546237418e-05,
+    "confidence_interval": [
+      -0.015002651013699603,
+      0.015090906764625198
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.linear_regression",
+    "treatment_type": "continuous",
+    "outcome_type": "continuous",
+    "n_samples": 9024
+  },
+  {
+    "question": "What is the causal effect of delivery_time_days on review_score?",
+    "treatment": "delivery_time_days",
+    "outcome": "review_score",
+    "confounders": [
+      "payment_delay_days"
+    ],
+    "mediators": [
+      "review_lag_days"
+    ],
+    "instrumental_variables": [],
+    "ground_truth_ate": -0.05470209058615971,
+    "confidence_interval": [
+      -0.08050052900184745,
+      -0.03428732846567595
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.generalized_linear_model",
+    "treatment_type": "continuous",
+    "outcome_type": "count",
+    "n_samples": 3000
+  },
+  {
+    "question": "What is the causal effect of sku_price on order_total?",
+    "treatment": "sku_price",
+    "outcome": "order_total",
+    "confounders": [
+      "quantity"
+    ],
+    "mediators": [
+      "unit_price",
+      "total_price",
+      "subtotal_amount"
+    ],
+    "instrumental_variables": [],
+    "ground_truth_ate": 0.5409350777647006,
+    "confidence_interval": [
+      0.05614485418714088,
+      1.0257253013422227
+    ],
+    "p_value": null,
+    "estimation_method": "backdoor.linear_regression",
+    "treatment_type": "continuous",
+    "outcome_type": "continuous",
+    "n_samples": 29972
+  }
+]

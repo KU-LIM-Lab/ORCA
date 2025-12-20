@@ -61,6 +61,7 @@ module.exports = async function () {
   for (const row of orderItemRes.rows) {
     const {
       user_id,
+      order_id,
       product_id,
       total_amount,
       payment_date,
@@ -121,6 +122,7 @@ module.exports = async function () {
       `
       INSERT INTO review (
         review_id,
+        order_id,
         product_id,
         user_id,
         title,
@@ -128,10 +130,11 @@ module.exports = async function () {
         score,
         score_cont,
         created_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
     `,
       [
         uuidv4(),
+        order_id,
         product_id,
         user_id,
         faker.lorem.sentence(5),
