@@ -13,14 +13,26 @@ import yaml
 from tqdm import tqdm
 
 from experiments.effect_estimation.methods import get_method, METHOD_REGISTRY
+from experiments.graph_discovery import cd_methods
 
 # ORCA LLM / graph
 from agents.causal_analysis.graph import generate_causal_analysis_graph
 from utils.llm import get_llm
 import networkx as nx
+import re
 
 
 # === 1. Data loaders ===
+
+def fetch_df_from_db(sql_query: str, db_url: str) -> pd.DataFrame:
+    import psycopg2
+    df = None
+    conn = psycopg2.connect(db_url)
+    try:
+        df = pd.read_sql(sql_query, conn)
+    finally:
+        conn.close()
+    return df
 
 def load_ihdp_dataset(
     data_path: str,
@@ -258,6 +270,160 @@ def compute_metrics(
 
 # === 4. Main experiment loop ===
 
+def _sanitize_name(name: str | int | None) -> str:
+    if name is None:
+        return "none"
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", str(name))
+
+
+def _normalize_discovery_graph(
+    discovery_result: Dict[str, Any],
+    fallback_nodes: List[str],
+) -> Dict[str, Any]:
+    """
+    Normalize discovery output into causal_graph format expected by ORCA causal analysis.
+    """
+    if discovery_result is None:
+        raise ValueError("Discovery result is None.")
+
+    if "graph" in discovery_result and isinstance(discovery_result["graph"], dict):
+        graph = discovery_result["graph"]
+        variables = graph.get("variables") or discovery_result.get("variables") or discovery_result.get("nodes") or fallback_nodes
+        edges = graph.get("edges") or discovery_result.get("edges") or []
+    else:
+        variables = discovery_result.get("variables") or discovery_result.get("nodes") or fallback_nodes
+        edges = discovery_result.get("edges") or []
+
+    nodes = discovery_result.get("nodes") or variables
+
+    nx_graph = discovery_result.get("nx_graph")
+    if nx_graph is None:
+        G = nx.DiGraph()
+        G.add_nodes_from(nodes)
+        for edge in edges:
+            if isinstance(edge, dict):
+                from_node = str(edge.get("from", ""))
+                to_node = str(edge.get("to", ""))
+            elif isinstance(edge, (list, tuple)) and len(edge) >= 2:
+                from_node = str(edge[0])
+                to_node = str(edge[1])
+            else:
+                continue
+            if from_node in nodes and to_node in nodes:
+                G.add_edge(from_node, to_node)
+        nx_graph = G
+
+    causal_graph = {
+        "nodes": list(nodes),
+        "edges": edges,
+        "variables": list(variables),
+        "graph": {"variables": list(variables), "edges": edges},
+        "nx_graph": nx_graph,
+    }
+
+    if "dot_graph" in discovery_result:
+        causal_graph["dot_graph"] = discovery_result["dot_graph"]
+    if "metadata" in discovery_result:
+        causal_graph["metadata"] = discovery_result["metadata"]
+
+    return causal_graph
+
+
+def _discovery_cache_path(
+    discovery_result_dir: Path,
+    dataset: str,
+    scenario: str | int | None,
+    run_id: int,
+    discovery_method: str,
+) -> Path:
+    safe_dataset = _sanitize_name(dataset)
+    safe_scenario = _sanitize_name(scenario)
+    safe_method = _sanitize_name(discovery_method)
+    return (
+        discovery_result_dir
+        / safe_dataset
+        / safe_scenario
+        / f"run_{run_id:03d}"
+        / f"{safe_method}.json"
+    )
+
+
+def _serialize_causal_graph(causal_graph: Dict[str, Any]) -> Dict[str, Any]:
+    payload = {
+        "nodes": causal_graph.get("nodes"),
+        "edges": causal_graph.get("edges"),
+        "variables": causal_graph.get("variables"),
+        "graph": causal_graph.get("graph"),
+    }
+    if "metadata" in causal_graph:
+        payload["metadata"] = causal_graph["metadata"]
+    if "dot_graph" in causal_graph:
+        payload["dot_graph"] = causal_graph["dot_graph"]
+    return payload
+
+
+def _run_causal_discovery(
+    df: pd.DataFrame,
+    discovery_method: str,
+    discovery_context: Dict[str, Any] | None = None,
+    discovery_result_dir: Path | None = None,
+    dataset: str | None = None,
+    scenario: str | int | None = None,
+    run_id: int | None = None,
+) -> Tuple[Dict[str, Any] | None, str | None]:
+    """
+    Run causal discovery (or load cached result) and return a causal_graph dict.
+    """
+    discovery_context = discovery_context or {}
+    cache_path = None
+
+    if discovery_result_dir is not None and dataset is not None and run_id is not None:
+        cache_path = _discovery_cache_path(
+            discovery_result_dir,
+            dataset=dataset,
+            scenario=scenario,
+            run_id=run_id,
+            discovery_method=discovery_method,
+        )
+        if cache_path.exists():
+            try:
+                cached = json.loads(cache_path.read_text())
+                causal_graph = _normalize_discovery_graph(cached, list(df.columns))
+                return causal_graph, None
+            except Exception as e:
+                cache_error = f"Failed to load cached discovery graph: {e}"
+                tqdm.write(f"[WARNING] {cache_error}")
+
+    try:
+        method_fn = cd_methods.get_method(discovery_method)
+    except Exception as e:
+        return None, f"Unknown discovery method '{discovery_method}': {e}"
+
+    try:
+        discovery_result = method_fn(df.values, context={"df": df, **discovery_context})
+    except Exception as e:
+        return None, f"Discovery method '{discovery_method}' failed: {e}"
+
+    if isinstance(discovery_result, dict) and discovery_result.get("error"):
+        return None, str(discovery_result.get("error"))
+
+    try:
+        causal_graph = _normalize_discovery_graph(discovery_result, list(df.columns))
+    except Exception as e:
+        return None, f"Failed to normalize discovery graph: {e}"
+
+    if cache_path is not None:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = _serialize_causal_graph(causal_graph)
+        try:
+            with open(cache_path, "w") as f:
+                json.dump(payload, f, indent=2)
+        except Exception:
+            pass
+
+    return causal_graph, None
+
+
 def _save_summary_intermediate(all_records: List[Dict[str, Any]], results_dir: Path, 
                                dataset: str, setting: str) -> None:
     """Save intermediate summary from current all_records."""
@@ -329,6 +495,9 @@ def run_experiments(
     ihdp_path: str | None = None,
     synthetic_base_dir: str | None = None,
     scenarios: List[str] | None = None,
+    discovery_method: str | None = None,
+    discovery_context: Dict[str, Any] | None = None,
+    discovery_result_dir: Path | None = None,
     seed: int = 0,
     save_interval: int = 50,
 ):
@@ -401,7 +570,6 @@ def run_experiments(
             if setting == "oracle_graph":
                 causal_graph = create_oracle_causal_graph(df, treatment="T", outcome="Y")
             elif setting == "agent_graph":
-                # TODO: load \hat G from discovery agent
                 causal_graph = create_oracle_causal_graph(df, treatment="T", outcome="Y")
             else:
                 raise ValueError(f"Unknown setting: {setting}")
@@ -428,6 +596,11 @@ def run_experiments(
                     "seed": seed + run_id,
                 }
                 if method_name == "orca":
+                    if setting == "agent_graph" and causal_graph is None:
+                        tqdm.write(
+                            f"  [ERROR] Missing discovery graph for {method_name} (rep {run_id}). Skipping."
+                        )
+                        continue
                     context.update(
                         {
                             "df": df,
@@ -567,7 +740,6 @@ def run_experiments(
                 if setting == "oracle_graph":
                     causal_graph = create_oracle_causal_graph(df, treatment="T", outcome="Y")
                 elif setting == "agent_graph":
-                    # TODO: load \hat G from discovery result
                     causal_graph = create_oracle_causal_graph(df, treatment="T", outcome="Y")
                 else:
                     raise ValueError(f"Unknown setting: {setting}")
@@ -594,6 +766,11 @@ def run_experiments(
                         "seed": seed + run_id,
                     }
                     if method_name == "orca":
+                        if setting == "agent_graph" and causal_graph is None:
+                            tqdm.write(
+                                f"    [ERROR] Missing discovery graph for {method_name} (run {run_id}). Skipping."
+                            )
+                            continue
                         context.update(
                             {
                                 "df": df,
@@ -659,6 +836,270 @@ def run_experiments(
                     if save_interval > 0 and len(all_records) % save_interval == 0:
                         _save_summary_intermediate(all_records, results_dir, dataset.lower(), setting)
 
+    elif dataset.lower() == "reef":
+        
+        ##### Reef DB에 연결 #####
+        from REEF_v2.src.reef_data_loader import REEFDataLoader
+        from REEF_v2.src.ate_calculator import coerce_df_to_numeric
+        
+        loader = REEFDataLoader(db_name="reef_db")
+        
+        ##### Load Scenarios #####
+        # Scenarios는 experiments/questions/reef/causal_analysis.json에 들어 있음 
+        scenarios_path = Path("experiments/questions/reef/causal_analysis.json")
+        if not scenarios_path.exists():
+            raise FileNotFoundError(f"Scenarios file not found: {scenarios_path}")
+        
+        scenarios = json.loads(scenarios_path.read_text())
+        
+        print(f"Running experiments on REEF dataset: {len(scenarios)} scenarios, methods={methods}, setting={setting}")
+
+        # method 별 실행 
+        for method_name in methods:
+            
+            if method_name not in METHOD_REGISTRY:
+                tqdm.write(f"Skipping unknown method: {method_name}")
+                continue
+            
+            method_fn = get_method(method_name)
+            
+            # 질문 하나씩 (scenario 하나를 의미)
+            scenario_pbar = tqdm(
+                enumerate(scenarios),
+                desc=f"Scenarios ({method_name})",
+                total=len(scenarios),
+                unit="scenario",
+                position=0,
+                leave=True,
+                ncols=100
+            )
+            for scenario_idx, scenario in scenario_pbar:
+                scenario_pbar.set_description(f"Scenario {scenario_idx+1}/{len(scenarios)} ({method_name})")
+                
+                # Scenario 정보 추출
+                treatment = scenario.get("treatment")
+                outcome = scenario.get("outcome")
+                confounders = scenario.get("confounders", [])
+                mediators = scenario.get("mediators", [])
+                instrumental_variables = scenario.get("instrumental_variables", [])
+                sql_query = scenario.get("sql_query")
+                ground_truth_ate = scenario.get("ground_truth_ate")
+                question = scenario.get("question", f"What is the causal effect of {treatment} on {outcome}?")
+                
+                if not sql_query:
+                    tqdm.write(f"  [ERROR] Scenario {scenario_idx+1} missing sql_query. Skipping.")
+                    continue
+                
+                # 데이터 로드
+                try:
+                    df = loader.load_custom_query(sql_query)
+                    if len(df) == 0:
+                        tqdm.write(f"  [ERROR] Scenario {scenario_idx+1}: Empty dataframe. Skipping.")
+                        continue
+                    
+                    # 데이터 타입 변환 (numeric으로)
+                    df = coerce_df_to_numeric(df, dropna=True, verbose=False)
+                    
+                    if len(df) < 10:
+                        tqdm.write(f"  [ERROR] Scenario {scenario_idx+1}: Insufficient data ({len(df)} rows). Skipping.")
+                        continue
+                    
+                except Exception as e:
+                    tqdm.write(f"  [ERROR] Scenario {scenario_idx+1}: Failed to load data: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
+                
+                # 변수명 해석 (테이블 prefix 제거)
+                def resolve_var_name(var_name: str, df: pd.DataFrame) -> str:
+                    """변수명을 데이터프레임의 실제 컬럼명으로 해석"""
+                    if var_name in df.columns:
+                        return var_name
+                    # 부분 매칭 시도
+                    for col in df.columns:
+                        if col.endswith(f".{var_name}") or col.split(".")[-1] == var_name:
+                            return col
+                    return var_name  # 못 찾으면 원래 이름 반환
+                
+                treatment_resolved = resolve_var_name(treatment, df)
+                outcome_resolved = resolve_var_name(outcome, df)
+                confounders_resolved = [resolve_var_name(c, df) for c in confounders if resolve_var_name(c, df) in df.columns]
+                
+                # X, T, Y 추출
+                if treatment_resolved not in df.columns:
+                    tqdm.write(f"  [ERROR] Scenario {scenario_idx+1}: Treatment '{treatment_resolved}' not found. Skipping.")
+                    continue
+                if outcome_resolved not in df.columns:
+                    tqdm.write(f"  [ERROR] Scenario {scenario_idx+1}: Outcome '{outcome_resolved}' not found. Skipping.")
+                    continue
+                
+                # Confounders를 X로 사용
+                X_cols = confounders_resolved if confounders_resolved else []
+                # X가 비어있으면 더미 변수 하나 추가 (일부 method가 X를 요구할 수 있음)
+                if len(X_cols) == 0:
+                    # 더미 변수 생성 (상수 1)
+                    df["_dummy"] = 1.0
+                    X_cols = ["_dummy"]
+                
+                X = df[X_cols].values if X_cols else np.ones((len(df), 1))
+                T = df[treatment_resolved].values
+                Y = df[outcome_resolved].values
+                
+                # Ground truth ATE
+                tau_true_ate = float(ground_truth_ate) if ground_truth_ate is not None else None
+                tau_true_cate = None  # REEF 데이터에는 CATE ground truth가 없음
+                
+                # Causal graph 생성 (ORCA용)
+                if setting == "oracle_graph":
+                    # Confounders -> T, Y / T -> Y 구조
+                    edges = []
+                    for conf in confounders_resolved:
+                        edges.append({"from": conf, "to": treatment_resolved})
+                        edges.append({"from": conf, "to": outcome_resolved})
+                    edges.append({"from": treatment_resolved, "to": outcome_resolved})
+                    
+                    causal_graph = {
+                        "nodes": confounders_resolved + [treatment_resolved, outcome_resolved],
+                        "edges": edges,
+                        "variables": confounders_resolved + [treatment_resolved, outcome_resolved],
+                        "graph": {
+                            "variables": confounders_resolved + [treatment_resolved, outcome_resolved],
+                            "edges": edges
+                        },
+                    }
+                elif setting == "agent_graph":
+                    discovery_method_name = discovery_method or "orca"
+                    causal_graph, discovery_error = _run_causal_discovery(
+                        df=df,
+                        discovery_method=discovery_method_name,
+                        discovery_context=discovery_context,
+                        discovery_result_dir=discovery_result_dir,
+                        dataset="reef",
+                        scenario=scenario_idx,
+                        run_id=scenario_idx,
+                    )
+                    if discovery_error:
+                        tqdm.write(
+                            f"  [ERROR] Discovery failed for scenario {scenario_idx+1}: {discovery_error}"
+                        )
+                        causal_graph = None
+                else:
+                    raise ValueError(f"Unknown setting: {setting}")
+                
+                # Method 실행
+                context: Dict[str, Any] = {
+                    "seed": 0,
+                }
+                
+                if method_name == "orca":
+                    if setting == "agent_graph" and causal_graph is None:
+                        tqdm.write(
+                            f"  [ERROR] Missing discovery graph for {method_name} (scenario {scenario_idx+1}). Skipping."
+                        )
+                        continue
+                    context.update({
+                        "df": df,
+                        "causal_graph": causal_graph,
+                        "app": orca_app,
+                        "treatment_name": treatment_resolved,
+                        "outcome_name": outcome_resolved,
+                    })
+                
+                try:
+                    result = method_fn(X, T, Y, context=context)
+                except Exception as e:
+                    tqdm.write(f"  [ERROR] Method {method_name} failed for scenario {scenario_idx+1}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
+                
+                # Metrics 계산
+                # tau_true_ate가 None이면 metrics 계산을 건너뛰거나 경고만 표시
+                if tau_true_ate is None:
+                    tqdm.write(f"  [WARNING] Scenario {scenario_idx+1}: No ground_truth_ate. Skipping metrics calculation.")
+                    metrics = {
+                        "ate_hat": result.get("tau_hat_ate"),
+                        "ate_true": None,
+                        "ate_bias": None,
+                        "ate_abs_error": None,
+                        "ate_sq_error": None,
+                        "ate_ci_covered": None,
+                        "ate_ci_width": None,
+                        "cate_pehe": None,
+                        "cate_mse": None,
+                    }
+                else:
+                    metrics = compute_metrics(
+                        tau_hat_ate=result.get("tau_hat_ate"),
+                        tau_hat_cate=result.get("tau_hat_cate"),
+                        tau_true_ate=tau_true_ate,
+                        tau_true_cate=tau_true_cate,
+                        ate_ci=result.get("ate_ci"),
+                    )
+                
+                # Run record 생성
+                run_record = {
+                    "dataset": "REEF",
+                    "scenario": question,  # scenario 식별자로 question 사용
+                    "setting": setting,
+                    "method": method_name,
+                    "run_id(replication_idx)": scenario_idx,
+                    "treatment": treatment,
+                    "outcome": outcome,
+                    "confounders": confounders,
+                    "n_samples": len(df),
+                    "n_features": X.shape[1] if X.ndim > 1 else 1,
+                    "ground_truth_ate": tau_true_ate,
+                    "metrics": metrics,
+                    "sql_query": sql_query,
+                }
+                
+                # 결과 저장
+                # REEF의 경우: 한 파일에 모든 scenario 결과를 리스트로 저장
+                # Organize by dataset / setting / method_name.json
+                out_dir = results_dir / "REEF" / setting
+                out_dir.mkdir(parents=True, exist_ok=True)
+                out_path = out_dir / f"{method_name}.json"
+                
+                try:
+                    # 기존 파일이 있으면 읽어서 리스트에 추가, 없으면 새 리스트 생성
+                    if out_path.exists():
+                        with open(out_path, "r") as f:
+                            all_results = json.load(f)
+                        if not isinstance(all_results, list):
+                            # 기존 파일이 리스트가 아니면 리스트로 변환
+                            all_results = [all_results]
+                    else:
+                        all_results = []
+                    
+                    # 새 결과 추가
+                    all_results.append(run_record)
+                    
+                    # 파일에 저장
+                    with open(out_path, "w") as f:
+                        json.dump(all_results, f, indent=2)
+                except Exception as e:
+                    tqdm.write(f"  [ERROR] Failed to save results for {method_name}, scenario {scenario_idx+1}: {e}")
+                
+                # Flat record for summary
+                flat = {
+                    "dataset": "REEF",
+                    "scenario": question,
+                    "setting": setting,
+                    "method": method_name,
+                    "run_id(replication_idx)": scenario_idx,
+                    "treatment": treatment,
+                    "outcome": outcome,
+                    "n_samples": len(df),
+                    "ground_truth_ate": tau_true_ate,
+                    **metrics,
+                }
+                all_records.append(flat)
+                
+                # Save intermediate summary periodically
+                if save_interval > 0 and len(all_records) % save_interval == 0:
+                    _save_summary_intermediate(all_records, results_dir, dataset.lower(), setting)
+            
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
 
@@ -780,6 +1221,10 @@ def main():
         runs = exp_config.get("runs", None)  # None means use all available
         run_indices = exp_config.get("run_indices", None)  # Optional: specify exact run indices
         methods = exp_config.get("methods", [])
+        discovery_method = exp_config.get("discovery_method")
+        discovery_context = exp_config.get("discovery_context")
+        discovery_result_dir = exp_config.get("discovery_result_dir")
+        discovery_result_dir = Path(discovery_result_dir) if discovery_result_dir else None
         
         # Use experiment-specific results_dir if provided, otherwise use global
         results_dir = Path(exp_config.get("results_dir", global_results_dir))
@@ -802,6 +1247,9 @@ def main():
                 ihdp_path=ihdp_path,
                 synthetic_base_dir=None,
                 scenarios=None,
+                discovery_method=discovery_method,
+                discovery_context=discovery_context,
+                discovery_result_dir=discovery_result_dir,
                 seed=seed,
                 save_interval=args.save_interval,
             )
@@ -825,10 +1273,32 @@ def main():
                 ihdp_path=None,
                 synthetic_base_dir=base_dir,
                 scenarios=scenarios,
+                discovery_method=discovery_method,
+                discovery_context=discovery_context,
+                discovery_result_dir=discovery_result_dir,
                 seed=seed,
                 save_interval=args.save_interval,
             )
         
+        elif dataset.lower() == "reef" :
+
+            run_experiments(
+                dataset=dataset,
+                methods=methods,
+                setting=setting,
+                runs=runs,
+                run_indices=run_indices,
+                results_dir=results_dir,
+                ihdp_path=None,
+                synthetic_base_dir=None,
+                scenarios=None,
+                discovery_method=discovery_method,
+                discovery_context=discovery_context,
+                discovery_result_dir=discovery_result_dir,
+                seed=None,
+                save_interval=args.save_interval,
+            )
+
         else:
             print(f"Skipping experiment '{exp_name}': unknown dataset '{dataset}'")
             continue

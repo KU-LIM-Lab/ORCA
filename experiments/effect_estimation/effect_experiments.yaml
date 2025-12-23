@@ -31,3 +31,27 @@ experiments:
     # runs: null  # use all available runs (default)
     methods: [orca, doubleml, causal_forest, t_learner]
     discovery_result_dir: experiments/results/discovery # optional
+  
+  - name: reef_oracle #[true_graph(discovery), true_df(text2sql)]
+    dataset : reef
+    question_path: experiments/questions/reef
+    setting: oracle_graph
+    methods: [orca, doubleml, causal_forest, t_learner] #causal_forest, t_learner
+
+  - name: reef_agentgraph #[agent_graph(discovery), true_df(text2sql)]
+    dataset : reef
+    question_path: experiments/questions/reef
+    setting: agent_graph
+    methods: [orca]
+
+  - name: reef_agentdf #[true_graph(discovery), agent_df(text2sql)]
+    question_path: experiments/questions/reef
+    methods: [orca, doubleml, causal_forest, t_learner]
+
+  - name: reef_full_pipeline #[agent_graph(discovery), agent_df(text2sql)]
+    dataset : reef
+    question_path: experiments/questions/reef
+    setting: full_pipeline
+    methods: [orca]
+
+
