@@ -45,7 +45,9 @@ def orca_agent_effect(
         context = {}
 
     df = context["df"]
-    causal_graph = context["causal_graph"]
+    causal_graph = context.get("causal_graph")
+    if causal_graph is None:
+        raise ValueError("orca method requires 'causal_graph' in context.")
     app = context["app"]
     treatment_name = context["treatment_name"]
     outcome_name = context["outcome_name"]

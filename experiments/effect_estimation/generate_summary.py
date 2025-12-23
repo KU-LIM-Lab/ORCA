@@ -51,12 +51,13 @@ def collect_all_records(results_dir: Path, dataset: str | None = None, setting: 
     if dataset:
         dataset_name_map = {
             "ihdp": "IHDP",
-            "synthetic_ci": "synthetic_ci"
+            "synthetic_ci": "synthetic_ci",
+            "reef": "REEF"
         }
         actual_dataset_name = dataset_name_map.get(dataset.lower(), dataset)
         dataset_dirs = [results_dir / actual_dataset_name]
     else:
-        dataset_dirs = [d for d in results_dir.iterdir() if d.is_dir() and d.name in ["IHDP", "synthetic_ci"]]
+        dataset_dirs = [d for d in results_dir.iterdir() if d.is_dir() and d.name in ["IHDP", "synthetic_ci", "REEF"]]
     
     for dataset_dir in dataset_dirs:
         if not dataset_dir.exists():
@@ -149,6 +150,63 @@ def collect_all_records(results_dir: Path, dataset: str | None = None, setting: 
                                 **metrics,
                             }
                             all_records.append(flat)
+        
+        # For REEF: results_dir/REEF/setting/method.json (한 파일에 모든 scenario 결과가 리스트로 저장됨)
+        elif dataset_name == "REEF":
+            # Determine which settings to process
+            if setting:
+                setting_dirs = [dataset_dir / setting]
+            else:
+                setting_dirs = [d for d in dataset_dir.iterdir() if d.is_dir()]
+            
+            for setting_dir in setting_dirs:
+                if not setting_dir.exists():
+                    continue
+                
+                setting_name = setting_dir.name
+                
+                # Process all method JSON files in this setting directory
+                for method_file in sorted(setting_dir.glob("*.json")):
+                    method_name = method_file.stem
+                    result_data = load_result_file(method_file)
+                    
+                    if result_data is None:
+                        continue
+                    
+                    # REEF의 경우 한 파일에 리스트로 저장되어 있음
+                    if isinstance(result_data, list):
+                        # 리스트인 경우: 각 항목을 개별 record로 처리
+                        for result in result_data:
+                            metrics = result.get("metrics", {})
+                            flat = {
+                                "dataset": result.get("dataset", "REEF"),
+                                "scenario": result.get("scenario"),
+                                "setting": result.get("setting", setting_name),
+                                "method": result.get("method", method_name),
+                                "run_id(replication_idx)": result.get("run_id(replication_idx)"),
+                                "treatment": result.get("treatment"),
+                                "outcome": result.get("outcome"),
+                                "n_samples": result.get("n_samples"),
+                                "ground_truth_ate": result.get("ground_truth_ate"),
+                                **metrics,
+                            }
+                            all_records.append(flat)
+                    else:
+                        # 단일 객체인 경우 (하위 호환성)
+                        metrics = result_data.get("metrics", {})
+                        flat = {
+                            "dataset": result_data.get("dataset", "REEF"),
+                            "scenario": result_data.get("scenario"),
+                            "setting": result_data.get("setting", setting_name),
+                            "method": result_data.get("method", method_name),
+                            "run_id(replication_idx)": result_data.get("run_id(replication_idx)"),
+                            "treatment": result_data.get("treatment"),
+                            "outcome": result_data.get("outcome"),
+                            "n_samples": result_data.get("n_samples"),
+                            "ground_truth_ate": result_data.get("ground_truth_ate"),
+                            **metrics,
+                        }
+                        all_records.append(flat)
     
     return all_records
 
@@ -244,12 +302,52 @@ def generate_summary(all_records: List[Dict[str, Any]], results_dir: Path,
     if summary_path.exists() and not overwrite:
         print(f"Summary file already exists: {summary_path}")
         print("Use --overwrite to regenerate it.")
+        model_group_cols = ["dataset", "setting", "method"]
+        model_metric_cols = [
+            "ate_abs_error_mean",
+            "ate_rmse",
+            "ate_bias_mean",
+            "ate_ci_covered_percent",
+            "ate_ci_width_mean",
+            "cate_pehe_mean",
+            "cate_mse_mean",
+        ]
+        available_model_cols = [col for col in model_metric_cols if col in summary.columns]
+        if available_model_cols:
+            model_avg = summary.groupby(model_group_cols)[available_model_cols].mean().reset_index()
+            model_summary_path = summary_dir / f"summary_model_{dataset}_{setting}.csv"
+            if model_summary_path.exists() and not overwrite:
+                print(f"Model summary file already exists: {model_summary_path}")
+            else:
+                model_avg.to_csv(model_summary_path, index=False)
+                print(f"Generated model summary: {model_summary_path}")
         return summary
     
     summary.to_csv(summary_path, index=False)
     print(f"Generated summary: {summary_path}")
     print(f"  Total records: {len(all_records)}")
     print(f"  Summary rows: {len(summary)}")
+
+    # Model-level averages across scenarios (per dataset/setting/method).
+    model_group_cols = ["dataset", "setting", "method"]
+    model_metric_cols = [
+        "ate_abs_error_mean",
+        "ate_rmse",
+        "ate_bias_mean",
+        "ate_ci_covered_percent",
+        "ate_ci_width_mean",
+        "cate_pehe_mean",
+        "cate_mse_mean",
+    ]
+    available_model_cols = [col for col in model_metric_cols if col in summary.columns]
+    if available_model_cols:
+        model_avg = summary.groupby(model_group_cols)[available_model_cols].mean().reset_index()
+        model_summary_path = summary_dir / f"summary_model_{dataset}_{setting}.csv"
+        if model_summary_path.exists() and not overwrite:
+            print(f"Model summary file already exists: {model_summary_path}")
+        else:
+            model_avg.to_csv(model_summary_path, index=False)
+            print(f"Generated model summary: {model_summary_path}")
     
     return summary
 
@@ -268,7 +366,7 @@ def main():
         "--dataset",
         type=str,
         default=None,
-        choices=["ihdp", "synthetic_ci"],
+        choices=["ihdp", "synthetic_ci", "reef"],
         help="Dataset to process (if not specified, process all)",
     )
     parser.add_argument(
@@ -326,4 +424,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
