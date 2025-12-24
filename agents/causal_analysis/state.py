@@ -17,6 +17,7 @@ class CausalAnalysisState(BaseModel):
     
     # Input from data_explorer (required)
     df_preprocessed: Optional[pd.DataFrame] = None
+    df_redis_key: Optional[str]
     
     # Causal variables (can be provided or parsed)
     treatment_variable: Optional[str] = None

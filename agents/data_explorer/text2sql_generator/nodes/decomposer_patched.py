@@ -113,18 +113,8 @@ def generate_flat_dataset_sql(
     if not main_table:
         main_table = choose_main_table(selected_schema)
 
-    tables_needed = list(selected_schema.keys())
-    if main_table not in selected_schema:
-        # still allow main_table even if not listed
-        tables_needed = [main_table] + tables_needed
-
-    # assign aliases
-    alias_map: Dict[str, str] = {}
-    alias_counter = 1
-    for t in tables_needed:
-        if t not in alias_map:
-            alias_map[t] = f"T{alias_counter}"
-            alias_counter += 1
+    tables_to_select = list(selected_schema.keys())
+    tables_needed = list(dict.fromkeys([main_table] + tables_to_select))
 
     # Build join plan: collect required joins along all shortest paths
     # Each join is represented as (left_table, right_table, left_col, right_col)
@@ -170,6 +160,23 @@ def generate_flat_dataset_sql(
         # fallback: append remaining
         ordered_joins.extend(remaining)
 
+    # assign aliases for all tables used in joins (including join-only tables)
+    alias_map: Dict[str, str] = {}
+    alias_counter = 1
+    tables_in_joins: List[str] = [main_table]
+    for left, right, _, _ in ordered_joins:
+        if left not in tables_in_joins:
+            tables_in_joins.append(left)
+        if right not in tables_in_joins:
+            tables_in_joins.append(right)
+    for t in tables_to_select:
+        if t not in tables_in_joins:
+            tables_in_joins.append(t)
+    for t in tables_in_joins:
+        if t not in alias_map:
+            alias_map[t] = f"T{alias_counter}"
+            alias_counter += 1
+
     def qname(t: str) -> str:
         if schema_name:
             return f'{schema_name}.{t}'
@@ -178,26 +185,16 @@ def generate_flat_dataset_sql(
     # SELECT clause
     select_parts: List[str] = []
 
-    # main table selection
-    main_sel = selected_schema.get(main_table, "keep_all")
-    if isinstance(main_sel, str) and main_sel.lower() == "keep_all":
-        select_parts.append(f'    {alias_map[main_table]}.*')
-    elif isinstance(main_sel, list):
-        for col in main_sel:
-            select_parts.append(f'    {alias_map[main_table]}."{col}" AS {main_table}_{col}')
-    else:
-        # default fallback
-        select_parts.append(f'    {alias_map[main_table]}.*')
-
-    # other tables selection
+    # selected_schema tables only
     for t, v in selected_schema.items():
-        if t == main_table:
-            continue
         if isinstance(v, str) and v.lower() == "keep_all":
             select_parts.append(f'    {alias_map[t]}.*')
         elif isinstance(v, list):
             for col in v:
                 select_parts.append(f'    {alias_map[t]}."{col}" AS {t}_{col}')
+
+    if not select_parts:
+        raise ValueError("No selectable columns after filtering ID/UUID types")
 
     # FROM + JOIN clauses
     sql_lines: List[str] = []
@@ -217,7 +214,9 @@ def decomposer_node(state, llm: BaseChatModel):
     # schema_info = state['desc_str']
     fk_info = state['fk_str']
     query = state['query']
-    selected_info = state.get("extracted_schema")
+    selected_info = state.get("extracted_schema") or {}
+    table_columns = state.get("table_columns", {}) or {}
+    table_column_types = state.get("table_column_types", {}) or {}
     evidence = state.get('evidence')
     mode = state.get('analysis_mode','full_pipeline')
 
@@ -226,7 +225,27 @@ def decomposer_node(state, llm: BaseChatModel):
         prompt = decompose_template.format(
             fk_str=fk_info, query=query, evidence=evidence
         )
-    # elif mode == "full_pipeline":
+
+        llm_reply = call_llm(prompt, llm=llm)
+
+        all_sqls = []
+        for match in re.finditer(r'```sql(.*?)```', llm_reply, re.DOTALL):
+            all_sqls.append(match.group(1).strip())
+        if all_sqls:
+            sql = all_sqls[-1]
+        else:
+            raise ValueError("No SQL found in the LLM response")
+
+        return {
+            **state,
+            'final_sql': sql,
+            'qa_pairs': llm_reply,
+            'send_to': 'refiner_node',
+            'messages': state['messages'] + [
+                {"role": "decomposer", "content": llm_reply}
+            ]
+        }
+    elif mode == "full_pipeline":
         # Expand any keep_all directives into explicit column lists so the LLM
         # can select the full set of variables from Treatment/Outcome tables.
         # table_columns = state.get('table_columns', {}) or {}
@@ -243,28 +262,58 @@ def decomposer_node(state, llm: BaseChatModel):
         # else:
         #     expanded_selected_info = selected_info
 
-    #     prompt = decompose_template_for_causal.format(
-    #         fk_str=fk_info, query=query, selected_info=selected_info, evidence=evidence
-    #     )
-    # llm_reply = call_llm(prompt, llm=llm)
+        #     prompt = decompose_template_for_causal.format(
+        #         fk_str=fk_info, query=query, selected_info=selected_info, evidence=evidence
+        #     )
+        # llm_reply = call_llm(prompt, llm=llm)
 
-    sql_md = generate_flat_dataset_sql(selected_info, fk_info, main_table="user_coupons")
-    sql = sql_md.replace("```sql", "").replace("```", "").strip()
+        if isinstance(selected_info, dict) and "selected_schema" in selected_info:
+            selected_schema = selected_info.get("selected_schema", {})
+        else:
+            selected_schema = selected_info
 
-    # all_sqls = []
-    # for match in re.finditer(r'```sql(.*?)```', llm_reply, re.DOTALL):
-    #     all_sqls.append(match.group(1).strip())
-    # if all_sqls:
-    #     sql = all_sqls[-1]
-    # else:
-    #     raise ValueError("No SQL found in the LLM response")
+        def _is_id_type(table: str, column: str) -> bool:
+            col_type = table_column_types.get(table, {}).get(column)
+            if col_type is None:
+                return False
+            type_str = str(col_type).lower()
+            return type_str == "id" or "uuid" in type_str or "string" in type_str
 
-    return {
-        **state,
-        'final_sql': sql,
-        # 'qa_pairs': llm_reply,
-        'send_to': 'refiner_node',
-        # 'messages': state['messages'] + [
-        #     {"role": "decomposer", "content": llm_reply}
-        # ]
-    }
+        def _filter_id_columns(table: str, columns: List[str]) -> List[str]:
+            return [col for col in columns if not _is_id_type(table, col)]
+
+        expanded_selected_schema: Dict[str, object] = {}
+        for table, decision in (selected_schema or {}).items():
+            if isinstance(decision, str) and decision.lower() == "keep_all":
+                cols = table_columns.get(table)
+                if cols:
+                    filtered = _filter_id_columns(table, cols)
+                    expanded_selected_schema[table] = filtered
+                else:
+                    expanded_selected_schema[table] = decision
+            elif isinstance(decision, list):
+                expanded_selected_schema[table] = _filter_id_columns(table, decision)
+            else:
+                expanded_selected_schema[table] = decision
+
+        if not isinstance(expanded_selected_schema, dict) or not expanded_selected_schema:
+            raise ValueError("No selected_schema found for SQL generation")
+
+        def _extract_table(ref: object) -> Optional[str]:
+            if isinstance(ref, dict):
+                return ref.get("table")
+            if isinstance(ref, str) and "." in ref:
+                return ref.split(".", 1)[0]
+            return None
+
+        main_table = _extract_table(state.get("treatment")) or choose_main_table(expanded_selected_schema)
+
+        sql_md = generate_flat_dataset_sql(expanded_selected_schema, fk_info, main_table=main_table)
+        sql = sql_md.replace("```sql", "").replace("```", "").strip()
+
+
+        return {
+            **state,
+            'final_sql': sql,
+            'send_to': 'refiner_node',
+        }

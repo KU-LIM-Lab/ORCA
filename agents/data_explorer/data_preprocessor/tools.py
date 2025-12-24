@@ -9,7 +9,127 @@ from typing import Dict, List, Tuple, Any, Optional
 import pandas as pd
 import numpy as np
 from collections import Counter
+import re
 
+def coerce_df_to_numeric(
+    df: pd.DataFrame,
+    dropna: bool = True,
+    datetime_unit: str = "s",
+    verbose: bool = False,
+    # NEW:
+    drop_text_cols: bool = True,
+    text_unique_ratio_thresh: float = 0.5,   # high-cardinality text
+    text_avg_len_thresh: int = 30,           # long strings
+    text_avg_tokens_thresh: float = 3.0,     # "sentence-like"
+    treat_id_like_as_text: bool = True,      # uuid-ish / long ids
+) -> pd.DataFrame:
+    TEXTY_NAME_PAT = re.compile(r"(desc|description|memo|note|comment|content|text|message)", re.I)
+
+    df_out = df.copy()
+
+    to_drop = []
+
+    for col in df_out.columns:
+        s = df_out[col]
+
+        # 1) Boolean → int
+        if pd.api.types.is_bool_dtype(s):
+            df_out[col] = s.astype(int)
+            if verbose: print(f"[bool -> int] {col}")
+            continue
+
+        # 2) Datetime → timestamp
+        if pd.api.types.is_datetime64_any_dtype(s):
+            factor = 1e9 if datetime_unit == "s" else 1e6
+            df_out[col] = s.astype("int64") / factor
+            if verbose: print(f"[datetime -> ts] {col}")
+            continue
+
+        # 3) Categorical → codes
+        if pd.api.types.is_categorical_dtype(s):
+            df_out[col] = s.cat.codes
+            if verbose: print(f"[category -> codes] {col}")
+            continue
+
+        # 4) Object/string handling
+        if pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s):
+            s_str = s.astype("string")
+
+            # try numeric first (same idea as before)
+            s_clean = (
+                s_str
+                .str.replace(",", "", regex=False)
+                .str.replace("₩", "", regex=False)
+                .str.strip()
+            )
+            numeric = pd.to_numeric(s_clean, errors="coerce")
+
+            if numeric.notna().mean() > 0.8:
+                df_out[col] = numeric
+                if verbose: print(f"[object -> numeric] {col}")
+                continue
+
+            # Heuristics: decide "free-text" vs "category"
+            non_na = s_clean.dropna()
+            n = len(non_na)
+
+            # if empty column, just coerce
+            if n == 0:
+                df_out[col] = pd.to_numeric(s_clean, errors="coerce")
+                if verbose: print(f"[empty object -> numeric coerce] {col}")
+                continue
+
+            nunique = non_na.nunique(dropna=True)
+            unique_ratio = nunique / n
+
+            avg_len = non_na.str.len().mean()
+            avg_tokens = non_na.str.split().map(len).mean()
+
+            # uuid/id-like heuristic (optional)
+            id_like = False
+            if treat_id_like_as_text:
+                # many long tokens with dashes or hex-ish patterns
+                sample = non_na.head(200)
+                hexish = sample.str.fullmatch(r"[0-9a-fA-F-]{16,}").mean()
+                id_like = (hexish > 0.5) or (avg_len >= 24 and unique_ratio > 0.8)
+
+            name_texty = bool(TEXTY_NAME_PAT.search(col))
+
+            is_text = (
+                name_texty
+                or id_like
+                or unique_ratio >= text_unique_ratio_thresh
+                or avg_len >= text_avg_len_thresh
+                or avg_tokens >= text_avg_tokens_thresh
+            )
+
+            if drop_text_cols and is_text:
+                to_drop.append(col)
+                if verbose:
+                    print(f"[drop text-like col] {col} "
+                          f"(unique_ratio={unique_ratio:.2f}, avg_len={avg_len:.1f}, avg_tokens={avg_tokens:.1f})")
+                continue
+
+            # otherwise treat as categorical
+            df_out[col] = pd.Categorical(s_clean).codes
+            if verbose:
+                print(f"[object -> categorical codes] {col} "
+                      f"(unique_ratio={unique_ratio:.2f}, avg_len={avg_len:.1f}, avg_tokens={avg_tokens:.1f})")
+            continue
+
+        # 5) Everything else → force numeric
+        df_out[col] = pd.to_numeric(s, errors="coerce")
+        if verbose: print(f"[forced numeric] {col}")
+
+    if to_drop:
+        df_out = df_out.drop(columns=to_drop)
+
+    if dropna:
+        before = len(df_out)
+        df_out = df_out.dropna()
+        if verbose: print(f"Dropped {before - len(df_out)} rows due to NaN")
+
+    return df_out
 
 def clean_nulls_tool(
     df: pd.DataFrame,
@@ -33,7 +153,8 @@ def clean_nulls_tool(
     ratio = min(max(null_ratio, 0.0), 1.0)
     thresh = max(int(len(df) * ratio), 1)
     
-    cleaned_df = df.dropna(axis=1, thresh=thresh)
+    # cleaned_df = df.dropna(axis=1, thresh=thresh)
+    cleaned_df = coerce_df_to_numeric(df)
     dropped_cols = [col for col in df.columns if col not in cleaned_df.columns]
     
     return cleaned_df, dropped_cols

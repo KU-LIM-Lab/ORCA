@@ -2,6 +2,8 @@
 from typing import TypedDict, Optional, Any, Dict, List, Annotated
 from datetime import datetime
 from enum import Enum
+from dowhy import CausalModel
+from dowhy.causal_estimator import CausalEstimate
 
 class ExecutionStatus(Enum):
     """Execution status for different phases"""
@@ -210,6 +212,13 @@ class AgentState(TypedDict, total=False):
     inference_method: str
     causal_estimates: Dict[str, Any]
     confidence_intervals: Dict[str, List[float]]
+    # DoWhy analysis results
+    causal_model: Optional[CausalModel] = None  # dowhy model
+    causal_estimand: Optional[Any] = None  
+    causal_estimate: Optional[CausalEstimate] = None  
+    causal_effect_ate: Optional[float] = None  # ATE (Average Treatment Effect)
+    causal_effect_ci: Optional[Any] = None 
+    refutation_result: Optional[str] = None 
     
     # C.3 Interpretation
     interpretation_results: Dict[str, Any]

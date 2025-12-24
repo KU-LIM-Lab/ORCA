@@ -1,9 +1,10 @@
 """Data Preprocessor Agent implementation using SpecialistAgent pattern."""
 
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Tuple
 import pandas as pd
 import logging
 import numpy as np
+from collections import Counter
 from core.base import SpecialistAgent, AgentType
 from core.state import AgentState
 from utils.database import Database
@@ -47,6 +48,27 @@ class DataPreprocessorAgent(SpecialistAgent):
     def get_required_state_keys(self):
         """Return required state keys for preprocessing."""
         return ["db_id"]
+
+    def _dedupe_columns(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
+        """Ensure DataFrame columns are unique to avoid parquet/processing errors."""
+        if df is None or df.empty or not df.columns.duplicated().any():
+            return df, []
+
+        counts = Counter()
+        new_cols: List[str] = []
+        renamed: List[Tuple[str, str]] = []
+        for col in df.columns:
+            counts[col] += 1
+            if counts[col] == 1:
+                new_cols.append(col)
+            else:
+                new_name = f"{col}__{counts[col]-1}"
+                new_cols.append(new_name)
+                renamed.append((col, new_name))
+
+        df = df.copy()
+        df.columns = new_cols
+        return df, renamed
 
     def _register_specialist_tools(self) -> None:
         """Register preprocessing tools."""
@@ -114,6 +136,12 @@ class DataPreprocessorAgent(SpecialistAgent):
                 try:
                     self.df = load_df_parquet(df_raw_key)
                     if self.df is not None:
+                        self.df, renamed = self._dedupe_columns(self.df)
+                        if renamed:
+                            renamed_cols = ", ".join([new for _, new in renamed])
+                            metadata["warnings"].append(
+                                f"Renamed duplicate columns from cache: {renamed_cols}"
+                            )
                         metadata["df_redis_key"] = df_raw_key
                         metadata["df_cached"] = True
                 except Exception as e:
@@ -131,6 +159,13 @@ class DataPreprocessorAgent(SpecialistAgent):
                     self.df = pd.DataFrame(rows, columns=columns)
                 except Exception as e:
                     raise RuntimeError(f"Failed to execute SQL query: {e}") from e
+
+                self.df, renamed = self._dedupe_columns(self.df)
+                if renamed:
+                    renamed_cols = ", ".join([new for _, new in renamed])
+                    metadata["warnings"].append(
+                        f"Renamed duplicate columns from query: {renamed_cols}"
+                    )
 
                 if self.df is None or self.df.empty:
                     metadata["warnings"].append("Query returned no rows.")
@@ -300,6 +335,12 @@ class DataPreprocessorAgent(SpecialistAgent):
             if self.df_redis_key:
                 from utils.redis_df import save_df_parquet
                 processed_key = f"{self.df_redis_key}:clean_nulls"
+                self.df, renamed = self._dedupe_columns(self.df)
+                if renamed:
+                    renamed_cols = ", ".join([new for _, new in renamed])
+                    state.setdefault("warnings", []).append(
+                        f"Renamed duplicate columns before clean_nulls cache: {renamed_cols}"
+                    )
                 save_df_parquet(processed_key, self.df)
                 self.df_redis_key = processed_key
                 state["df_redis_key"] = self.df_redis_key
@@ -335,6 +376,12 @@ class DataPreprocessorAgent(SpecialistAgent):
             if self.df_redis_key:
                 from utils.redis_df import save_df_parquet
                 processed_key = f"{self.df_redis_key}:encode"
+                self.df, renamed = self._dedupe_columns(self.df)
+                if renamed:
+                    renamed_cols = ", ".join([new for _, new in renamed])
+                    state.setdefault("warnings", []).append(
+                        f"Renamed duplicate columns before encode cache: {renamed_cols}"
+                    )
                 save_df_parquet(processed_key, self.df)
                 self.df_redis_key = processed_key
                 state["df_redis_key"] = self.df_redis_key
@@ -363,13 +410,13 @@ class DataPreprocessorAgent(SpecialistAgent):
         if state.get("error"):
             return state
 
-        logger.info("Cleaning null skipped. Original data preserved for causal discovery algorithms.")
+        logger.info("Cleaning null process")
         state = self._clean_nulls(state)
         if state.get("error"):
             return state
 
         # Skip encoding if flag is set (for causal discovery with mixed data)
-        skip_encoding = state.get("skip_one_hot_encoding", False)
+        # skip_encoding = state.get("skip_one_hot_encoding", False)
         # if skip_encoding:
         logger.info("One-hot encoding skipped. Original data preserved for causal discovery algorithms.")
         state["encoded_columns"] = []
@@ -382,4 +429,3 @@ class DataPreprocessorAgent(SpecialistAgent):
         state["data_preprocessing_completed"] = True
 
         return state
-

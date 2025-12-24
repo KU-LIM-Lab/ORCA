@@ -2,6 +2,7 @@
 from typing import Any, Dict, Optional
 from core.base import SpecialistAgent, AgentType, AgentState
 from monitoring.metrics.collector import MetricsCollector
+from utils.redis_df import load_df_parquet
 from agents.causal_analysis.nodes.dowhy_analysis import build_dowhy_analysis_node
 from agents.causal_analysis.nodes.config_selection import build_config_selection_node
 from agents.causal_analysis.nodes.generate_answer import build_generate_answer_node
@@ -126,7 +127,11 @@ class CausalAnalysisAgent(SpecialistAgent):
             if not state.get("parsed_query"):
                 raise ValueError("Parsed query is required for config selection")
             
+            df_redis_key = state.get("df_redis_key")
             df_preprocessed = state.get("df_preprocessed")
+            if df_preprocessed is None and df_redis_key:
+                df_preprocessed = load_df_parquet(df_redis_key)
+            
             if df_preprocessed is None:
                 raise ValueError("Preprocessed data is required for config selection")
                         
@@ -152,10 +157,14 @@ class CausalAnalysisAgent(SpecialistAgent):
             if not state.get("parsed_query"):
                 raise ValueError("Parsed query is required for DoWhy analysis")
             
-            df_preprocessed = state.get("df_preprocessed")
-            if df_preprocessed is None:
-                raise ValueError("Preprocessed data is required for DoWhy analysis")
-            
+            redis_key = state.get("df_redis_key")
+            if redis_key:
+                try:
+                    df = load_df_parquet(redis_key)
+                    
+                except Exception as e:
+                    print(f"⚠️ Failed to load DataFrame from Redis key {redis_key}: {e}")
+                
             # Build and invoke dowhy_analysis node
             dowhy_analysis_node = build_dowhy_analysis_node()
             result_state = dowhy_analysis_node.invoke(state)

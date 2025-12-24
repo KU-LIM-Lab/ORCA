@@ -209,6 +209,8 @@ class OrchestrationGraph:
                 initial_state["skip_steps"] = skip_steps
         
         initial_state["interactive"] = self.interactive
+        for key in ("df_preprocessed", "df_raw", "df", "gt_df"):
+            initial_state.pop(key, None)
         
         # Execute the graph
         config = {"configurable": {"thread_id": session_id or "default_session"}}

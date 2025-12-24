@@ -516,6 +516,8 @@ class ExecutorAgent(OrchestratorAgent):
         # Update state with execution results
         if result.success:
             state.update(result.data or {})
+            for key in ("df_preprocessed", "df_raw", "df", "gt_df"):
+                state.pop(key, None)
         else:
             state["execution_status"] = ExecutionStatus.FAILED
             state["error"] = result.error or "Execution failed"
