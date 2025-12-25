@@ -72,7 +72,7 @@ def _simulate_sem_cd(
     weights = rng.uniform(0.5, 1.5, size=adj.shape) * (rng.choice([-1.0, 1.0], size=adj.shape))
     weights = weights * (adj > 0)
 
-    X = np.zeros((n_samples, n), dtype=int)
+    X = np.zeros((n_samples, n), dtype=float)
 
     if noise_type == "non-gaussian":
         noise_data = rng.laplace(0.0, 1.0, size=(n_samples, n))

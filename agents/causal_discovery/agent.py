@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+import threading
 
 from core.base import SpecialistAgent, AgentType
 from core.state import AgentState
@@ -772,25 +773,6 @@ class CausalDiscoveryAgent(SpecialistAgent):
             
             # Run algorithms in parallel
             algorithm_results = {}
-            
-            # with ThreadPoolExecutor(max_workers=len(algorithm_configs)) as executor:
-            #     futures = {}
-            #     # Per-algorithm timeouts (seconds)
-            #     timeout_map = {"LiNGAM": 120, "ANM": 180, "PC": 180, "GES": 300, "FCI": 300, "LiM": 300, "CAM": 300}
-            #     for config in algorithm_configs:
-            #         alg_name = config["alg"]
-            #         future = executor.submit(self._dispatch_algorithm, config, df, data_profile, variable_schema)
-            #         futures[alg_name] = future
-                
-            #     # Collect results
-            #     for alg_name, future in futures.items():
-            #         try:
-            #             result = future.result(timeout=timeout_map.get(alg_name, 300))
-            #             algorithm_results[alg_name] = result
-            #             logger.info(f"Algorithm {alg_name} completed successfully")
-            #         except Exception as e:
-            #             logger.error(f"Algorithm {alg_name} failed: {str(e)}")
-            #             algorithm_results[alg_name] = {"error": str(e)}
             executor = ThreadPoolExecutor(max_workers=len(algorithm_configs))
             try:
                 futures = {}
@@ -813,9 +795,8 @@ class CausalDiscoveryAgent(SpecialistAgent):
                         logger.error(f"Algorithm {alg_name} failed: {e}")
                         algorithm_results[alg_name] = {"error": str(e)}
             finally:
-                executor.shutdown(wait=False, cancel_futures=True)  # 'with' 대신
+                executor.shutdown(wait=False, cancel_futures=True)  
             
-            # Convert numpy types to Python native types for msgpack serialization
             algorithm_results = _convert_numpy_types(algorithm_results)
             
             # Store results in Redis if large

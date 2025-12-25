@@ -16,5 +16,5 @@ export PYTHONPATH="experiments/graph_discovery/methods:${PYTHONPATH:-}"
 #   --save-interval 0
 
 
+# python -m experiments.graph_discovery.run_experiment --config experiments/graph_discovery/graph_discovery_experiments.yaml --experiment testing_methods
 python -m experiments.graph_discovery.run_experiment --config experiments/graph_discovery/graph_discovery_experiments.yaml --experiment full_synthetic_cd
-# python -m experiments.graph_discovery.run_experiment --config experiments/graph_discovery/graph_discovery_experiments.yaml --experiment full_bnlearn

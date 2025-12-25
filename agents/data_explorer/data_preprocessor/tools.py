@@ -122,7 +122,7 @@ def detect_schema_tool(
         var_info = {
             "missing_ratio": float(df[col].isna().sum() / len(df)),
             "cardinality": None,
-            "unique_values": None  # For HITL confirmation
+            "unique_values": None  
         }
         
         # Get unique values (excluding NaN)
@@ -130,90 +130,94 @@ def detect_schema_tool(
         n_unique = len(unique_vals)
         
         # Detect data type
-        # Check bool type first (pandas bool is considered numeric, but should be treated as categorical)
+        # Check bool type first
         if pd.api.types.is_bool_dtype(df[col]):
-            # Boolean column - always binary categorical
+            # Boolean column
             var_info["data_type"] = "Binary"
             var_info["cardinality"] = 2
             var_info["unique_values"] = sorted([bool(v) for v in unique_vals])
             n_binary += 1
         elif pd.api.types.is_numeric_dtype(df[col]):
             # Numeric column
-            # Float types are always continuous (even with few unique values)
+            # Float types
             if pd.api.types.is_float_dtype(df[col]):
                 var_info["data_type"] = "Continuous"
                 n_continuous += 1
-            # Integer types: check if truly binary (0/1 or boolean-like)
+            # Integer types
             elif pd.api.types.is_integer_dtype(df[col]):
-                if n_unique == 2:
-                    # Check if values are 0/1 or boolean-like
-                    unique_list = sorted(unique_vals.tolist())
-                    is_binary = (
-                        unique_list == [0, 1] or
-                        unique_list == [0.0, 1.0] or
-                        (len(unique_list) == 2 and all(v in [0, 1, True, False] for v in unique_list))
-                    )
+                unique_list = sorted(unique_vals.tolist())
+
+                if n_unique == 1:
+                    var_info["data_type"] = "Ordinal"
+                    var_info["cardinality"] = 1
+                    var_info["unique_values"] = unique_list
+                    n_categorical += 1
+
+                # (1) 0/1 -> Binary
+                elif n_unique == 2:
+                    is_binary = set(unique_list).issubset({0, 1, True, False, 0.0, 1.0})
                     if is_binary:
                         var_info["data_type"] = "Binary"
                         var_info["cardinality"] = 2
                         var_info["unique_values"] = unique_list
                         n_binary += 1
                     else:
-                        # Integer with 2 unique values but not 0/1 -> likely continuous with small sample
-                        var_info["data_type"] = "Continuous"
-                        n_continuous += 1
-                elif n_unique <= 10:
-                    # If range is small (e.g., 1-5) and sequential, might be ordinal
-                    unique_list = sorted(unique_vals.tolist())
+                        var_info["data_type"] = "Nominal"
+                        var_info["cardinality"] = 2
+                        var_info["unique_values"] = unique_list
+                        n_categorical += 1
+
+                else:
+                    # (2) low/mid cardinality
+                    ORDINAL_MAX_UNIQUE = 30  
+                    LOW_MAX_UNIQUE = 10
+
                     min_val, max_val = unique_list[0], unique_list[-1]
                     range_size = max_val - min_val + 1
-                    
-                    # If range is small and values are sequential, likely ordinal
-                    if range_size <= 10 and range_size == n_unique:
+                    is_sequential = (range_size == n_unique)
+
+                    if n_unique <= LOW_MAX_UNIQUE:
+                        if is_sequential:
+                            var_info["data_type"] = "Ordinal"
+                        else:
+                            var_info["data_type"] = "Nominal"
+                        var_info["cardinality"] = n_unique
+                        var_info["unique_values"] = unique_list
+                        n_categorical += 1
+
+                    elif n_unique <= ORDINAL_MAX_UNIQUE and is_sequential:
                         var_info["data_type"] = "Ordinal"
                         var_info["cardinality"] = n_unique
                         var_info["unique_values"] = unique_list
                         n_categorical += 1
+
                     else:
-                        # Likely continuous (count data, IDs, etc.) with few samples
                         var_info["data_type"] = "Continuous"
                         n_continuous += 1
-                else:
-                    # High cardinality integer -> continuous
-                    var_info["data_type"] = "Continuous"
-                    n_continuous += 1
-            else:
-                # Other numeric types (shouldn't happen often) -> continuous
-                var_info["data_type"] = "Continuous"
-                n_continuous += 1
+                        
         else:
-            # Categorical column (object, category, string)
+            # Other data types
             var_info["cardinality"] = n_unique
             
             if n_unique == 2:
-                # Binary categorical
+                # Binary
                 var_info["data_type"] = "Binary"
                 var_info["unique_values"] = sorted([str(v) for v in unique_vals])
                 n_binary += 1
             elif n_unique <= 10:
-                # Low cardinality - store unique values for HITL confirmation
                 var_info["unique_values"] = sorted([str(v) for v in unique_vals])
-                # Heuristic for ordinal: check if values look like ordered categories
-                # (e.g., "low", "medium", "high" or numeric strings)
-                var_info["data_type"] = "Nominal"  # Default to nominal, can be updated by user in HITL
+                var_info["data_type"] = "Nominal" 
                 n_categorical += 1
             else:
-                # High cardinality categorical
                 var_info["data_type"] = "Nominal"
                 n_categorical += 1
             
-            # Check for high cardinality
+            # High cardinality check
             if var_info["cardinality"] and var_info["cardinality"] > high_cardinality_threshold:
                 high_cardinality_vars.append(col)
         
         variables[col] = var_info
     
-    # Detect mixed data types
     has_continuous = n_continuous > 0
     has_categorical = (n_categorical + n_binary) > 0
     mixed_data_types = has_continuous and has_categorical
