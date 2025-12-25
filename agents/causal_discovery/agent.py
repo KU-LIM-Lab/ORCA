@@ -17,11 +17,11 @@ import numpy as np
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-import threading
 
 from core.base import SpecialistAgent, AgentType
 from core.state import AgentState
 from monitoring.metrics.collector import MetricsCollector
+from agents.causal_discovery.tools import get_edges, get_variables, get_graph_type, validate_graph_schema
 
 
 logger = logging.getLogger(__name__)
@@ -74,7 +74,6 @@ ALGORITHM_LIST = [
     # "CAM",      # additive models (temporarily disabled)
     "FCI",        # allows latent confounders (PAG)
     "LiM",        # Linear Mixed model for mixed data
-    "TSCM"        # Tree-Structured Causal Model for mixed data
 ]
 
 # === Algorithm Family Classification ===
@@ -125,7 +124,7 @@ ASSUMPTION_METHODS = {
     },
     # PC: CI tests valid for data‑generating process (often Gaussian‑CI)
     "PC": {
-        "required": ["S_lin"],  # constraint-based; minimal linearity assumed
+        "required": ["S_lin"], 
         "preferred": ["S_Gauss"],
         "irrelevant": ["S_EqVar", "S_nG", "S_ANM"]
     },
@@ -180,7 +179,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
         self.config = config or {}
         
         # Core parameters
-        self.bootstrap_iterations = self.config.get("bootstrap_iterations", 100)
+        self.bootstrap_iterations = self.config.get("bootstrap_iterations", 50)
         self.cv_folds = self.config.get("cv_folds", 5)
         
         # Pipeline parameters
@@ -239,6 +238,8 @@ class CausalDiscoveryAgent(SpecialistAgent):
             ("cam_tool", self._cam_tool, "CAM algorithm (via CDT)"),
             ("lim_tool", self._lim_tool, "LiM algorithm: Linear Mixed model for mixed data"),
             ("tscm_tool", self._tscm_tool, "TSCM algorithm: Tree-Structured Causal Model for mixed data"),
+            ("notears_linear_tool", self._notears_linear_tool, "NOTEARS-linear algorithm: DAG learning via continuous optimization (linear)"),
+            ("notears_nonlinear_tool", self._notears_nonlinear_tool, "NOTEARS-nonlinear algorithm: DAG learning via continuous optimization (nonlinear MLP)"),
             
             # Evaluation & Analysis
             ("bootstrapper", self._bootstrapper, "Bootstrap resampling and frequency aggregation"),
@@ -694,7 +695,8 @@ class CausalDiscoveryAgent(SpecialistAgent):
             execution_plan.extend([
                 {"alg": "PC", "ci_test": pc_ci_test},
                 {"alg": "GES", "score": "bic-g" if is_gaussian else "generalized_rkhs"},  # 정규성이면 bic-g, 아니면 rkhs
-                {"alg": "FCI", "ci_test": fci_ci_test}
+                {"alg": "FCI", "ci_test": fci_ci_test},
+                {"alg": "NOTEARS-linear"}
             ])
             
             # LiNGAM: Linear + Non-Gaussianity
@@ -709,9 +711,8 @@ class CausalDiscoveryAgent(SpecialistAgent):
             execution_plan.extend([
                 {"alg": "PC", "ci_test": "kernel_kcit"},
                 {"alg": "GES", "score": "generalized_rkhs"},
-                # CAM temporarily disabled from execution plan
-                # {"alg": "CAM"},
-                {"alg": "FCI", "ci_test": "kernel_kcit"}
+                {"alg": "FCI", "ci_test": "kernel_kcit"},
+                {"alg": "NOTEARS-nonlinear"}
             ])
             
             # ANM: 비선형 + ANM 적합성
@@ -776,7 +777,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
             executor = ThreadPoolExecutor(max_workers=len(algorithm_configs))
             try:
                 futures = {}
-                timeout_map = {"LiNGAM": 120, "ANM": 180, "PC": 180, "GES": 300, "FCI": 300, "LiM": 300, "CAM": 300}
+                algorithm_timeout = 300
                 for config in algorithm_configs:
                     alg_name = config["alg"]
                     future = executor.submit(self._dispatch_algorithm, config, df, data_profile, variable_schema)
@@ -784,12 +785,12 @@ class CausalDiscoveryAgent(SpecialistAgent):
 
                 for alg_name, future in futures.items():
                     try:
-                        result = future.result(timeout=timeout_map.get(alg_name, 300))
+                        result = future.result(timeout=algorithm_timeout)
                         algorithm_results[alg_name] = result
                         logger.info(f"Algorithm {alg_name} completed successfully")
                     except TimeoutError:
                         cancelled = future.cancel()
-                        logger.error(f"Algorithm {alg_name} timeout. cancel()={cancelled} (thread may still be running)")
+                        logger.error(f"Algorithm {alg_name} timeout after {algorithm_timeout}s. cancel()={cancelled} (thread may still be running)")
                         algorithm_results[alg_name] = {"error": "timeout"}
                     except Exception as e:
                         logger.error(f"Algorithm {alg_name} failed: {e}")
@@ -1010,29 +1011,50 @@ class CausalDiscoveryAgent(SpecialistAgent):
         """Rank graphs using composite score
         
         For DAG: Uses 3 scores (global_consistency, sampling_stability, structural_stability)
-        For PAG: Uses 2 scores (sampling_stability, structural_stability) with weight renormalization
+        For CPDAG: Uses 2 scores (sampling_stability, structural_stability) with weight renormalization
+        For PAG: Uses only sampling_stability (composite_score = sampling_stability)
         """
         for item in scorecard:
-            is_pag = item["graph"].get("metadata", {}).get("graph_type") == "PAG"
+            graph = item["graph"]
+            graph_type = get_graph_type(graph)
+            is_pag = graph_type == "PAG"
+            is_cpdag = graph_type == "CPDAG"
+            
+            global_consistency = item.get("global_consistency")
             
             if is_pag:
-                # PAG: Use only sampling_stability
-                w_samp = self.composite_weights["sampling_stability"]
-                w_struct = self.composite_weights["structural_stability"]
-                
-
                 composite_score = item["sampling_stability"]
-
-            else:
-                # DAG: Use all 3 scores (global_consistency, sampling_stability, structural_stability)
+            elif is_cpdag:
+                sampling_stability = item.get("sampling_stability", 0.0)
+                structural_stability = item.get("structural_stability", 0.0)
+                
+                w_sampling = self.composite_weights["sampling_stability"]
+                w_structural = self.composite_weights["structural_stability"]
+                
+                # Normalize weights to sum to 1.0
+                total_weight = w_sampling + w_structural
+                if total_weight > 0:
+                    w_sampling_norm = w_sampling / total_weight
+                    w_structural_norm = w_structural / total_weight
+                else:
+                    w_sampling_norm = 0.5
+                    w_structural_norm = 0.5
+                
                 composite_score = (
-                    self.composite_weights["global_consistency"] * item["global_consistency"] +
+                    w_sampling_norm * sampling_stability +
+                    w_structural_norm * structural_stability
+                )
+            else:
+                gc = item.get("global_consistency")
+                gc = 0.0 if gc is None else gc
+                composite_score = (
+                    self.composite_weights["global_consistency"] * gc +
                     self.composite_weights["sampling_stability"] * item["sampling_stability"] +
                     self.composite_weights["structural_stability"] * item["structural_stability"]
                 )
             
             # Penalty for low edge count
-            n_edges = len(item["graph"].get("graph", {}).get("edges", []))
+            n_edges = len(get_edges(graph))
             if n_edges == 0:
                 composite_score *= 0.1
             elif n_edges < 3:
@@ -1040,7 +1062,6 @@ class CausalDiscoveryAgent(SpecialistAgent):
             
             item["composite_score"] = composite_score
         
-        # Sort by composite score
         ranked = sorted(scorecard, key=lambda x: x["composite_score"], reverse=True)
         return ranked
     
@@ -1051,18 +1072,25 @@ class CausalDiscoveryAgent(SpecialistAgent):
             "sampling": 0.2
         })
         
-        # Step 1: Filter by global_consistency (skip for PAG)
+        # Step 1: Filter by global_consistency (skip for PAG/CPDAG where it's None)
         step1 = []
         for g in scorecard:
-            is_pag = g["graph"].get("metadata", {}).get("graph_type") == "PAG"
-            if is_pag or g["global_consistency"] >= pruning_thresholds["consistency"]:
+            graph = g["graph"]
+            graph_type = get_graph_type(graph)
+            is_pag = graph_type == "PAG"
+            is_cpdag = graph_type == "CPDAG"
+            global_consistency = g.get("global_consistency")
+            
+            # Skip filtering for PAG/CPDAG (global_consistency is None)
+            if is_pag or is_cpdag or (global_consistency is not None and global_consistency >= pruning_thresholds["consistency"]):
                 step1.append(g)
         
         # Step 2: Filter by sampling_stability
         step2 = [g for g in step1 if g["sampling_stability"] >= pruning_thresholds["sampling"]]
         
         # Step 3: Sort by structural_stability (None values go to end)
-        final_ranked = sorted(step2, key=lambda x: (x["structural_stability"] is None, x.get("structural_stability") or 0.0), reverse=True)
+        final_ranked = sorted(step2, key=lambda x: (x["structural_stability"] is None, -(x.get("structural_stability") or 0.0))
+)
         
         return final_ranked
     
@@ -1082,16 +1110,22 @@ class CausalDiscoveryAgent(SpecialistAgent):
         def calculate_global_consistency():
             """Calculate global consistency score"""
             try:
-                is_pag = graph.get("metadata", {}).get("graph_type") == "PAG"
-                if is_pag:
-                    return 0.0 
+                graph_type = get_graph_type(graph)
+                # CPDAG is MEC (equivalence class), not a single DAG, so skip global_markov_test
+                # PAG also skipped due to latent confounders
+                if graph_type in ["PAG", "CPDAG"]:
+                    return None
                 
                 metric_functions = self._get_dynamic_metric_functions(execution_plan)
                 global_consistency_func = metric_functions.get("global_consistency")
                 
                 markov_result = self.use_tool("pruning_tool", "global_markov_test", graph, df, 
                                              alpha=self.ci_alpha, max_pa_size=self.max_pa_size)
-                violation_ratio = markov_result.get("violation_ratio", 1.0)
+                violation_ratio = markov_result.get("violation_ratio")
+                
+                # If violation_ratio is None (no successful tests), return None
+                if violation_ratio is None:
+                    return None
                 
                 if global_consistency_func:
                     candidate_dict = {"violation_ratio": violation_ratio}
@@ -1101,12 +1135,18 @@ class CausalDiscoveryAgent(SpecialistAgent):
                     return 1.0 - violation_ratio 
             except Exception as e:
                 logger.warning(f"Global consistency calculation failed for {alg_name}: {e}")
-                return 0.0
+                return None
         
         def calculate_sampling_stability():
-            """Calculate sampling stability score"""
+            """Calculate sampling stability score
+            
+            Uses robustness_score which focuses on edge reproducibility (based on successful iterations only).
+            Alternative: effective_score = robustness_score * success_rate (penalizes algorithm/data reliability issues)
+            """
             try:
                 bootstrap_result = self.use_tool("bootstrapper", "bootstrap_evaluation", df, graph, alg_name, self.bootstrap_iterations)
+                # Use robustness_score: mean confidence across original edges (based on successful iterations)
+                # For failure-aware scoring, use: bootstrap_result.get("effective_score", 0.5)
                 return bootstrap_result.get("robustness_score", 0.5)
             except Exception as e:
                 logger.warning(f"Sampling stability calculation failed for {alg_name}: {e}")
@@ -1183,9 +1223,11 @@ class CausalDiscoveryAgent(SpecialistAgent):
         return {}
 
     def _validate_graph_structure(self, graph: Dict[str, Any]) -> bool:
+        """Validate graph structure using unified schema validator"""
         try:
-            return bool(graph and "graph" in graph and "edges" in graph["graph"])
-        except Exception:
+            validate_graph_schema(graph)
+            return True
+        except ValueError:
             return False
 
     def _dispatch_algorithm(self, config: Dict[str, Any], df: pd.DataFrame, 
@@ -1211,6 +1253,10 @@ class CausalDiscoveryAgent(SpecialistAgent):
                               indep_test=ci_test)
         if alg_name == "LiM":
             return self._run_lim(df, variable_schema=variable_schema)
+        if alg_name == "NOTEARS-linear":
+            return self._run_notears_linear(df)
+        if alg_name == "NOTEARS-nonlinear":
+            return self._run_notears_nonlinear(df)
         return {"error": f"Unknown algorithm: {alg_name}"}
     
     
@@ -1234,13 +1280,13 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 weights.append(candidate["composite_score"])
             
             # 1. Build consensus skeleton
-            skeleton_result = self.use_tool("ensemble_tool", "build_consensus_skeleton", graphs, weights)
+            skeleton_result = self.use_tool("ensemble_tool", "build_consensus_skeleton", graphs, weights=weights)
             
             # 2. Resolve directions
-            directions_result = self.use_tool("ensemble_tool", "resolve_directions", skeleton_result, graphs, data_profile)
+            directions_result = self.use_tool("ensemble_tool", "resolve_directions", skeleton_result, graphs, data_profile, weights=weights)
             
             # 3. Construct PAG-like graph
-            pag_result = self.use_tool("ensemble_tool", "construct_pag", directions_result, {})
+            pag_result = self.use_tool("ensemble_tool", "construct_pag", directions_result)
             
             # 4. Construct single DAG with tie-breaking
             top_algorithm = top_candidates[0]["algorithm"]
@@ -1357,6 +1403,31 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 state = self.request_hitl(state, payload=payload, hitl_type="final_graph_review")
                 return state
             
+            # Log final selected graph with details and reasoning
+            n_edges = len(get_edges(dag_result))
+            n_nodes = len(get_variables(dag_result))
+            graph_type = get_graph_type(dag_result)
+            
+            # Get top candidate scores for logging
+            top_candidate_scores = {}
+            if top_candidates:
+                top_candidate = top_candidates[0]
+                top_candidate_scores = {
+                    "composite_score": top_candidate.get("composite_score", "N/A"),
+                    "global_consistency": top_candidate.get("global_consistency", "N/A"),
+                    "sampling_stability": top_candidate.get("sampling_stability", "N/A"),
+                    "structural_stability": top_candidate.get("structural_stability", "N/A")
+                }
+            
+            logger.info(
+                f"Final selected graph:\n"
+                f"  Algorithm: {top_algorithm}\n"
+                f"  Graph Type: {graph_type}\n"
+                f"  Nodes: {n_nodes}, Edges: {n_edges}\n"
+                f"  Scores: {top_candidate_scores}\n"
+                f"  Reasoning: {reasoning}"
+            )
+            
             logger.info(f"Ensemble synthesis completed. Top algorithm: {top_algorithm}")
             return state
             
@@ -1385,28 +1456,58 @@ class CausalDiscoveryAgent(SpecialistAgent):
             
             profile_summary = f"{data_type}, CI reliability: {ci_reliability}, Mostly linear: {is_mostly_linear}"
             
+            # Build candidate scores summary
+            candidate_details = []
+            for i, candidate in enumerate(top_candidates, 1):
+                alg = candidate.get("algorithm", "Unknown")
+                comp_score = candidate.get("composite_score", "N/A")
+                gc = candidate.get("global_consistency", "N/A")
+                ss = candidate.get("sampling_stability", "N/A")
+                sts = candidate.get("structural_stability", "N/A")
+                
+                score_str = f"composite={comp_score:.3f}" if isinstance(comp_score, (int, float)) else f"composite={comp_score}"
+                if isinstance(gc, (int, float)):
+                    score_str += f", consistency={gc:.3f}"
+                if isinstance(ss, (int, float)):
+                    score_str += f", sampling={ss:.3f}"
+                if isinstance(sts, (int, float)):
+                    score_str += f", structural={sts:.3f}"
+                
+                candidate_details.append(f"  {i}. {alg}: {score_str}")
+            
+            candidates_summary = "\n".join(candidate_details) if candidate_details else "  None"
+            
+            # Get top candidate scores for rationale
+            top_candidate = top_candidates[0] if top_candidates else {}
+            top_comp_score = top_candidate.get("composite_score", "N/A")
+            top_comp_str = f"{top_comp_score:.3f}" if isinstance(top_comp_score, (int, float)) else str(top_comp_score)
+            
             reasoning = f"""
-            Ensemble Synthesis Results:
-            
-            Top Candidates: {[c['algorithm'] for c in top_candidates]}
-            Leading Algorithm: {top_algorithm}
-            
-            Data Profile: {profile_summary}
-            
-            PAG Construction:
-            - Graph Type: {pag_result.get('graph_type', 'Unknown')}
-            - Edge Count: {len(pag_result.get('edges', []))}
-            - Uncertainty Markers: {pag_result.get('metadata', {}).get('uncertainty_markers', False)}
-            
-            DAG Construction:
-            - Graph Type: {dag_result.get('graph_type', 'Unknown')}
-            - Edge Count: {len(dag_result.get('edges', []))}
-            - Tie-breaking Method: {dag_result.get('metadata', {}).get('construction_method', 'Unknown')}
-            
-            Rationale: The ensemble synthesis combines the top {len(top_candidates)} candidates using consensus
-            skeleton building and direction resolution. The PAG preserves uncertainty information for reporting,
-            while the DAG applies assumption-based tie-breaking for downstream inference tasks.
-            """
+Ensemble Synthesis Results:
+
+Top Candidates (ranked by composite score):
+{candidates_summary}
+
+Leading Algorithm: {top_algorithm} (composite_score: {top_comp_str})
+
+Data Profile: {profile_summary}
+
+PAG Construction:
+- Graph Type: {get_graph_type(pag_result)}
+- Edge Count: {len(get_edges(pag_result))}
+- Uncertainty Markers: {pag_result.get('metadata', {}).get('uncertainty_markers', False)}
+
+DAG Construction:
+- Graph Type: {get_graph_type(dag_result)}
+- Edge Count: {len(get_edges(dag_result))}
+- Tie-breaking Method: {dag_result.get('metadata', {}).get('construction_method', 'Unknown')}
+
+Selection Rationale:
+The ensemble synthesis combines the top {len(top_candidates)} candidates using consensus skeleton building and direction resolution. 
+{top_algorithm} was selected as the leading algorithm based on its highest composite score ({top_comp_str}), which balances 
+global consistency, sampling stability, and structural stability according to the data characteristics ({profile_summary}).
+The PAG preserves uncertainty information for reporting, while the DAG applies assumption-based tie-breaking for downstream inference tasks.
+"""
             
             return reasoning.strip()
             
@@ -1551,12 +1652,37 @@ class CausalDiscoveryAgent(SpecialistAgent):
             logger.error(f"LiM execution failed: {e}")
             return {"error": str(e)}
     
+    def _run_notears_linear(self, df: pd.DataFrame, **kwargs) -> Dict[str, Any]:
+        """Run NOTEARS-linear algorithm"""
+        try:
+            result = self.use_tool("notears_linear_tool", "discover", df, **kwargs)
+            return result
+        except Exception as e:
+            logger.error(f"NOTEARS-linear execution failed: {e}")
+            return {"error": str(e)}
+    
+    def _run_notears_nonlinear(self, df: pd.DataFrame, **kwargs) -> Dict[str, Any]:
+        """Run NOTEARS-nonlinear algorithm"""
+        try:
+            result = self.use_tool("notears_nonlinear_tool", "discover", df, **kwargs)
+            return result
+        except Exception as e:
+            logger.error(f"NOTEARS-nonlinear execution failed: {e}")
+            return {"error": str(e)}
+    
     # === Evaluation Methods ===
     
     def _evaluate_robustness(self, df: pd.DataFrame, result: Dict[str, Any], alg_name: str) -> float:
-        """Evaluate robustness using bootstrap"""
+        """Evaluate robustness using bootstrap
+        
+        Uses robustness_score which focuses on edge reproducibility (based on successful iterations only).
+        Alternative: effective_score = robustness_score * success_rate (penalizes algorithm/data reliability issues)
+        """
         try:
             bootstrap_result = self.use_tool("bootstrapper", "bootstrap_evaluation", df, result, alg_name, self.bootstrap_iterations)
+            # Use robustness_score: mean confidence across original edges (based on successful iterations)
+            # This focuses on reproducibility when algorithm succeeds, ignoring failures
+            # For failure-aware scoring, use: bootstrap_result.get("effective_score", 0.5)
             return bootstrap_result.get("robustness_score", 0.5)
         except Exception as e:
             logger.warning(f"Robustness evaluation failed: {e}")
@@ -1661,9 +1787,9 @@ class CausalDiscoveryAgent(SpecialistAgent):
         if method == "build_consensus_skeleton":
             return EnsembleTool.build_consensus_skeleton(args[0], kwargs.get("weights"))
         elif method == "resolve_directions":
-            return EnsembleTool.resolve_directions(args[0], args[1], args[2])
+            return EnsembleTool.resolve_directions(args[0], args[1], args[2], weights=kwargs.get("weights"))
         elif method == "construct_pag":
-            return EnsembleTool.construct_pag(args[0], args[1])
+            return EnsembleTool.construct_pag(args[0])
         elif method == "construct_dag":
             return EnsembleTool.construct_dag(
                 args[0], args[1], args[2],
@@ -1732,5 +1858,25 @@ class CausalDiscoveryAgent(SpecialistAgent):
         
         if method == "tscm_discovery":
             return TSCMTool.discover(args[0], **kwargs)
+        else:
+            return {"error": f"Unknown method: {method}"}
+    
+    def _notears_linear_tool(self, method: str, *args, **kwargs) -> Dict[str, Any]:
+        """NOTEARS-linear algorithm tool implementation"""
+        from .tools import NOTEARSLinearTool
+        
+        if method == "discover":
+            df = args[0]
+            return NOTEARSLinearTool.discover(df, **kwargs)
+        else:
+            return {"error": f"Unknown method: {method}"}
+    
+    def _notears_nonlinear_tool(self, method: str, *args, **kwargs) -> Dict[str, Any]:
+        """NOTEARS-nonlinear algorithm tool implementation"""
+        from .tools import NOTEARSNonlinearTool
+        
+        if method == "discover":
+            df = args[0]
+            return NOTEARSNonlinearTool.discover(df, **kwargs)
         else:
             return {"error": f"Unknown method: {method}"}

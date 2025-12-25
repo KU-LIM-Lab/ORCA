@@ -280,10 +280,17 @@ def run_experiments(
                     continue
 
                 # Extract predicted edges / nodes from result
-                if isinstance(result, dict) and "graph" in result:
-                    g = result["graph"]
-                    nodes_hat = g.get("variables", nodes)
-                    edges_hat = g.get("edges", [])
+                # ORCA and other methods use unified schema: {"graph": {"edges": [...], "variables": [...]}, "metadata": {...}}
+                if isinstance(result, dict):
+                    if "graph" in result:
+                        # Unified nested format: result["graph"]["variables"] and result["graph"]["edges"] (e.g., ORCA, normalize_graph_result)
+                        g = result["graph"]
+                        nodes_hat = g.get("variables", nodes)
+                        edges_hat = g.get("edges", [])
+                    else:
+                        # Fallback: assume same nodes and empty edges
+                        nodes_hat = nodes
+                        edges_hat = []
                 else:
                     # Fallback: assume same nodes and empty edges
                     nodes_hat = nodes
@@ -369,11 +376,22 @@ def run_experiments(
                     )
                     continue
 
-                if isinstance(result, dict) and "graph" in result:
-                    g = result["graph"]
-                    nodes_hat = g.get("variables", nodes)
-                    edges_hat = g.get("edges", [])
+                # Extract predicted edges / nodes from result
+                if isinstance(result, dict):
+                    if "graph" in result:
+                        g = result["graph"]
+                        nodes_hat = g.get("variables", nodes)
+                        edges_hat = g.get("edges", [])
+                    elif "edges" in result and "variables" in result:
+                        # Direct format: result["edges"] and result["variables"] (e.g., ORCA method)
+                        nodes_hat = result.get("variables", nodes)
+                        edges_hat = result.get("edges", [])
+                    else:
+                        # Fallback: assume same nodes and empty edges
+                        nodes_hat = nodes
+                        edges_hat = []
                 else:
+                    # Fallback: assume same nodes and empty edges
                     nodes_hat = nodes
                     edges_hat = []
 

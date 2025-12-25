@@ -1,42 +1,211 @@
+# === Imports ===
+import logging
+import numpy as np
+import pandas as pd
+import networkx as nx
+from typing import Dict, Any, List, Tuple, Optional, Union
+from scipy import stats
+from sklearn.linear_model import LinearRegression
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.model_selection import cross_val_score, KFold
+from sklearn.metrics import mean_squared_error
+import warnings
+
+logger = logging.getLogger(__name__)
+
 # === Standardized graph result schema helpers ===
 # Edge attribute semantics:
 # - weight: algorithm-native strength/evidence in [0,1] if possible (e.g., ANM score, correlation-derived score, BIC-based rescale).
 # - confidence: post-hoc reliability from ensembling/bootstrapping (e.g., frequency).
+# - type: edge type marker ("->", "--", "o->", "o-o", "<->", etc.) - preserves PAG endpoint information
 # Keep both when available; algorithm-specific extras should go under result['metadata'] or per-edge custom keys.
 GRAPH_RESULT_TEMPLATE = {
     "graph": {"edges": [], "variables": []},
-    "metadata": {"method": None, "params": {}, "runtime": None}
+    "metadata": {"method": None, "params": {}, "runtime": None, "graph_type": None}
 }
 
-def _normalize_edges(edges):
+# === Schema validation and helper functions ===
+
+def validate_graph_schema(graph: Dict[str, Any]) -> bool:
+    """Validate that graph follows unified schema structure.
+    
+    Args:
+        graph: Graph dictionary to validate
+        
+    Returns:
+        True if valid, raises ValueError if invalid
+        
+    Raises:
+        ValueError: If graph schema is invalid
+    """
+    if not isinstance(graph, dict):
+        raise ValueError(f"Graph must be a dict, got {type(graph)}")
+    
+    # Check graph.graph structure
+    if "graph" not in graph:
+        raise ValueError("Graph missing 'graph' key")
+    
+    graph_data = graph["graph"]
+    if not isinstance(graph_data, dict):
+        raise ValueError(f"graph['graph'] must be a dict, got {type(graph_data)}")
+    
+    # Check variables
+    if "variables" not in graph_data:
+        raise ValueError("Graph missing 'graph.variables' key")
+    if not isinstance(graph_data["variables"], list):
+        raise ValueError(f"graph['graph']['variables'] must be a list, got {type(graph_data['variables'])}")
+    
+    # Check edges
+    if "edges" not in graph_data:
+        raise ValueError("Graph missing 'graph.edges' key")
+    if not isinstance(graph_data["edges"], list):
+        raise ValueError(f"graph['graph']['edges'] must be a list, got {type(graph_data['edges'])}")
+    
+    # Check metadata
+    if "metadata" not in graph:
+        raise ValueError("Graph missing 'metadata' key")
+    
+    metadata = graph["metadata"]
+    if not isinstance(metadata, dict):
+        raise ValueError(f"graph['metadata'] must be a dict, got {type(metadata)}")
+    
+    # Check graph_type in metadata
+    if "graph_type" not in metadata:
+        raise ValueError("Graph missing 'metadata.graph_type' key")
+    
+    graph_type = metadata["graph_type"]
+    if graph_type not in ["DAG", "CPDAG", "PAG", "skeleton"]:
+        logger.warning(f"Unknown graph_type '{graph_type}', expected DAG|CPDAG|PAG|skeleton")
+    
+    # Validate edges structure
+    for i, edge in enumerate(graph_data["edges"]):
+        if not isinstance(edge, dict):
+            raise ValueError(f"Edge at index {i} must be a dict, got {type(edge)}")
+        
+        if "from" not in edge:
+            raise ValueError(f"Edge at index {i} missing 'from' field")
+        if "to" not in edge:
+            raise ValueError(f"Edge at index {i} missing 'to' field")
+        if "type" not in edge:
+            raise ValueError(f"Edge at index {i} missing 'type' field")
+    
+    return True
+
+def get_edges(graph: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if "graph" in graph and "edges" in graph["graph"]:
+        return graph["graph"]["edges"]
+    raise ValueError("Graph does not follow unified schema: missing graph.edges")
+
+def get_variables(graph: Dict[str, Any]) -> List[str]:
+    if "graph" in graph and "variables" in graph["graph"]:
+        return graph["graph"]["variables"]
+    raise ValueError("Graph does not follow unified schema: missing graph.variables")
+
+def get_graph_type(graph: Dict[str, Any]) -> str:
+    if "metadata" in graph and "graph_type" in graph["metadata"]:
+        return graph["metadata"]["graph_type"]
+    raise ValueError("Graph missing 'metadata.graph_type' - schema validation required")
+
+def _normalize_edges(edges, graph_type: Optional[str] = None):
+    """Normalize edges to unified schema format.
+    
+    Args:
+        edges: List of edge dictionaries or tuples
+        graph_type: Optional graph type (DAG|CPDAG|PAG|skeleton) for default type assignment
+        
+    Returns:
+        List of normalized edge dictionaries with 'from', 'to', 'type' fields
+    """
     norm = []
     for e in edges or []:
         if isinstance(e, dict):
             frm, to = e.get("from"), e.get("to")
             w = e.get("weight", None)
             conf = e.get("confidence", None)
+            marker = e.get("marker", None)
+            edge_type = e.get("type", None)
         else:
             # support tuple (from, to, weight?)
             frm = e[0]; to = e[1]; w = e[2] if len(e) > 2 else None
             conf = None
+            marker = None
+            edge_type = None
+        
         item = {"from": str(frm), "to": str(to)}
+        
+        # Convert marker to type if type not already present
+        if edge_type is None and marker is not None:
+            edge_type = marker
+        elif edge_type is None:
+            # Set default type based on graph_type
+            if graph_type == "DAG":
+                edge_type = "->"
+            elif graph_type == "CPDAG":
+                # CPDAG: default to "--" (undirected), can be "->" if direction is determined
+                edge_type = "--"
+            elif graph_type == "PAG":
+                # PAG: default to "o-o" (uncertain) if no marker
+                edge_type = "o-o"
+            elif graph_type == "skeleton":
+                edge_type = "--"
+            else:
+                # Default fallback
+                edge_type = "->"
+        
+        item["type"] = str(edge_type)
+        
         if w is not None:
             item["weight"] = float(w)
         if conf is not None:
             item["confidence"] = float(conf)
+        
+        # Preserve endpoints information if available
+        if isinstance(e, dict):
+            if "endpoints" in e:
+                item["endpoints"] = e["endpoints"]
+        
         norm.append(item)
     return norm
 
-def normalize_graph_result(method: str, variables, edges, params=None, runtime=None):
+def normalize_graph_result(method: str, variables, edges, params=None, runtime=None, graph_type: Optional[str] = None):
+    """Normalize graph result to unified schema.
+    
+    Args:
+        method: Algorithm method name
+        variables: List of variable names
+        edges: List of edges (dicts or tuples)
+        params: Optional parameters dictionary
+        runtime: Optional runtime in seconds
+        graph_type: Optional graph type (DAG|CPDAG|PAG|skeleton). If None, inferred from method.
+        
+    Returns:
+        Normalized graph dictionary following unified schema
+    """
+    # Determine graph_type from method if not provided
+    if graph_type is None:
+        if method == "PC":
+            graph_type = "CPDAG"
+        elif method == "FCI":
+            graph_type = "PAG"
+        elif method in ["LiNGAM", "ANM", "GES", "NOTEARS-linear", "NOTEARS-nonlinear", "LiM"]:
+            graph_type = "DAG"
+        else:
+            # Default fallback
+            graph_type = "DAG"
+    
+    # Normalize edges with graph_type for default type assignment
+    normalized_edges = _normalize_edges(edges, graph_type=graph_type)
+    
     res = {
         "graph": {
-            "edges": _normalize_edges(edges),
+            "edges": normalized_edges,
             "variables": list(map(str, variables or []))
         },
         "metadata": {
             "method": method,
             "params": params or {},
-            "runtime": runtime
+            "runtime": runtime,
+            "graph_type": graph_type
         }
     }
     return res
@@ -52,21 +221,6 @@ This module implements the specialized tools for causal discovery:
 
 Note: EqVar is diagnostics only (not a discovery algorithm).
 """
-
-import logging
-import numpy as np
-import pandas as pd
-import networkx as nx
-from typing import Dict, Any, List, Tuple, Optional
-from scipy import stats
-from sklearn.linear_model import LinearRegression
-from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.model_selection import cross_val_score, KFold
-from sklearn.metrics import mean_squared_error
-import warnings
-warnings.filterwarnings('ignore') 
-
-logger = logging.getLogger(__name__)
 
 def safe_execute(func, *args, default_return=None, error_msg="Operation failed", **kwargs):
     """Common error handling pattern for tool execution"""
@@ -399,74 +553,265 @@ class ANMTool:
         return normalize_graph_result("ANM", vars_, edges, 
                                     {"delta": delta, "tau": tau, "backend": "causal-learn"}, runtime)
 
-# CAM tool
-class CAMTool:
-    @staticmethod
-    def discover(df: pd.DataFrame, **kwargs) -> Dict[str, Any]:
-        import time
-        vars_ = list(df.columns)
-        t0 = time.time()
-        try:
-            from cdt.causality.graph import CAM
-            model = CAM()
-            output_graph = model.predict(df)
-            edges = []
-            for u, v in output_graph.edges():
-                edges.append({"from": str(u), "to": str(v), "weight": 1.0})
-            runtime = time.time() - t0
-            return normalize_graph_result("CAM", vars_, edges, {"backend": "cdt"}, runtime)
-        except Exception as e:
-            error_msg = f"CAM not available: {type(e).__name__} - {str(e)}"
-            logger.error(error_msg)
-            return {"error": error_msg}
-
-
 class Bootstrapper:
     """Bootstrap evaluation tools"""
     
     @staticmethod
+    def _create_edge_key(edge: Dict[str, Any], graph_type: str) -> Optional[Union[str, Tuple[str, str]]]:
+        """Create edge key based on graph type.
+        
+        Args:
+            edge: Edge dictionary with 'from' and 'to' keys
+            graph_type: Graph type ('DAG', 'CPDAG', 'PAG', 'skeleton')
+            
+        Returns:
+            For DAG: directed key string like "u->v"
+            For CPDAG/PAG/skeleton: undirected adjacency tuple (sorted(u, v))
+            Returns None if u == v (self-loop, invalid edge)
+        """
+        u, v = str(edge["from"]), str(edge["to"])
+        
+        # Prevent self-loops
+        if u == v:
+            return None
+        
+        if graph_type == "DAG":
+            return f"{u}->{v}"  # Directed edge key
+        else:  # CPDAG, PAG, skeleton
+            return tuple(sorted([u, v]))  # Undirected adjacency key
+    
+    @staticmethod
     def bootstrap_evaluation(df: pd.DataFrame, result: Dict[str, Any], 
                            algorithm: str, n_iterations: int = 100) -> Dict[str, Any]:
-        """Bootstrap evaluation for robustness"""
+        """Bootstrap evaluation for robustness (sampling stability).
+        
+        Evaluates how consistently edges from the original graph G are reproduced
+        in bootstrap graphs. Only counts edges that exist in the original graph.
+        
+        Args:
+            df: DataFrame for bootstrap sampling
+            result: Original graph (evaluation reference graph G) - must follow unified schema
+            algorithm: Algorithm name to run on bootstrap samples
+            n_iterations: Number of bootstrap iterations (default: 100)
+            
+        Returns:
+            Dictionary with:
+            - robustness_score: Mean confidence across all original edges (based on successful iterations)
+            - effective_score: robustness_score * success_rate (penalized by failure rate)
+            - edge_confidences: Dict mapping edge_key -> confidence
+            - edge_frequencies: Dict mapping edge_key -> raw count (for debugging)
+            - n_original_edges: Number of edges in original graph
+            - n_iterations: Total iterations attempted
+            - n_success_iterations: Number of successful bootstrap runs
+            - success_rate: n_success_iterations / n_iterations
+            - failure_iterations: List of iteration indices that failed (for debugging)
+        """
         try:
+            # Extract original graph information
+            try:
+                original_edges = get_edges(result)
+                graph_type = get_graph_type(result)
+            except (ValueError, KeyError) as e:
+                logger.warning(f"Original graph schema validation failed: {e}")
+                return {
+                    "robustness_score": 0.0,
+                    "effective_score": 0.0,
+                    "edge_confidences": {},
+                    "edge_frequencies": {},
+                    "n_original_edges": 0,
+                    "n_iterations": n_iterations,
+                    "n_success_iterations": 0,
+                    "success_rate": 0.0,
+                    "failure_iterations": [],
+                    "error": f"Invalid original graph schema: {e}"
+                }
+            
+            # Handle empty original edges case
+            n_original_edges = len(original_edges)
+            if n_original_edges == 0:
+                logger.warning("Original graph has no edges, cannot calculate sampling stability")
+                return {
+                    "robustness_score": 0.0,
+                    "effective_score": 0.0,
+                    "edge_confidences": {},
+                    "edge_frequencies": {},
+                    "n_original_edges": 0,
+                    "n_iterations": n_iterations,
+                    "n_success_iterations": n_iterations,  # All iterations "succeeded" (no edges to evaluate)
+                    "success_rate": 1.0,  # no failures, just no edges
+                    "failure_iterations": []
+                }
+            
+            # Create original edge keys set (reference set for counting)
+            original_edge_keys = set()
+            for edge in original_edges:
+                key = Bootstrapper._create_edge_key(edge, graph_type)
+                if key is not None:  # Skip self-loops
+                    original_edge_keys.add(key)
+            
+            # Initialize counts only for original edges
+            counts = {key: 0 for key in original_edge_keys}
+            n_success = 0
+            failures = []
             n_samples = len(df)
-            edge_frequencies = {}
             
-            # Bootstrap sampling
+            # Bootstrap sampling loop
             for i in range(n_iterations):
-                # Sample with replacement
-                bootstrap_df = df.sample(n=n_samples, replace=True, random_state=i)
-                
-                # Run algorithm on bootstrap sample
-                if algorithm == "LiNGAM":
-                    bootstrap_result = LiNGAMTool.direct_lingam(bootstrap_df)
-                elif algorithm == "ANM":
-                    bootstrap_result = ANMTool.anm_discovery(bootstrap_df)
-                else:
+                try:
+                    # Sample with replacement
+                    bootstrap_df = df.sample(n=n_samples, replace=True, random_state=i)
+                    
+                    # Run algorithm on bootstrap sample
+                    if algorithm == "LiNGAM":
+                        bootstrap_result = LiNGAMTool.direct_lingam(bootstrap_df)
+                    elif algorithm == "ANM":
+                        bootstrap_result = ANMTool.anm_discovery(bootstrap_df)
+                    elif algorithm == "PC":
+                        bootstrap_result = PCTool.discover(bootstrap_df)
+                    elif algorithm == "GES":
+                        bootstrap_result = GESTool.discover(bootstrap_df)
+                    elif algorithm == "FCI":
+                        bootstrap_result = FCITool.discover(bootstrap_df)
+                    elif algorithm == "LiM":
+                        # LiM requires variable_schema, but we'll try without it for bootstrap
+                        bootstrap_result = LiMTool.discover(bootstrap_df)
+                    elif algorithm == "NOTEARS-linear":
+                        bootstrap_result = NOTEARSLinearTool.discover(bootstrap_df)
+                    elif algorithm == "NOTEARS-nonlinear":
+                        bootstrap_result = NOTEARSNonlinearTool.discover(bootstrap_df)
+                    else:
+                        failures.append(i)
+                        logger.debug(f"Unknown algorithm '{algorithm}' in bootstrap iteration {i}")
+                        continue
+                    
+                    # Check for errors in bootstrap result
+                    if not isinstance(bootstrap_result, dict):
+                        failures.append(i)
+                        logger.debug(f"Bootstrap iteration {i} returned non-dict result: {type(bootstrap_result)}")
+                        continue
+                    
+                    if "error" in bootstrap_result:
+                        failures.append(i)
+                        logger.debug(f"Algorithm error in bootstrap iteration {i}: {bootstrap_result.get('error')}")
+                        continue
+                    
+                    # Normalize bootstrap result to ensure schema consistency
+                    try:
+                        # Try to use as-is if already normalized
+                        bootstrap_edges = get_edges(bootstrap_result)
+                        get_graph_type(bootstrap_result)  # Verify metadata exists too
+                    except (ValueError, KeyError):
+                        variables = None
+                        edges = []
+                        
+                        if "graph" in bootstrap_result:
+                            variables = bootstrap_result["graph"].get("variables")
+                            edges = bootstrap_result["graph"].get("edges", [])
+                        elif "variables" in bootstrap_result:
+                            variables = bootstrap_result["variables"]
+                            edges = bootstrap_result.get("edges", [])
+                        else:
+                            edges = bootstrap_result.get("edges", [])
+                        
+                        if variables is None or not variables:
+                            variables = list(bootstrap_df.columns)
+                        
+                        # Extract metadata if available
+                        params = bootstrap_result.get("metadata", {}).get("params", {}) if "metadata" in bootstrap_result else {}
+                        runtime = bootstrap_result.get("metadata", {}).get("runtime") if "metadata" in bootstrap_result else None
+                        
+                        
+                        bootstrap_result = normalize_graph_result(
+                            method=algorithm,
+                            variables=variables,
+                            edges=edges,
+                            params=params,
+                            runtime=runtime,
+                            graph_type=graph_type  # Use original graph_type to ensure consistency
+                        )
+                        bootstrap_edges = get_edges(bootstrap_result)
+                    
+                    # Count only original edges that appear in bootstrap result
+                    present_keys = set()
+                    for edge in bootstrap_edges:
+                        key = Bootstrapper._create_edge_key(edge, graph_type)
+                        if key is not None and key in original_edge_keys:  # Skip self-loops and only count original edges
+                            present_keys.add(key)
+                    
+                    for key in present_keys:
+                        counts[key] += 1
+                    
+                    n_success += 1
+                    
+                except Exception as e:
+                    failures.append(i)
+                    logger.debug(f"Bootstrap iteration {i} failed: {e}")
                     continue
-                
-                # Count edges
-                if "graph" in bootstrap_result and "edges" in bootstrap_result["graph"]:
-                    for edge in bootstrap_result["graph"]["edges"]:
-                        edge_key = f"{edge['from']}->{edge['to']}"
-                        edge_frequencies[edge_key] = edge_frequencies.get(edge_key, 0) + 1
             
-            # Calculate robustness score
-            if edge_frequencies:
-                max_frequency = max(edge_frequencies.values())
-                robustness_score = max_frequency / n_iterations
-            else:
-                robustness_score = 0.0
+            # Calculate confidence scores
+            if n_success == 0:
+                # All iterations failed
+                return {
+                    "robustness_score": 0.0,
+                    "effective_score": 0.0,
+                    "edge_confidences": {key: 0.0 for key in original_edge_keys},
+                    "edge_frequencies": {key: 0 for key in original_edge_keys},
+                    "n_original_edges": n_original_edges,
+                    "n_iterations": n_iterations,
+                    "n_success_iterations": 0,
+                    "success_rate": 0.0,
+                    "failure_iterations": failures,
+                    "error": "All bootstrap iterations failed"
+                }
+            
+            # Calculate per-edge confidence
+            edge_confidences = {
+                key: counts[key] / n_success
+                for key in original_edge_keys
+            }
+            
+            # Graph-level scores
+            robustness_score = float(np.mean(list(edge_confidences.values()))) if edge_confidences else 0.0
+            success_rate = n_success / n_iterations if n_iterations > 0 else 0.0
+            effective_score = robustness_score * success_rate  # Penalized by failure rate
+            
+            # Convert edge keys to strings for JSON serialization (tuples need conversion)
+            # Use "|" delimiter for tuple keys to make parsing easier later
+            edge_confidences_str = {
+                "|".join(k) if isinstance(k, tuple) else k: v
+                for k, v in edge_confidences.items()
+            }
+            edge_frequencies_str = {
+                "|".join(k) if isinstance(k, tuple) else k: v
+                for k, v in counts.items()
+            }
             
             return {
                 "robustness_score": robustness_score,
-                "edge_frequencies": edge_frequencies,
-                "n_iterations": n_iterations
+                "effective_score": effective_score,
+                "edge_confidences": edge_confidences_str,
+                "edge_frequencies": edge_frequencies_str,
+                "n_original_edges": n_original_edges,
+                "n_iterations": n_iterations,
+                "n_success_iterations": n_success,
+                "success_rate": success_rate,
+                "failure_iterations": failures if failures else []
             }
             
         except Exception as e:
             logger.warning(f"Bootstrap evaluation failed: {e}")
-            return {"robustness_score": 0.5, "error": str(e)}
+            return {
+                "robustness_score": 0.0,
+                "effective_score": 0.0,
+                "edge_confidences": {},
+                "edge_frequencies": {},
+                "n_original_edges": 0,
+                "n_iterations": n_iterations,
+                "n_success_iterations": 0,
+                "success_rate": 0.0,
+                "failure_iterations": [],
+                "error": str(e)
+            }
 
 class GraphEvaluator:
     """Graph evaluation tools"""
@@ -913,12 +1258,18 @@ class PCTool:
     """PC algorithm wrapper. Uses causal-learn with support for LRT and other CI tests."""
     @staticmethod
     def discover(df: pd.DataFrame, alpha: float = 0.05, indep_test: str = "fisherz", 
-                 variable_schema: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+                 variable_schema: Dict[str, Any] = None, max_k: Optional[int] = None, **kwargs) -> Dict[str, Any]:
         import time
         t0 = time.time()
         vars_ = list(df.columns)
         edges = []
-        params = {"alpha": alpha, "indep_test": indep_test}
+        p = len(vars_)  # number of variables
+        
+        # Set max_k: min(3, p-2) if not provided
+        if max_k is None:
+            max_k = min(3, max(0, p - 2))
+        
+        params = {"alpha": alpha, "indep_test": indep_test, "max_k": max_k}
         if variable_schema:
             params["variable_schema"] = variable_schema
         try:
@@ -949,7 +1300,7 @@ class PCTool:
                 test_map = {"fisherz": fisherz, "kci": kci, "gsq": gsq}
                 test_func = test_map.get(indep_test, fisherz)
             
-            cg = pc(data, alpha=alpha, indep_test=test_func, verbose=False)
+            cg = pc(data, alpha=alpha, indep_test=test_func, max_k=max_k, verbose=False)
             graph = cg.G.graph
             if hasattr(graph, 'items'):
                 # Dictionary format
@@ -963,7 +1314,7 @@ class PCTool:
                         if graph[i, j] != 0:
                             edges.append((vars_[i], vars_[j]))
             runtime = time.time() - t0
-            return normalize_graph_result("PC", vars_, edges, params, runtime)
+            return normalize_graph_result("PC", vars_, edges, params, runtime, graph_type="CPDAG")
         except Exception as e:
             return {"error": str(e)}
 
@@ -971,11 +1322,11 @@ class GESTool:
     """GES algorithm wrapper. Supports multiple scoring methods
     """
     @staticmethod
-    def discover(df: pd.DataFrame, score_func: str = "bic-g", **kwargs) -> Dict[str, Any]:
+    def discover(df: pd.DataFrame, score_func: str = "bic-g", max_indegree: int = 3, **kwargs) -> Dict[str, Any]:
         import time
         t0 = time.time()
         vars_ = list(df.columns)
-        params = {"score_func": score_func}
+        params = {"score_func": score_func, "max_indegree": max_indegree}
         edges = []
         
         try:
@@ -991,6 +1342,7 @@ class GESTool:
                 
                 scoring_method = score_func
                 
+
                 dag = est.estimate(scoring_method=scoring_method)
                 edges = [(str(u), str(v)) for u, v in dag.edges()]
                 
@@ -1005,7 +1357,7 @@ class GESTool:
                     return {"error": "causal-learn not available"}
                 
                 data = df.values
-                res = ges(data, score_func="local_score_CV_general")
+                res = ges(data, score_func="local_score_CV_general", maxP=max_indegree)
                 G = getattr(res, 'G', None) or (res.get('G', None) if isinstance(res, dict) else None)
                 
                 if G is not None and hasattr(G, 'graph'):
@@ -1016,7 +1368,6 @@ class GESTool:
                             if v != 0:
                                 edges.append((vars_[i], vars_[j]))
                     else:
-                        # Numpy array format
                         for i in range(graph.shape[0]):
                             for j in range(graph.shape[1]):
                                 if graph[i, j] != 0:
@@ -1041,7 +1392,6 @@ class GESTool:
             return {"error": str(e)}
 
 
-# --- FCI tool ---
 class LiMTool:
     """LiM (Linear Mixed) algorithm for mixed data functional model"""
     
@@ -1156,6 +1506,162 @@ class LiMTool:
             logger.error(f"LiM execution failed: {e}")
             return {"error": f"LiM not available: {e}"}
 
+class NOTEARSLinearTool:
+    """NOTEARS linear algorithm implementation"""
+    
+    @staticmethod
+    def _prepare_notears_data(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
+        """Common data preprocessing for NOTEARS algorithms"""
+        # Remove NaN values
+        df_clean = df.dropna()
+        if df_clean.empty:
+            raise ValueError("DataFrame is empty after dropping NaN values")
+        vars_ = list(df_clean.columns)
+        return df_clean, vars_
+    
+    @staticmethod
+    def _extract_notears_edges(W_est: np.ndarray, vars_: List[str]) -> List[Dict[str, Any]]:
+        """Common edge extraction logic from NOTEARS adjacency matrix"""
+        edges = []
+        d = W_est.shape[0]
+        for i in range(d):
+            for j in range(d):
+                w = float(W_est[i, j])
+                if w != 0.0:
+                    edges.append({"from": vars_[i], "to": vars_[j], "weight": w})
+        return edges
+    
+    @staticmethod
+    def discover(df: pd.DataFrame, lambda1: float = 0.1, loss_type: str = "l2",
+                 max_iter: int = 100, h_tol: float = 1e-8, rho_max: float = 1e16,
+                 w_threshold: float = 0.3, **kwargs) -> Dict[str, Any]:
+        """NOTEARS linear algorithm discovery"""
+        import time
+        t0 = time.time()
+        
+        try:
+            from algorithms.notears.linear import notears_linear
+            
+            # Prepare data
+            df_clean, vars_ = NOTEARSLinearTool._prepare_notears_data(df)
+            d = df_clean.shape[1]
+            
+            # Run NOTEARS linear
+            W_est = notears_linear(
+                df_clean.values,
+                lambda1=lambda1,
+                loss_type=loss_type,
+                max_iter=max_iter,
+                h_tol=h_tol,
+                rho_max=rho_max,
+                w_threshold=w_threshold,
+            )
+            
+            # Extract edges
+            edges = NOTEARSLinearTool._extract_notears_edges(W_est, vars_)
+            
+            runtime = time.time() - t0
+            
+            params = {
+                "backend": "notears",
+                "lambda1": lambda1,
+                "loss_type": loss_type,
+                "max_iter": max_iter,
+                "h_tol": h_tol,
+                "rho_max": rho_max,
+                "w_threshold": w_threshold,
+            }
+            
+            return normalize_graph_result("NOTEARS-linear", vars_, edges, params=params, runtime=runtime)
+            
+        except ImportError as e:
+            logger.error(f"NOTEARS-linear requires orca.algorithms.notears.linear: {e}")
+            return {"error": f"NOTEARS-linear not available: orca.algorithms.notears.linear not installed"}
+        except Exception as e:
+            logger.error(f"NOTEARS-linear execution failed: {e}")
+            return {"error": f"NOTEARS-linear execution failed: {str(e)}"}
+
+
+class NOTEARSNonlinearTool:
+    """NOTEARS nonlinear algorithm implementation"""
+    
+    @staticmethod
+    def discover(df: pd.DataFrame, dims: List[int] = None, lambda1: float = 0.01,
+                 lambda2: float = 0.01, max_iter: int = 100, h_tol: float = 1e-8,
+                 rho_max: float = 1e16, w_threshold: float = 0.3, **kwargs) -> Dict[str, Any]:
+        """NOTEARS nonlinear algorithm discovery"""
+        import time
+        import torch
+        t0 = time.time()
+        
+        try:
+            import sys
+            from pathlib import Path
+            
+            # Get algorithms directory path
+            this_file = Path(__file__).resolve()
+            algorithms_dir = this_file.parent.parent.parent / "algorithms"
+            algorithms_dir_str = str(algorithms_dir)
+            
+            # Add to sys.path if not already there
+            if algorithms_dir_str not in sys.path:
+                sys.path.insert(0, algorithms_dir_str)
+            
+            # Now import with the path in sys.path (nonlinear.py expects "notears" module)
+            from notears.nonlinear import NotearsMLP, notears_nonlinear  # type: ignore
+            
+            # Prepare data
+            df_clean, vars_ = NOTEARSLinearTool._prepare_notears_data(df)
+            d = df_clean.shape[1]
+            
+            # Set default dims if not provided
+            if dims is None:
+                dims = [d, 10, 1]
+            
+            # Set torch default dtype
+            torch.set_default_dtype(torch.double)
+            
+            # Create model
+            model = NotearsMLP(dims=dims, bias=True)
+            
+            # Run NOTEARS nonlinear
+            W_est = notears_nonlinear(
+                model,
+                df_clean.values,
+                lambda1=lambda1,
+                lambda2=lambda2,
+                max_iter=max_iter,
+                h_tol=h_tol,
+                rho_max=rho_max,
+                w_threshold=w_threshold,
+            )
+            
+            # Extract edges
+            edges = NOTEARSLinearTool._extract_notears_edges(W_est, vars_)
+            
+            runtime = time.time() - t0
+            
+            params = {
+                "backend": "notears-nonlinear",
+                "dims": dims,
+                "lambda1": lambda1,
+                "lambda2": lambda2,
+                "max_iter": max_iter,
+                "h_tol": h_tol,
+                "rho_max": rho_max,
+                "w_threshold": w_threshold,
+            }
+            
+            return normalize_graph_result("NOTEARS-nonlinear", vars_, edges, params=params, runtime=runtime)
+            
+        except ImportError as e:
+            logger.error(f"NOTEARS-nonlinear requires orca.algorithms.notears.nonlinear: {e}")
+            return {"error": f"NOTEARS-nonlinear not available: orca.algorithms.notears.nonlinear not installed"}
+        except Exception as e:
+            logger.error(f"NOTEARS-nonlinear execution failed: {e}")
+            return {"error": f"NOTEARS-nonlinear execution failed: {str(e)}"}
+
+
 class FCITool:
     """FCI algorithm wrapper. Uses causal-learn and returns a PAG-oriented result.
     Note: PAG edges may be partially directed; we expose adjacencies as edges and
@@ -1163,11 +1669,20 @@ class FCITool:
     """
     @staticmethod
     def discover(df: pd.DataFrame, alpha: float = 0.05, indep_test: str = "fisherz", 
-                 variable_schema: Dict[str, Any] = None, **kwargs) -> Dict[str, Any]:
+                 variable_schema: Dict[str, Any] = None, max_k: Optional[int] = None, **kwargs) -> Dict[str, Any]:
         import time
         t0 = time.time()
         vars_ = list(df.columns)
         edges = []
+        p = len(vars_)  # number of variables
+        
+        # Set max_k: min(3, p-2) if not provided
+        if max_k is None:
+            max_k = min(3, max(0, p - 2))
+        
+        params = {"alpha": alpha, "indep_test": indep_test, "max_k": max_k}
+        if variable_schema:
+            params["variable_schema"] = variable_schema
         try:
             from causallearn.search.ConstraintBased.FCI import fci
             from causallearn.utils.cit import fisherz, kci, gsq
@@ -1195,8 +1710,8 @@ class FCITool:
                 test_map = {"fisherz": fisherz, "kci": kci, "gsq": gsq}
                 test_func = test_map.get(indep_test, fisherz)
             
-            # Causal-Learn FCI API: fci(data, indep_test, alpha)
-            pag = fci(data, test_func, alpha)
+            # Causal-Learn FCI API: fci(data, indep_test, alpha, max_k)
+            pag = fci(data, test_func, alpha, max_k=max_k)
             G = getattr(pag, 'G', None)
             if G is not None and hasattr(G, 'graph'):
                 for (i, j), v in G.graph.items():
@@ -1204,37 +1719,27 @@ class FCITool:
                         # Keep adjacency; orientation marks are PAG-specific and not
                         edges.append((vars_[i], vars_[j]))
             runtime = time.time() - t0
-            params_dict = {"alpha": alpha, "indep_test": indep_test, "graph_type": "PAG"}
+            params_dict = {"alpha": alpha, "indep_test": indep_test, "graph_type": "PAG", "max_k": max_k}
             if variable_schema:
                 params_dict["variable_schema"] = variable_schema
             result = normalize_graph_result(
                 "FCI", vars_, edges,
                 params=params_dict,
                 runtime=runtime,
+                graph_type="PAG"
             )
-            result["metadata"]["graph_type"] = "PAG"
             return result
         except Exception as e:
             return {"error": str(e)}
 
 class PruningTool:
     """Pruning tools for CI testing and structural consistency"""
-    
-    @staticmethod
-    def _get_graph_type(graph: Dict[str, Any]) -> str:
-        """Identify graph type (DAG/CPDAG/PAG) from metadata"""
-        metadata = graph.get("metadata", {})
-        if metadata.get("graph_type") == "PAG":
-            return "PAG"
-        if metadata.get("method") == "PC":
-            return "CPDAG"
-        return "DAG"
-    
+        
     @staticmethod
     def _convert_to_networkx_dag(graph: Dict[str, Any]) -> nx.DiGraph:
         """Convert graph dict to NetworkX DAG"""
-        variables = graph["graph"]["variables"]
-        edges = graph["graph"]["edges"]
+        variables = get_variables(graph)
+        edges = get_edges(graph)
         
         G = nx.DiGraph()
         G.add_nodes_from(variables)
@@ -1251,11 +1756,6 @@ class PruningTool:
     def global_markov_test(graph: Dict[str, Any], df: pd.DataFrame, alpha: float = 0.05, max_pa_size: Optional[int] = None) -> Dict[str, Any]:
         """Test global Markov property using d-separation and CI tests
         
-        Handles different graph types:
-        - DAG: Direct d-separation testing
-        - CPDAG: Convert to representative DAG first
-        - PAG: Skip (latent confounders present)
-        
         Args:
             graph: Graph dictionary
             df: DataFrame for CI testing
@@ -1264,27 +1764,19 @@ class PruningTool:
                         If None, no limit is applied.
         """
         try:
-            if "graph" not in graph or "edges" not in graph["graph"]:
-                return {"violation_ratio": 1.0, "error": "Invalid graph structure"}
+            try:
+                validate_graph_schema(graph)
+            except ValueError as e:
+                return {"violation_ratio": 1.0, "error": f"Invalid graph structure: {e}"}
             
-            edges = graph["graph"]["edges"]
-            variables = graph["graph"]["variables"]
+            edges = get_edges(graph)
+            variables = get_variables(graph)
             
             if not edges or not variables:
                 return {"violation_ratio": 0.0, "message": "No edges to test"}
             
             # Determine graph type
-            graph_type = PruningTool._get_graph_type(graph)
-            
-            # Skip PAG graphs (latent confounders present)
-            if graph_type == "PAG":
-                return {
-                    "violation_ratio": 0.0,
-                    "total_tests": 0,
-                    "violations": 0,
-                    "ci_tests": [],
-                    "message": "Global Markov test skipped for PAG (latent confounders present)"
-                }
+            graph_type = get_graph_type(graph)
             
             # Convert to NetworkX DAG
             G = PruningTool._convert_to_networkx_dag(graph)
@@ -1292,7 +1784,13 @@ class PruningTool:
             # Verify it's a valid DAG
             if not nx.is_directed_acyclic_graph(G):
                 return {
-                    "violation_ratio": 0.0,
+                    "violation_ratio": None,
+                    "total_tests": 0,
+                    "violations": 0,
+                    "n_success_tests": 0,
+                    "n_failed_tests": 0,
+                    "n_skipped_tests": 0,
+                    "failure_rate": None,
                     "message": f"Global Markov test skipped (converted graph from {graph_type} is not a DAG)"
                 }
             
@@ -1336,8 +1834,10 @@ class PruningTool:
             # Perform d-separation tests
             ci_tests_log = []
             violations = 0
-            total_tests = 0
-            skipped_tests = 0
+            n_success_tests = 0
+            n_failed_tests = 0
+            n_skipped_tests = 0
+            n_no_testable_pairs = 0  # Track nodes with no testable non-descendants
             
             # Create variable index mapping
             var_to_idx = {var: i for i, var in enumerate(variables)}
@@ -1345,16 +1845,17 @@ class PruningTool:
             for x in G.nodes():
                 pa_x = list(G.predecessors(x))
                 
-                # Skip tests if parent set size exceeds max_pa_size
-                if max_pa_size is not None and len(pa_x) > max_pa_size:
-                    skipped_tests += len([y for y in G.nodes() 
-                                         if y not in (set(nx.descendants(G, x)) | {x}) and y not in pa_x])
-                    continue
-                
                 desc_x = set(nx.descendants(G, x)) | {x}
                 non_desc_x = [y for y in G.nodes() if y not in desc_x and y not in pa_x]
                 
                 if not non_desc_x:
+                    # Log when there are no testable pairs for a node
+                    n_no_testable_pairs += 1
+                    ci_tests_log.append({
+                        "hypothesis": f"{x} ⟂ Y | {pa_x}",
+                        "status": "no_testable_pairs",
+                        "reason": f"No non-descendants to test (all nodes are descendants or parents of {x})"
+                    })
                     continue
                 
                 # Test X ⊥ Y | Pa(X) for each non-descendant Y
@@ -1363,7 +1864,16 @@ class PruningTool:
                 
                 for y in non_desc_x:
                     y_idx = var_to_idx[y]
-                    total_tests += 1
+                    
+                    # Skip tests if parent set size exceeds max_pa_size (policy-based skip)
+                    if max_pa_size is not None and len(pa_x) > max_pa_size:
+                        n_skipped_tests += 1
+                        ci_tests_log.append({
+                            "hypothesis": f"{x} ⟂ {y} | {pa_x}",
+                            "status": "skipped",
+                            "reason": f"max_pa_size={max_pa_size} exceeded (|Pa({x})|={len(pa_x)})"
+                        })
+                        continue
                     
                     try:
                         # Perform CI test: X ⊥ Y | Pa(X)
@@ -1373,38 +1883,57 @@ class PruningTool:
                         if violated:
                             violations += 1
                         
+                        n_success_tests += 1
                         ci_tests_log.append({
                             "hypothesis": f"{x} ⟂ {y} | {pa_x}",
+                            "status": "success",
                             "p_value": float(p_value),
                             "violation": violated
                         })
                         
                     except Exception as e:
+                        # Test failure: numerical issues, library problems, missing data, impossible conditioning set, etc.
+                        n_failed_tests += 1
                         logger.warning(f"CI test failed for {x} ⟂ {y} | {pa_x}: {e}")
-                        # Treat test failure as violation
-                        violations += 1
                         ci_tests_log.append({
                             "hypothesis": f"{x} ⟂ {y} | {pa_x}",
-                            "p_value": 1.0,
-                            "violation": True,
-                            "error": str(e)
+                            "status": "failed",
+                            "error": str(e),
+                            "error_type": type(e).__name__
                         })
             
-            # violation_ratio is calculated only from tests that were actually performed
-            violation_ratio = violations / total_tests if total_tests > 0 else 0.0
+            # violation_ratio is calculated only from successful tests
+            violation_ratio = violations / n_success_tests if n_success_tests > 0 else None
+            
+            # failure_rate = n_failed / (n_success + n_failed)
+            total_attempted = n_success_tests + n_failed_tests
+            failure_rate = n_failed_tests / total_attempted if total_attempted > 0 else None
+            
+            message = f"Test completed on {graph_type} with {n_success_tests} successful d-separation tests"
+            if n_failed_tests > 0 or n_skipped_tests > 0:
+                message += f", {n_failed_tests} failed, {n_skipped_tests} skipped"
+            if n_no_testable_pairs > 0:
+                message += f", {n_no_testable_pairs} nodes with no testable pairs"
+            
+            # Log the message
+            logger.info(message)
             
             return {
                 "violation_ratio": violation_ratio,
-                "total_tests": total_tests,
+                "total_tests": n_success_tests + n_failed_tests + n_skipped_tests + n_no_testable_pairs,
+                "total_attempted": total_attempted,  # Explicitly include total_attempted in return
                 "violations": violations,
-                "skipped_tests": skipped_tests,
+                "n_success_tests": n_success_tests,
+                "n_failed_tests": n_failed_tests,
+                "n_skipped_tests": n_skipped_tests,
+                "n_no_testable_pairs": n_no_testable_pairs,
+                "failure_rate": failure_rate,
                 "ci_tests": ci_tests_log,
                 "alpha": alpha,
                 "max_pa_size": max_pa_size,
                 "ci_test_method": ci_test_method,
                 "graph_type": graph_type,
-                "message": f"Test completed on {graph_type} with {total_tests} d-separation tests" + 
-                          (f" ({skipped_tests} skipped due to max_pa_size={max_pa_size})" if skipped_tests > 0 else "")
+                "message": message
             }
             
         except Exception as e:
@@ -1425,7 +1954,7 @@ class PruningTool:
                 return {"instability_score": 1.0, "error": "Invalid graph structure"}
             
             # Determine graph type
-            graph_type = PruningTool._get_graph_type(graph)
+            graph_type = get_graph_type(graph)
             
             # Skip PAG graphs
             if graph_type == "PAG":
@@ -1435,17 +1964,19 @@ class PruningTool:
                     "graph_type": graph_type
                 }
             
-            variables = graph["graph"]["variables"]
+            variables = get_variables(graph)
             if len(variables) < 3:
                 return {"instability_score": 0.0, "message": "Too few variables for subsampling"}
             
             # Generate random variable subsets
             subset_results = []
+            subset_fracs = [0.6, 0.7, 0.8]  # Fraction options for subset sizes
             
             for i in range(n_subsets):
                 try:
-                    # Random subset of variables (at least 3, at most all)
-                    subset_size = max(3, min(len(variables), len(variables) - 1))
+                    # Randomly select a fraction and calculate subset size
+                    frac = np.random.choice(subset_fracs)
+                    subset_size = max(3, int(frac * len(variables)))
                     subset_vars = np.random.choice(variables, size=subset_size, replace=False)
                     
                     # Create subset DataFrame
@@ -1462,8 +1993,10 @@ class PruningTool:
                         subset_result = GESTool.discover(subset_df)
                     elif algorithm_name == "FCI":
                         subset_result = FCITool.discover(subset_df)
-                    elif algorithm_name == "CAM":
-                        subset_result = CAMTool.discover(subset_df)
+                    elif algorithm_name == "NOTEARS-linear":
+                        subset_result = NOTEARSLinearTool.discover(subset_df)
+                    elif algorithm_name == "NOTEARS-nonlinear":
+                        subset_result = NOTEARSNonlinearTool.discover(subset_df)
                     else:
                         continue
                     
@@ -1700,20 +2233,42 @@ class PruningTool:
             subset_set = set(subset_vars)
             
             restricted_edges = []
-            if "graph" in graph and "edges" in graph["graph"]:
-                for edge in graph["graph"]["edges"]:
+            try:
+                graph_edges = get_edges(graph)
+                for edge in graph_edges:
                     if edge["from"] in subset_set and edge["to"] in subset_set:
                         restricted_edges.append(edge.copy())
+            except ValueError:
+                # Fallback for old schema
+                if "graph" in graph and "edges" in graph["graph"]:
+                    for edge in graph["graph"]["edges"]:
+                        if edge["from"] in subset_set and edge["to"] in subset_set:
+                            restricted_edges.append(edge.copy())
+            
+            # Preserve metadata from original graph if available
+            metadata = {}
+            if "metadata" in graph:
+                metadata = graph["metadata"].copy()
             
             return {
                 "graph": {
                     "variables": list(subset_vars),
                     "edges": restricted_edges
-                }
+                },
+                "metadata": metadata
             }
         except Exception as e:
             logger.warning(f"Graph restriction failed: {e}")
-            return {"graph": {"variables": list(subset_vars), "edges": []}}
+            metadata = {}
+            if "metadata" in graph:
+                metadata = graph["metadata"].copy()
+            return {
+                "graph": {
+                    "variables": list(subset_vars),
+                    "edges": []
+                },
+                "metadata": metadata
+            }
 
 class EnsembleTool:
     """Ensemble tools for consensus skeleton and PAG construction"""
@@ -1723,7 +2278,17 @@ class EnsembleTool:
         """Build consensus skeleton based on undirected adjacency with confidence scores"""
         try:
             if not graphs:
-                return {"edges": [], "variables": [], "confidence_scores": {}}
+                return {
+                    "graph": {
+                        "edges": [],
+                        "variables": []
+                    },
+                    "metadata": {
+                        "graph_type": "skeleton",
+                        "method": "consensus_skeleton",
+                        "params": {"threshold": threshold}
+                    }
+                }
             
             if weights is None:
                 weights = [1.0] * len(graphs)
@@ -1740,16 +2305,23 @@ class EnsembleTool:
             all_variables = set()
             
             for i, graph in enumerate(graphs):
-                if "graph" not in graph or "edges" not in graph["graph"]:
-                    continue
+                # Use helper functions for unified schema access
+                try:
+                    graph_edges = get_edges(graph)
+                    graph_vars = get_variables(graph)
+                except ValueError:
+                    # Fallback for old schema
+                    if "graph" in graph and "edges" in graph["graph"]:
+                        graph_edges = graph["graph"]["edges"]
+                        graph_vars = graph["graph"].get("variables", [])
+                    else:
+                        continue
                 
                 weight = weights[i]
+                all_variables.update(graph_vars)
                 
-                if "variables" in graph["graph"]:
-                    all_variables.update(graph["graph"]["variables"])
-                
-                for edge in graph["graph"]["edges"]:
-                    # KEY CHANGE: Create undirected adjacency key
+                for edge in graph_edges:
+                    # Create undirected adjacency key
                     u, v = str(edge["from"]), str(edge["to"])
                     adjacency_key = tuple(sorted((u, v)))
                     
@@ -1763,80 +2335,148 @@ class EnsembleTool:
             
             for (var1, var2), confidence in adjacency_weights.items():
                 if confidence >= threshold:
-                    # Direction is undetermined at this stage
+                    # Direction is undetermined at skeleton stage, use "--" for undirected
                     consensus_edges.append({
                         "from": var1,
                         "to": var2,
+                        "type": "--",
                         "weight": confidence,
                         "confidence": confidence
                     })
                     confidence_scores[f"{var1}-{var2}"] = confidence
             
             return {
-                "edges": consensus_edges,
-                "variables": list(all_variables),
-                "confidence_scores": confidence_scores,
-                "n_input_graphs": len(graphs),
-                "threshold": threshold
+                "graph": {
+                    "edges": consensus_edges,
+                    "variables": list(all_variables)
+                },
+                "metadata": {
+                    "graph_type": "skeleton",
+                    "method": "consensus_skeleton",
+                    "params": {
+                        "threshold": threshold,
+                        "n_input_graphs": len(graphs),
+                        "confidence_scores": confidence_scores
+                    }
+                }
             }
             
         except Exception as e:
             logger.error(f"Consensus skeleton building failed: {e}")
-            return {"edges": [], "variables": [], "confidence_scores": {}, "error": str(e)}
+            return {
+                "graph": {
+                    "edges": [],
+                    "variables": []
+                },
+                "metadata": {
+                    "graph_type": "skeleton",
+                    "method": "consensus_skeleton",
+                    "params": {},
+                    "error": str(e)
+                }
+            }
     
     @staticmethod
-    def resolve_directions(skeleton: Dict[str, Any], graphs: List[Dict[str, Any]], data_profile: Dict[str, Any]) -> Dict[str, Any]:
-        """Resolve edge directions with uncertainty markers"""
+    def resolve_directions(skeleton: Dict[str, Any], graphs: List[Dict[str, Any]], data_profile: Dict[str, Any], weights: Optional[List[float]] = None) -> Dict[str, Any]:
+        """Resolve edge directions with uncertainty markers using weight-based voting.
+        
+        Maintains unified schema structure. Uses 'type' field instead of 'marker'.
+        
+        Args:
+            skeleton: Consensus skeleton graph
+            graphs: List of input graphs for direction voting
+            data_profile: Data profile dictionary
+            weights: Optional list of weights for each graph (defaults to equal weights)
+        """
         try:
-            if "edges" not in skeleton:
-                return skeleton
+            # Ensure skeleton follows unified schema
+            if "graph" not in skeleton or "edges" not in skeleton["graph"]:
+                # Try to convert old schema
+                if "edges" in skeleton:
+                    skeleton = {
+                        "graph": {
+                            "edges": skeleton.get("edges", []),
+                            "variables": skeleton.get("variables", [])
+                        },
+                        "metadata": skeleton.get("metadata", {"graph_type": "skeleton"})
+                    }
+                else:
+                    return skeleton
+            
+            # Normalize weights if provided
+            if weights is None:
+                weights = [1.0] * len(graphs)
+            
+            # Normalize weights to sum to 1.0
+            total_weight = sum(weights)
+            if total_weight > 0:
+                weights = [w / total_weight for w in weights]
+            else:
+                weights = [1.0 / len(graphs)] * len(graphs)
+            
+            # Constants for tie/uncertain judgment
+            eps = 1e-6  # Threshold for conflict detection
+            min_conf = 0.1  # Minimum confidence threshold for uncertain detection
             
             resolved_edges = []
+            skeleton_edges = skeleton["graph"]["edges"]
             
-            for edge in skeleton["edges"]:
+            for edge in skeleton_edges:
                 from_var = edge["from"]
                 to_var = edge["to"]
                 
-                # Count direction votes
-                forward_votes = 0
-                backward_votes = 0
-                total_votes = 0
+                # Weight-based direction votes
+                forward_votes = 0.0
+                backward_votes = 0.0
+                total_votes = 0.0
                 
-                for graph in graphs:
-                    if "graph" not in graph or "edges" not in graph["graph"]:
-                        continue
+                for i, graph in enumerate(graphs):
+                    weight = weights[i]
+                    try:
+                        graph_edges = get_edges(graph)
+                    except ValueError:
+                        if "graph" in graph and "edges" in graph["graph"]:
+                            graph_edges = graph["graph"]["edges"]
+                        else:
+                            continue
                     
-                    for graph_edge in graph["graph"]["edges"]:
+                    for graph_edge in graph_edges:
+                        # Only include directed edges (type == "->") in voting
+                        if graph_edge.get("type") != "->":
+                            continue
+                        
                         if graph_edge["from"] == from_var and graph_edge["to"] == to_var:
-                            forward_votes += 1
-                            total_votes += 1
+                            forward_votes += weight
+                            total_votes += weight
                         elif graph_edge["from"] == to_var and graph_edge["to"] == from_var:
-                            backward_votes += 1
-                            total_votes += 1
+                            backward_votes += weight
+                            total_votes += weight
                 
-                # Resolve direction
+                # Resolve direction and set type field
+                resolved_edge = edge.copy()
+                
                 if total_votes == 0:
                     # No direction information, mark as uncertain
-                    resolved_edge = edge.copy()
                     resolved_edge["direction"] = "uncertain"
-                    resolved_edge["marker"] = "o-o"
+                    resolved_edge["type"] = "o-o"
+                elif abs(forward_votes - backward_votes) < eps:
+                    # Conflict: votes are too close (within eps)
+                    resolved_edge["direction"] = "conflict"
+                    resolved_edge["type"] = "o-o"
+                elif max(forward_votes, backward_votes) < min_conf:
+                    # Uncertain: maximum vote is below minimum confidence threshold
+                    resolved_edge["direction"] = "uncertain"
+                    resolved_edge["type"] = "o-o"
                 elif forward_votes > backward_votes:
                     # Forward direction consensus
-                    resolved_edge = edge.copy()
                     resolved_edge["direction"] = "forward"
-                    resolved_edge["marker"] = "->"
-                elif backward_votes > forward_votes:
+                    resolved_edge["type"] = "->"
+                else:
                     # Backward direction consensus
-                    resolved_edge = edge.copy()
                     resolved_edge["from"] = to_var
                     resolved_edge["to"] = from_var
                     resolved_edge["direction"] = "backward"
-                    resolved_edge["marker"] = "->"
-                else:
-                    # Conflict, mark as uncertain
-                    resolved_edge = edge.copy()
-                    resolved_edge["direction"] = "conflict"
-                    resolved_edge["marker"] = "o-o"
+                    resolved_edge["type"] = "->"
                 
                 resolved_edge["forward_votes"] = forward_votes
                 resolved_edge["backward_votes"] = backward_votes
@@ -1844,48 +2484,97 @@ class EnsembleTool:
                 
                 resolved_edges.append(resolved_edge)
             
-            skeleton["edges"] = resolved_edges
-            return skeleton
+            # Return unified schema
+            result = skeleton.copy()
+            result["graph"]["edges"] = resolved_edges
+            return result
             
         except Exception as e:
             logger.error(f"Direction resolution failed: {e}")
             return skeleton
     
     @staticmethod
-    def construct_pag(skeleton: Dict[str, Any], directions: Dict[str, Any]) -> Dict[str, Any]:
-        """Construct PAG-like graph with uncertainty markers"""
-        try:
-            pag = skeleton.copy()
+    def construct_pag(directions_result: Dict[str, Any]) -> Dict[str, Any]:
+        """Construct PAG-like graph with uncertainty markers.
+        
+        Args:
+            directions_result: Resolved directions result (already contains unified schema structure)
             
-            # Add PAG-specific metadata
-            pag["graph_type"] = "PAG"
-            pag["metadata"] = {
-                "construction_method": "consensus",
-                "uncertainty_markers": True,
-                "edge_types": ["->", "o-o", "o->"]
-            }
+        Returns:
+            PAG graph following unified schema with graph.graph.edges and metadata.graph_type
+        """
+        try:
+            # directions_result should already be unified schema from resolve_directions
+            pag = directions_result.copy()
+            
+            # Ensure unified schema structure
+            if "graph" not in pag:
+                # Convert old schema if needed
+                if "edges" in pag:
+                    pag = {
+                        "graph": {
+                            "edges": pag.get("edges", []),
+                            "variables": pag.get("variables", [])
+                        },
+                        "metadata": pag.get("metadata", {})
+                    }
+            
+            # Update metadata with PAG-specific information
+            if "metadata" not in pag:
+                pag["metadata"] = {}
+            
+            pag["metadata"]["graph_type"] = "PAG"
+            pag["metadata"]["construction_method"] = "consensus"
+            pag["metadata"]["uncertainty_markers"] = True
+            pag["metadata"]["edge_types"] = ["->", "o-o", "o->", "<->", "--"]
+            
+            # Ensure all edges have type field (convert marker if present)
+            if "graph" in pag and "edges" in pag["graph"]:
+                for edge in pag["graph"]["edges"]:
+                    if "type" not in edge and "marker" in edge:
+                        edge["type"] = edge["marker"]
+                    elif "type" not in edge:
+                        # Default PAG uncertain edge
+                        edge["type"] = "o-o"
             
             return pag
             
         except Exception as e:
             logger.error(f"PAG construction failed: {e}")
-            return skeleton
+            return directions_result
     
     @staticmethod
     def construct_dag(pag: Dict[str, Any], data_profile: Dict[str, Any], top_algorithm: str,
                       execution_plan: List[Dict[str, Any]] = None,
                       algorithm_results: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Construct single DAG with tie-breaking and cycle avoidance"""
+        """Construct single DAG with tie-breaking and cycle avoidance.
+        
+        Returns unified schema with graph.graph.edges and metadata.graph_type.
+        """
         import networkx as nx
         
         try:
+            # Ensure pag follows unified schema
+            if "graph" not in pag:
+                # Convert old schema if needed
+                if "edges" in pag:
+                    pag = {
+                        "graph": {
+                            "edges": pag.get("edges", []),
+                            "variables": pag.get("variables", [])
+                        },
+                        "metadata": pag.get("metadata", {})
+                    }
+                else:
+                    raise ValueError("Invalid pag structure for DAG construction")
+            
             dag_dict = pag.copy()
-            dag_dict["graph_type"] = "DAG"
             
             # Step 1: Apply tie-breaking to resolve uncertain edges
             resolved_edges = []
+            pag_edges = dag_dict["graph"]["edges"]
             
-            for edge in pag.get("edges", []):
+            for edge in pag_edges:
                 if edge.get("direction") in ["uncertain", "conflict"]:
                     resolved_edge = EnsembleTool._apply_tie_breaking(
                         edge, data_profile, top_algorithm, 
@@ -1916,17 +2605,29 @@ class EnsembleTool:
                 else:
                     # Safe to add this edge
                     G.add_edge(u, v)
-                    final_edges.append(edge)
+                    # Ensure edge has type field set to "->" for DAG
+                    final_edge = edge.copy()
+                    if "type" not in final_edge:
+                        final_edge["type"] = "->"
+                    elif final_edge["type"] not in ["->", "--"]:
+                        # Convert PAG types to DAG directed edge
+                        final_edge["type"] = "->"
+                    final_edges.append(final_edge)
             
             # Verify final graph is a DAG
             if not nx.is_directed_acyclic_graph(G):
                 logger.error("Final graph is not a DAG despite cycle prevention. This should not happen.")
                 raise ValueError("Constructed graph contains cycles")
             
-            dag_dict["edges"] = final_edges
-            dag_dict["metadata"] = {
-                "construction_method": "tie_breaking_and_cycle_avoidance",
-                "top_algorithm": top_algorithm,
+            # Update unified schema structure
+            dag_dict["graph"]["edges"] = final_edges
+            if "metadata" not in dag_dict:
+                dag_dict["metadata"] = {}
+            
+            dag_dict["metadata"]["graph_type"] = "DAG"
+            dag_dict["metadata"]["construction_method"] = "tie_breaking_and_cycle_avoidance"
+            dag_dict["metadata"]["top_algorithm"] = top_algorithm
+            dag_dict["metadata"]["params"] = {
                 "data_profile": data_profile,
                 "skipped_edges_count": len(skipped_edges),
                 "final_edge_count": len(final_edges)
@@ -1953,31 +2654,7 @@ class EnsembleTool:
             is_mixed = global_props.get("is_mixed", False)
             pairwise = data_profile.get("pairwise", {})
             
-            # New Rule 1: Nonlinear Mixed Data - use TSCM direction
-            if is_mixed and execution_plan:
-                # Check if TSCM is in execution plan
-                tscm_config = next((c for c in execution_plan if c["alg"] == "TSCM"), None)
-                if tscm_config:
-                    # Check pairwise properties for nonlinearity
-                    pair_key = f"{from_var}_{to_var}"
-                    pair_key_rev = f"{to_var}_{from_var}"
-                    
-                    # Check cont_cont or cont_cat pairs for nonlinearity
-                    cont_cont_pair = pairwise.get("cont_cont", {}).get(pair_key) or pairwise.get("cont_cont", {}).get(pair_key_rev)
-                    if cont_cont_pair and cont_cont_pair.get("nonlinearity", 0) > 0.5:
-                        # Use TSCM direction if available
-                        tscm_result = algorithm_results.get("TSCM", {}) if algorithm_results else {}
-                        tscm_direction = EnsembleTool._extract_tscm_direction(tscm_result, from_var, to_var)
-                        if tscm_direction:
-                            resolved_edge = edge.copy()
-                            resolved_edge["from"] = tscm_direction["from"]
-                            resolved_edge["to"] = tscm_direction["to"]
-                            resolved_edge["direction"] = "forward"
-                            resolved_edge["marker"] = "->"
-                            resolved_edge["tie_breaking"] = "TSCM direction (nonlinear mixed data)"
-                            return resolved_edge
-            
-            # New Rule 2: Linear Mixed Data - use LiM direction
+            # Rule: Linear Mixed Data - use LiM direction
             if is_mixed and execution_plan:
                 # Check if LiM is in execution plan
                 lim_config = next((c for c in execution_plan if c["alg"] == "LiM"), None)
@@ -1996,7 +2673,7 @@ class EnsembleTool:
                             resolved_edge["from"] = lim_direction["from"]
                             resolved_edge["to"] = lim_direction["to"]
                             resolved_edge["direction"] = "forward"
-                            resolved_edge["marker"] = "->"
+                            resolved_edge["type"] = "->"
                             resolved_edge["tie_breaking"] = "LiM direction (linear mixed data)"
                             return resolved_edge
             
@@ -2005,26 +2682,30 @@ class EnsembleTool:
                 # Prefer forward direction for linear algorithms
                 resolved_edge = edge.copy()
                 resolved_edge["direction"] = "forward"
-                resolved_edge["marker"] = "->"
+                resolved_edge["type"] = "->"
                 resolved_edge["tie_breaking"] = f"Linear algorithm preference ({top_algorithm})"
-            elif top_algorithm in ["ANM", "CAM"]:
+            elif top_algorithm == "ANM":
                 # Prefer direction based on ANM compatibility
                 if data_profile.get("anm_compatible", False):
                     resolved_edge = edge.copy()
                     resolved_edge["direction"] = "forward"
-                    resolved_edge["marker"] = "->"
+                    resolved_edge["type"] = "->"
                     resolved_edge["tie_breaking"] = f"ANM compatibility ({top_algorithm})"
                 else:
                     resolved_edge = edge.copy()
                     resolved_edge["direction"] = "backward"
-                    resolved_edge["marker"] = "->"
+                    resolved_edge["type"] = "->"
                     resolved_edge["tie_breaking"] = f"Non-ANM preference ({top_algorithm})"
             else:
                 # Default: keep original direction
                 resolved_edge = edge.copy()
                 resolved_edge["direction"] = "forward"
-                resolved_edge["marker"] = "->"
+                resolved_edge["type"] = "->"
                 resolved_edge["tie_breaking"] = f"Default preference ({top_algorithm})"
+            
+            # Ensure backward direction always swaps from/to
+            if resolved_edge.get("direction") == "backward":
+                resolved_edge["from"], resolved_edge["to"] = resolved_edge["to"], resolved_edge["from"]
             
             return resolved_edge
             
@@ -2036,7 +2717,6 @@ class EnsembleTool:
     @staticmethod
     def _extract_lim_direction(lim_result: Dict[str, Any], var1: str, var2: str) -> Optional[Dict[str, str]]:
         """Extract direction from LiM result for a specific edge (placeholder)"""
-        # PLACEHOLDER: Extract direction from LiM result
         # This should parse LiM output to find edge direction
         if "graph" in lim_result and "edges" in lim_result["graph"]:
             edges = lim_result["graph"]["edges"]

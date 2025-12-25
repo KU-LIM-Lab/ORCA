@@ -6,17 +6,16 @@ experiments:
   - name: testing_methods
     dataset: synthetic_cd
     methods:
-    #   - notears_linear
-    #   - notears_nonlinear
-    #   - autocd
-    #   - lingam
-    #   - anm
+      # - notears_linear
+      # - notears_nonlinear
+      # - autocd
+      # - lingam
+      # - anm
       - orca
     # Restrict to a single run for quick checks
     scenarios: [] # [] → all scenarios
-    d_list: [30] # null → all dimensionalities
+    d_list: [2,3,5,10,30,50,100] # null → all dimensionalities
     runs: 1 # run_id < 1 → only first run
-    run_indices: null
     results_dir: experiments/results/graph_discovery
     seed: 0
 
@@ -31,7 +30,7 @@ experiments:
       - anm
       - orca
     #   → iter_synthetic_cd_runs will iterate over all available data
-    d_list: [2, 3, 5, 10]
+    d_list: [2, 3, 5]
     results_dir: experiments/results/graph_discovery
     seed: 0
 
