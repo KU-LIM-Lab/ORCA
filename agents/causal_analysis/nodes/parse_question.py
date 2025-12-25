@@ -39,8 +39,6 @@ def build_parse_question_node(llm: BaseChatModel) -> Callable:
             try:
                 df = load_df_parquet(redis_key)
                 if df is not None:
-                    # Cache in state for future use
-                    state["df_preprocessed"] = df
                     return df
             except Exception as e:
                 print(f"⚠️ Failed to load DataFrame from Redis key {redis_key}: {e}")
@@ -76,12 +74,16 @@ def build_parse_question_node(llm: BaseChatModel) -> Callable:
             table_keys = redis_client.keys(f"{db_id}:metadata:*")
             table_markdowns = []
             for key in table_keys:
+                key = key.decode("utf-8") if isinstance(key, bytes) else key
+                # print("key:", key)
                 if key == f"{db_id}:metadata:table_names":
                     continue
                 table_name = key.split(":")[2]
                 raw = redis_client.get(key)
                 if not raw:
                     continue
+                raw = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+                # print("raw:", type(raw), raw[:50] if raw else raw)
                 try:
                     metadata = json.loads(raw)
                     schema = metadata.get("schema", {})
@@ -252,9 +254,9 @@ def build_parse_question_node(llm: BaseChatModel) -> Callable:
     
     def invoke(state: Dict) -> Dict:
         """Parse question and identify treatment/outcome variables"""
-        if state.get("variable_info"):
-            state["parsed_query"] = state["variable_info"]
-            return state
+        # if state.get("variable_info"):
+        #     state["parsed_query"] = state["variable_info"]
+        #     return state
         
         treatment_outcome = _identify_treatment_outcome(state)
         treatment = treatment_outcome["treatment"]
@@ -289,6 +291,7 @@ def build_parse_question_node(llm: BaseChatModel) -> Callable:
             parsed["colliders"] = roles["colliders"]
         
         state["parsed_query"] = parsed
+        state.pop("df_preprocessed", None)
         return state
 
     return RunnableLambda(invoke)

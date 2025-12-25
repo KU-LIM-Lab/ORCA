@@ -199,6 +199,10 @@ def selector_node(state, llm: BaseChatModel):
     treatment_info, outcome_info = None, None
     # Full column list for each table (used downstream to expand keep_all)
     table_columns = {t.get('table_name'): [c.get('name') for c in t.get('columns', [])] for t in schema_tables}
+    table_column_types = {
+        t.get('table_name'): {c.get('name'): c.get('type') for c in t.get('columns', [])}
+        for t in schema_tables
+    }
 
     if too_large:
         print("📦 Schema too large. Pruning with LLM...")
@@ -219,6 +223,7 @@ def selector_node(state, llm: BaseChatModel):
         "treatment": treatment_info,
         "outcome": outcome_info,
         "table_columns": table_columns,
+        "table_column_types": table_column_types,
         "send_to": "decomposer_node",
         'messages': state.get("messages", []) + [
             {

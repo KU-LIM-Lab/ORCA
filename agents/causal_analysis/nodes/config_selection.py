@@ -30,8 +30,6 @@ def build_config_selection_node(llm: BaseChatModel) -> RunnableLambda:
             try:
                 df = load_df_parquet(redis_key)
                 if df is not None:
-                    # Cache in state for future use
-                    state["df_preprocessed"] = df
                     return df
             except Exception as e:
                 print(f"⚠️ Failed to load DataFrame from Redis key {redis_key}: {e}")
@@ -108,6 +106,7 @@ def build_config_selection_node(llm: BaseChatModel) -> RunnableLambda:
             estimator=result.estimation_method,
             refuter=result.refutation_methods[0] if result.refutation_methods else None
         )
+        state.pop("df_preprocessed", None)
         return state
 
     return RunnableLambda(invoke)

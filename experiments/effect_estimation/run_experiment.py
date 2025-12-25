@@ -463,7 +463,8 @@ def _save_summary_intermediate(all_records: List[Dict[str, Any]], results_dir: P
         
         # 2. RMSE (Root Mean Squared Error) = sqrt(MSE)
         if "ate_sq_error_mean" in summary.columns:
-            summary["ate_rmse"] = np.sqrt(summary["ate_sq_error_mean"])
+            sq_err = pd.to_numeric(summary["ate_sq_error_mean"], errors="coerce")
+            summary["ate_rmse"] = np.sqrt(sq_err)
         
         # 3. Absolute bias (mean of absolute bias values)
         if "ate_bias_mean" in summary.columns:
@@ -500,6 +501,7 @@ def run_experiments(
     discovery_result_dir: Path | None = None,
     seed: int = 0,
     save_interval: int = 50,
+    use_true_sql: bool = False,
 ):
     if results_dir is None:
         results_dir = Path("experiments/results/effect_estimation")
@@ -846,7 +848,7 @@ def run_experiments(
         
         ##### Load Scenarios #####
         # Scenarios는 experiments/questions/reef/causal_analysis.json에 들어 있음 
-        scenarios_path = Path("experiments/questions/reef/causal_analysis.json")
+        scenarios_path = Path("experiments/questions/reef/causal_analysis_sql.json")
         if not scenarios_path.exists():
             raise FileNotFoundError(f"Scenarios file not found: {scenarios_path}")
         
@@ -854,251 +856,407 @@ def run_experiments(
         
         print(f"Running experiments on REEF dataset: {len(scenarios)} scenarios, methods={methods}, setting={setting}")
 
-        # method 별 실행 
-        for method_name in methods:
-            
-            if method_name not in METHOD_REGISTRY:
-                tqdm.write(f"Skipping unknown method: {method_name}")
-                continue
-            
-            method_fn = get_method(method_name)
-            
-            # 질문 하나씩 (scenario 하나를 의미)
-            scenario_pbar = tqdm(
-                enumerate(scenarios),
-                desc=f"Scenarios ({method_name})",
-                total=len(scenarios),
-                unit="scenario",
-                position=0,
-                leave=True,
-                ncols=100
-            )
-            for scenario_idx, scenario in scenario_pbar:
-                scenario_pbar.set_description(f"Scenario {scenario_idx+1}/{len(scenarios)} ({method_name})")
-                
-                # Scenario 정보 추출
-                treatment = scenario.get("treatment")
-                outcome = scenario.get("outcome")
-                confounders = scenario.get("confounders", [])
-                mediators = scenario.get("mediators", [])
-                instrumental_variables = scenario.get("instrumental_variables", [])
-                sql_query = scenario.get("sql_query")
-                ground_truth_ate = scenario.get("ground_truth_ate")
-                question = scenario.get("question", f"What is the causal effect of {treatment} on {outcome}?")
-                
-                if not sql_query:
-                    tqdm.write(f"  [ERROR] Scenario {scenario_idx+1} missing sql_query. Skipping.")
+        # full pipeline: question-only -> text2sql -> discovery -> inference
+        if setting == "full_pipeline":
+            from orchestration.graph import create_orchestration_graph
+            from monitoring.metrics.collector import MetricsCollector, set_metrics_collector
+            from core.state import create_initial_state
+            from utils.system_init import initialize_system
+
+            # Initialize system (db + metadata) once
+            initializer = initialize_system("reef_db", "postgresql", {})
+            if not initializer or not initializer.is_connected:
+                raise RuntimeError("Failed to initialize system for REEF full_pipeline.")
+
+            # Orchestration graph (non-interactive)
+            collector = MetricsCollector("reef_full_pipeline")
+            set_metrics_collector(collector)
+            collector.start_monitoring()
+            graph = create_orchestration_graph(metrics_collector=collector)
+            graph.compile()
+
+            for method_name in methods:
+                if method_name != "orca":
+                    tqdm.write(f"Skipping method '{method_name}' for full_pipeline (orca only).")
                     continue
-                
-                # 데이터 로드
-                try:
-                    df = loader.load_custom_query(sql_query)
-                    if len(df) == 0:
-                        tqdm.write(f"  [ERROR] Scenario {scenario_idx+1}: Empty dataframe. Skipping.")
+
+                scenario_pbar = tqdm(
+                    enumerate(scenarios),
+                    desc=f"Scenarios ({method_name})",
+                    total=len(scenarios),
+                    unit="scenario",
+                    position=0,
+                    leave=True,
+                    ncols=100
+                )
+                for scenario_idx, scenario in scenario_pbar:
+                    scenario_pbar.set_description(f"Scenario {scenario_idx+1}/{len(scenarios)} ({method_name})")
+
+                    question = scenario.get("question")
+                    if not question:
+                        tqdm.write(f"  [ERROR] Scenario {scenario_idx+1} missing question. Skipping.")
                         continue
-                    
-                    # 데이터 타입 변환 (numeric으로)
-                    df = coerce_df_to_numeric(df, dropna=True, verbose=False)
-                    
-                    if len(df) < 10:
-                        tqdm.write(f"  [ERROR] Scenario {scenario_idx+1}: Insufficient data ({len(df)} rows). Skipping.")
-                        continue
-                    
-                except Exception as e:
-                    tqdm.write(f"  [ERROR] Scenario {scenario_idx+1}: Failed to load data: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    continue
-                
-                # 변수명 해석 (테이블 prefix 제거)
-                def resolve_var_name(var_name: str, df: pd.DataFrame) -> str:
-                    """변수명을 데이터프레임의 실제 컬럼명으로 해석"""
-                    if var_name in df.columns:
-                        return var_name
-                    # 부분 매칭 시도
-                    for col in df.columns:
-                        if col.endswith(f".{var_name}") or col.split(".")[-1] == var_name:
-                            return col
-                    return var_name  # 못 찾으면 원래 이름 반환
-                
-                treatment_resolved = resolve_var_name(treatment, df)
-                outcome_resolved = resolve_var_name(outcome, df)
-                confounders_resolved = [resolve_var_name(c, df) for c in confounders if resolve_var_name(c, df) in df.columns]
-                
-                # X, T, Y 추출
-                if treatment_resolved not in df.columns:
-                    tqdm.write(f"  [ERROR] Scenario {scenario_idx+1}: Treatment '{treatment_resolved}' not found. Skipping.")
-                    continue
-                if outcome_resolved not in df.columns:
-                    tqdm.write(f"  [ERROR] Scenario {scenario_idx+1}: Outcome '{outcome_resolved}' not found. Skipping.")
-                    continue
-                
-                # Confounders를 X로 사용
-                X_cols = confounders_resolved if confounders_resolved else []
-                # X가 비어있으면 더미 변수 하나 추가 (일부 method가 X를 요구할 수 있음)
-                if len(X_cols) == 0:
-                    # 더미 변수 생성 (상수 1)
-                    df["_dummy"] = 1.0
-                    X_cols = ["_dummy"]
-                
-                X = df[X_cols].values if X_cols else np.ones((len(df), 1))
-                T = df[treatment_resolved].values
-                Y = df[outcome_resolved].values
-                
-                # Ground truth ATE
-                tau_true_ate = float(ground_truth_ate) if ground_truth_ate is not None else None
-                tau_true_cate = None  # REEF 데이터에는 CATE ground truth가 없음
-                
-                # Causal graph 생성 (ORCA용)
-                if setting == "oracle_graph":
-                    # Confounders -> T, Y / T -> Y 구조
-                    edges = []
-                    for conf in confounders_resolved:
-                        edges.append({"from": conf, "to": treatment_resolved})
-                        edges.append({"from": conf, "to": outcome_resolved})
-                    edges.append({"from": treatment_resolved, "to": outcome_resolved})
-                    
-                    causal_graph = {
-                        "nodes": confounders_resolved + [treatment_resolved, outcome_resolved],
-                        "edges": edges,
-                        "variables": confounders_resolved + [treatment_resolved, outcome_resolved],
-                        "graph": {
-                            "variables": confounders_resolved + [treatment_resolved, outcome_resolved],
-                            "edges": edges
-                        },
-                    }
-                elif setting == "agent_graph":
-                    discovery_method_name = discovery_method or "orca"
-                    causal_graph, discovery_error = _run_causal_discovery(
-                        df=df,
-                        discovery_method=discovery_method_name,
-                        discovery_context=discovery_context,
-                        discovery_result_dir=discovery_result_dir,
-                        dataset="reef",
-                        scenario=scenario_idx,
-                        run_id=scenario_idx,
-                    )
-                    if discovery_error:
-                        tqdm.write(
-                            f"  [ERROR] Discovery failed for scenario {scenario_idx+1}: {discovery_error}"
+
+                    ground_truth_ate = scenario.get("ground_truth_ate")
+
+                    # Build initial state for full pipeline
+                    state = create_initial_state(question, db_id="reef_db")
+                    state["analysis_mode"] = "full_pipeline"
+                    state.setdefault("schema_info", {"tables": []})
+                    state.setdefault("table_metadata", {})
+
+                    if use_true_sql:
+                        true_sql = scenario.get("sql_query")
+                        if true_sql:
+                            state["sql_query"] = true_sql
+                            state["final_sql"] = true_sql
+                            state.setdefault("skip", [])
+                            for step in ["table_selection", "table_retrieval"]:
+                                if step not in state["skip"]:
+                                    state["skip"].append(step)
+
+                    try:
+                        result_state = graph.execute(
+                            question,
+                            context=state,
+                            session_id=f"reef_full_pipeline_{scenario_idx:03d}",
                         )
-                        causal_graph = None
-                else:
-                    raise ValueError(f"Unknown setting: {setting}")
-                
-                # Method 실행
-                context: Dict[str, Any] = {
-                    "seed": 0,
-                }
-                
-                if method_name == "orca":
-                    if setting == "agent_graph" and causal_graph is None:
-                        tqdm.write(
-                            f"  [ERROR] Missing discovery graph for {method_name} (scenario {scenario_idx+1}). Skipping."
-                        )
+                    except Exception as e:
+                        tqdm.write(f"  [ERROR] Full pipeline failed for scenario {scenario_idx+1}: {e}")
+                        import traceback
+                        traceback.print_exc()
                         continue
-                    context.update({
-                        "df": df,
-                        "causal_graph": causal_graph,
-                        "app": orca_app,
-                        "treatment_name": treatment_resolved,
-                        "outcome_name": outcome_resolved,
-                    })
-                
-                try:
-                    result = method_fn(X, T, Y, context=context)
-                except Exception as e:
-                    tqdm.write(f"  [ERROR] Method {method_name} failed for scenario {scenario_idx+1}: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    continue
-                
-                # Metrics 계산
-                # tau_true_ate가 None이면 metrics 계산을 건너뛰거나 경고만 표시
-                if tau_true_ate is None:
-                    tqdm.write(f"  [WARNING] Scenario {scenario_idx+1}: No ground_truth_ate. Skipping metrics calculation.")
-                    metrics = {
-                        "ate_hat": result.get("tau_hat_ate"),
-                        "ate_true": None,
-                        "ate_bias": None,
-                        "ate_abs_error": None,
-                        "ate_sq_error": None,
-                        "ate_ci_covered": None,
-                        "ate_ci_width": None,
-                        "cate_pehe": None,
-                        "cate_mse": None,
-                    }
-                else:
-                    metrics = compute_metrics(
-                        tau_hat_ate=result.get("tau_hat_ate"),
-                        tau_hat_cate=result.get("tau_hat_cate"),
-                        tau_true_ate=tau_true_ate,
-                        tau_true_cate=tau_true_cate,
-                        ate_ci=result.get("ate_ci"),
-                    )
-                
-                # Run record 생성
-                run_record = {
-                    "dataset": "REEF",
-                    "scenario": question,  # scenario 식별자로 question 사용
-                    "setting": setting,
-                    "method": method_name,
-                    "run_id(replication_idx)": scenario_idx,
-                    "treatment": treatment,
-                    "outcome": outcome,
-                    "confounders": confounders,
-                    "n_samples": len(df),
-                    "n_features": X.shape[1] if X.ndim > 1 else 1,
-                    "ground_truth_ate": tau_true_ate,
-                    "metrics": metrics,
-                    "sql_query": sql_query,
-                }
-                
-                # 결과 저장
-                # REEF의 경우: 한 파일에 모든 scenario 결과를 리스트로 저장
-                # Organize by dataset / setting / method_name.json
-                out_dir = results_dir / "REEF" / setting
-                out_dir.mkdir(parents=True, exist_ok=True)
-                out_path = out_dir / f"{method_name}.json"
-                
-                try:
-                    # 기존 파일이 있으면 읽어서 리스트에 추가, 없으면 새 리스트 생성
-                    if out_path.exists():
-                        with open(out_path, "r") as f:
-                            all_results = json.load(f)
-                        if not isinstance(all_results, list):
-                            # 기존 파일이 리스트가 아니면 리스트로 변환
-                            all_results = [all_results]
+
+                    tau_hat_ate = result_state.get("causal_effect_ate")
+                    ate_ci = result_state.get("causal_effect_ci")
+                    tau_true_ate = float(ground_truth_ate) if ground_truth_ate is not None else None
+
+                    if tau_true_ate is None:
+                        metrics = {
+                            "ate_hat": tau_hat_ate,
+                            "ate_true": None,
+                            "ate_bias": None,
+                            "ate_abs_error": None,
+                            "ate_sq_error": None,
+                            "ate_ci_covered": None,
+                            "ate_ci_width": None,
+                            "cate_pehe": None,
+                            "cate_mse": None,
+                        }
                     else:
-                        all_results = []
-                    
-                    # 새 결과 추가
-                    all_results.append(run_record)
-                    
-                    # 파일에 저장
-                    with open(out_path, "w") as f:
-                        json.dump(all_results, f, indent=2)
-                except Exception as e:
-                    tqdm.write(f"  [ERROR] Failed to save results for {method_name}, scenario {scenario_idx+1}: {e}")
-                
-                # Flat record for summary
-                flat = {
-                    "dataset": "REEF",
-                    "scenario": question,
-                    "setting": setting,
-                    "method": method_name,
-                    "run_id(replication_idx)": scenario_idx,
-                    "treatment": treatment,
-                    "outcome": outcome,
-                    "n_samples": len(df),
-                    "ground_truth_ate": tau_true_ate,
-                    **metrics,
-                }
-                all_records.append(flat)
-                
-                # Save intermediate summary periodically
-                if save_interval > 0 and len(all_records) % save_interval == 0:
-                    _save_summary_intermediate(all_records, results_dir, dataset.lower(), setting)
+                        metrics = compute_metrics(
+                            tau_hat_ate=tau_hat_ate,
+                            tau_hat_cate=None,
+                            tau_true_ate=tau_true_ate,
+                            tau_true_cate=None,
+                            ate_ci=ate_ci,
+                        )
+
+                    execution_status = result_state.get("execution_status")
+                    if execution_status is not None:
+                        if hasattr(execution_status, "value"):
+                            execution_status = execution_status.value
+                        elif hasattr(execution_status, "name"):
+                            execution_status = execution_status.name
+                        else:
+                            execution_status = str(execution_status)
+
+                    run_record = {
+                        "dataset": "REEF",
+                        "scenario": question,
+                        "setting": setting,
+                        "method": method_name,
+                        "run_id(replication_idx)": scenario_idx,
+                        "treatment": result_state.get("treatment_variable"),
+                        "outcome": result_state.get("outcome_variable"),
+                        "sql_query": result_state.get("sql_query"),
+                        "execution_status": execution_status,
+                        "causal_effect_ate": tau_hat_ate,
+                        "causal_effect_ci": ate_ci,
+                        "selected_graph": result_state.get("selected_graph"),
+                        "final_report_markdown": (result_state.get("final_report") or {}).get("markdown"),
+                        "ground_truth_ate": tau_true_ate,
+                        "metrics": metrics,
+                    }
+
+                    out_dir = results_dir / "REEF" / setting
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    out_path = out_dir / f"{method_name}.json"
+                    try:
+                        if out_path.exists():
+                            with open(out_path, "r") as f:
+                                all_results = json.load(f)
+                            if not isinstance(all_results, list):
+                                all_results = [all_results]
+                        else:
+                            all_results = []
+                        all_results.append(run_record)
+                        with open(out_path, "w") as f:
+                            json.dump(all_results, f, indent=2)
+                    except Exception as e:
+                        tqdm.write(f"  [ERROR] Failed to save results for {method_name}, scenario {scenario_idx+1}: {e}")
+
+                    flat = {
+                        "dataset": "REEF",
+                        "scenario": question,
+                        "setting": setting,
+                        "method": method_name,
+                        "run_id(replication_idx)": scenario_idx,
+                        "ground_truth_ate": tau_true_ate,
+                        **metrics,
+                    }
+                    all_records.append(flat)
+
+                    if save_interval > 0 and len(all_records) % save_interval == 0:
+                        _save_summary_intermediate(all_records, results_dir, dataset.lower(), setting)
+
+            collector.stop_monitoring()
+
+        else:
+            # method 별 실행 
+            for method_name in methods:
+                if method_name not in METHOD_REGISTRY:
+                    tqdm.write(f"Skipping unknown method: {method_name}")
+                    continue
+
+                method_fn = get_method(method_name)
+
+                # 질문 하나씩 (scenario 하나를 의미)
+                scenario_pbar = tqdm(
+                    enumerate(scenarios),
+                    desc=f"Scenarios ({method_name})",
+                    total=len(scenarios),
+                    unit="scenario",
+                    position=0,
+                    leave=True,
+                    ncols=100
+                )
+                for scenario_idx, scenario in scenario_pbar:
+                    scenario_pbar.set_description(f"Scenario {scenario_idx+1}/{len(scenarios)} ({method_name})")
+
+                    # Scenario 정보 추출
+                    treatment = scenario.get("treatment")
+                    outcome = scenario.get("outcome")
+                    confounders = scenario.get("confounders", [])
+                    mediators = scenario.get("mediators", [])
+                    instrumental_variables = scenario.get("instrumental_variables", [])
+                    sql_query = scenario.get("sql_query")
+                    ground_truth_ate = scenario.get("ground_truth_ate")
+                    question = scenario.get("question", f"What is the causal effect of {treatment} on {outcome}?")
+
+                    if not sql_query:
+                        tqdm.write(f"  [ERROR] Scenario {scenario_idx+1} missing sql_query. Skipping.")
+                        continue
+
+                    # 데이터 로드
+                    try:
+                        df = loader.load_custom_query(sql_query)
+                        if len(df) == 0:
+                            tqdm.write(f"  [ERROR] Scenario {scenario_idx+1}: Empty dataframe. Skipping.")
+                            continue
+
+                        # 데이터 타입 변환 (numeric으로)
+                        df = coerce_df_to_numeric(df, dropna=True, verbose=False)
+
+                        if len(df) < 10:
+                            tqdm.write(f"  [ERROR] Scenario {scenario_idx+1}: Insufficient data ({len(df)} rows). Skipping.")
+                            continue
+
+                    except Exception as e:
+                        tqdm.write(f"  [ERROR] Scenario {scenario_idx+1}: Failed to load data: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        continue
+
+                    # 변수명 해석 (테이블 prefix 제거)
+                    def resolve_var_name(var_name: str, df: pd.DataFrame) -> str:
+                        """변수명을 데이터프레임의 실제 컬럼명으로 해석"""
+                        if var_name in df.columns:
+                            return var_name
+                        # 부분 매칭 시도
+                        for col in df.columns:
+                            if col.endswith(f".{var_name}") or col.split(".")[-1] == var_name:
+                                return col
+                        return var_name  # 못 찾으면 원래 이름 반환
+
+                    treatment_resolved = resolve_var_name(treatment, df)
+                    outcome_resolved = resolve_var_name(outcome, df)
+                    confounders_resolved = [resolve_var_name(c, df) for c in confounders if resolve_var_name(c, df) in df.columns]
+
+                    # X, T, Y 추출
+                    if treatment_resolved not in df.columns:
+                        tqdm.write(f"  [ERROR] Scenario {scenario_idx+1}: Treatment '{treatment_resolved}' not found. Skipping.")
+                        continue
+                    if outcome_resolved not in df.columns:
+                        tqdm.write(f"  [ERROR] Scenario {scenario_idx+1}: Outcome '{outcome_resolved}' not found. Skipping.")
+                        continue
+
+                    # Confounders를 X로 사용
+                    X_cols = confounders_resolved if confounders_resolved else []
+                    # X가 비어있으면 더미 변수 하나 추가 (일부 method가 X를 요구할 수 있음)
+                    if len(X_cols) == 0:
+                        # 더미 변수 생성 (상수 1)
+                        df["_dummy"] = 1.0
+                        X_cols = ["_dummy"]
+
+                    X = df[X_cols].values if X_cols else np.ones((len(df), 1))
+                    T = df[treatment_resolved].values
+                    Y = df[outcome_resolved].values
+
+                    # Ground truth ATE
+                    tau_true_ate = float(ground_truth_ate) if ground_truth_ate is not None else None
+                    tau_true_cate = None  # REEF 데이터에는 CATE ground truth가 없음
+
+                    # Causal graph 생성 (ORCA용)
+                    if setting == "oracle_graph":
+                        # Confounders -> T, Y / T -> Y 구조
+                        edges = []
+                        for conf in confounders_resolved:
+                            edges.append({"from": conf, "to": treatment_resolved})
+                            edges.append({"from": conf, "to": outcome_resolved})
+                        edges.append({"from": treatment_resolved, "to": outcome_resolved})
+
+                        causal_graph = {
+                            "nodes": confounders_resolved + [treatment_resolved, outcome_resolved],
+                            "edges": edges,
+                            "variables": confounders_resolved + [treatment_resolved, outcome_resolved],
+                            "graph": {
+                                "variables": confounders_resolved + [treatment_resolved, outcome_resolved],
+                                "edges": edges
+                            },
+                        }
+                    elif setting == "agent_graph":
+                        discovery_method_name = discovery_method or "orca"
+                        causal_graph, discovery_error = _run_causal_discovery(
+                            df=df,
+                            discovery_method=discovery_method_name,
+                            discovery_context=discovery_context,
+                            discovery_result_dir=discovery_result_dir,
+                            dataset="reef",
+                            scenario=scenario_idx,
+                            run_id=scenario_idx,
+                        )
+                        if discovery_error:
+                            tqdm.write(
+                                f"  [ERROR] Discovery failed for scenario {scenario_idx+1}: {discovery_error}"
+                            )
+                            causal_graph = None
+                    else:
+                        raise ValueError(f"Unknown setting: {setting}")
+
+                    # Method 실행
+                    context: Dict[str, Any] = {
+                        "seed": 0,
+                    }
+
+                    if method_name == "orca":
+                        if setting == "agent_graph" and causal_graph is None:
+                            tqdm.write(
+                                f"  [ERROR] Missing discovery graph for {method_name} (scenario {scenario_idx+1}). Skipping."
+                            )
+                            continue
+                        context.update({
+                            "df": df,
+                            "causal_graph": causal_graph,
+                            "app": orca_app,
+                            "treatment_name": treatment_resolved,
+                            "outcome_name": outcome_resolved,
+                        })
+
+                    try:
+                        result = method_fn(X, T, Y, context=context)
+                    except Exception as e:
+                        tqdm.write(f"  [ERROR] Method {method_name} failed for scenario {scenario_idx+1}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        continue
+
+                    # Metrics 계산
+                    # tau_true_ate가 None이면 metrics 계산을 건너뛰거나 경고만 표시
+                    if tau_true_ate is None:
+                        tqdm.write(f"  [WARNING] Scenario {scenario_idx+1}: No ground_truth_ate. Skipping metrics calculation.")
+                        metrics = {
+                            "ate_hat": result.get("tau_hat_ate"),
+                            "ate_true": None,
+                            "ate_bias": None,
+                            "ate_abs_error": None,
+                            "ate_sq_error": None,
+                            "ate_ci_covered": None,
+                            "ate_ci_width": None,
+                            "cate_pehe": None,
+                            "cate_mse": None,
+                        }
+                    else:
+                        metrics = compute_metrics(
+                            tau_hat_ate=result.get("tau_hat_ate"),
+                            tau_hat_cate=result.get("tau_hat_cate"),
+                            tau_true_ate=tau_true_ate,
+                            tau_true_cate=tau_true_cate,
+                            ate_ci=result.get("ate_ci"),
+                        )
+
+                    # Run record 생성
+                    run_record = {
+                        "dataset": "REEF",
+                        "scenario": question,  # scenario 식별자로 question 사용
+                        "setting": setting,
+                        "method": method_name,
+                        "run_id(replication_idx)": scenario_idx,
+                        "treatment": treatment,
+                        "outcome": outcome,
+                        "confounders": confounders,
+                        "n_samples": len(df),
+                        "n_features": X.shape[1] if X.ndim > 1 else 1,
+                        "ground_truth_ate": tau_true_ate,
+                        "metrics": metrics,
+                        "sql_query": sql_query,
+                    }
+
+                    # 결과 저장
+                    # REEF의 경우: 한 파일에 모든 scenario 결과를 리스트로 저장
+                    # Organize by dataset / setting / method_name.json
+                    out_dir = results_dir / "REEF" / setting
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    out_path = out_dir / f"{method_name}.json"
+
+                    try:
+                        # 기존 파일이 있으면 읽어서 리스트에 추가, 없으면 새 리스트 생성
+                        if out_path.exists():
+                            with open(out_path, "r") as f:
+                                all_results = json.load(f)
+                            if not isinstance(all_results, list):
+                                # 기존 파일이 리스트가 아니면 리스트로 변환
+                                all_results = [all_results]
+                        else:
+                            all_results = []
+
+                        # 새 결과 추가
+                        all_results.append(run_record)
+
+                        # 파일에 저장
+                        with open(out_path, "w") as f:
+                            json.dump(all_results, f, indent=2)
+                    except Exception as e:
+                        tqdm.write(f"  [ERROR] Failed to save results for {method_name}, scenario {scenario_idx+1}: {e}")
+
+                    # Flat record for summary
+                    flat = {
+                        "dataset": "REEF",
+                        "scenario": question,
+                        "setting": setting,
+                        "method": method_name,
+                        "run_id(replication_idx)": scenario_idx,
+                        "treatment": treatment,
+                        "outcome": outcome,
+                        "n_samples": len(df),
+                        "ground_truth_ate": tau_true_ate,
+                        **metrics,
+                    }
+                    all_records.append(flat)
+
+                    # Save intermediate summary periodically
+                    if save_interval > 0 and len(all_records) % save_interval == 0:
+                        _save_summary_intermediate(all_records, results_dir, dataset.lower(), setting)
             
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
@@ -1225,6 +1383,7 @@ def main():
         discovery_context = exp_config.get("discovery_context")
         discovery_result_dir = exp_config.get("discovery_result_dir")
         discovery_result_dir = Path(discovery_result_dir) if discovery_result_dir else None
+        use_true_sql = bool(exp_config.get("use_true_sql", False))
         
         # Use experiment-specific results_dir if provided, otherwise use global
         results_dir = Path(exp_config.get("results_dir", global_results_dir))
@@ -1252,6 +1411,7 @@ def main():
                 discovery_result_dir=discovery_result_dir,
                 seed=seed,
                 save_interval=args.save_interval,
+                use_true_sql=use_true_sql,
             )
         
         elif dataset.lower() == "synthetic_ci":
@@ -1278,6 +1438,7 @@ def main():
                 discovery_result_dir=discovery_result_dir,
                 seed=seed,
                 save_interval=args.save_interval,
+                use_true_sql=use_true_sql,
             )
         
         elif dataset.lower() == "reef" :
@@ -1297,6 +1458,7 @@ def main():
                 discovery_result_dir=discovery_result_dir,
                 seed=None,
                 save_interval=args.save_interval,
+                use_true_sql=use_true_sql,
             )
 
         else:

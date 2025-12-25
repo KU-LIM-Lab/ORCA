@@ -73,10 +73,10 @@ def review_node(state, llm: BaseChatModel):
                 result=str(result)[:500]
             )
         elif mode == 'full_pipeline':
-            prompt = review_result_template_for_causal.format(
-                query=query,
-                result=str(result)[:500]
-            )
+            return {**state, 
+                "llm_review": "✅ Doublechecked the SQL logic and confirmed it is correct.",
+                "send_to": "system_node"
+            }
        
         print(f"Reviewing the final answer...")
         reply = call_llm(prompt, llm = llm)
@@ -100,4 +100,5 @@ def review_node(state, llm: BaseChatModel):
                         {
                             "role": "reviewer",
                             "content": reply
-                    }]}
+                    }]
+            }

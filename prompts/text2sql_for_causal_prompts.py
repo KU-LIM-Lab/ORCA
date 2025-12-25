@@ -354,6 +354,9 @@ your goal here is to retrieve a wide dataset containing the Treatment, Outcome, 
 - Main Table: Start `FROM` the table containing the Treatment variable (or the central transaction table).
 - Join Strategy: Use **`LEFT JOIN`** for all related tables to prevent data loss (missing rows) unless you are certain an INNER JOIN is required to remove invalid data.
 - Column Selection: Select ALL variables listed in 【Selected Variables】.
+  - For tables marked "keep_all", include all columns from that table (e.g., `T1.*`).
+  - For tables with a column list, include ONLY those columns.
+  - Do NOT select foreign-key columns solely used for JOIN conditions unless they are explicitly listed in the selected_schema.
 - Aliasing: If column names collide (e.g., `id`, `created_at` appear in multiple tables), rename them clearly (e.g., `user_created_at`, `order_created_at`).
 - No Aggregation: Do not use GROUP BY unless a specific feature requires aggregation (e.g., counting orders per user). We generally need row-level data.
 - Output format : When you write SQL query, you must wrap code with ```sql ...```
@@ -632,4 +635,3 @@ Output Format:
 Yes.
 No. <explanation of why the answer is insufficient>
 """
-
