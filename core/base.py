@@ -352,7 +352,7 @@ class OrchestratorAgent(BaseAgent):
                 "substep": "graph_scoring",
                 "agent": "causal_discovery",
                 "action": "score_graphs",
-                "description": "Calculate scores (global_consistency, sampling_stability, structural_stability) for all graphs",
+                "description": "Calculate scores (markov_consistency, sampling_stability, structural_stability) for all graphs",
                 "required_state_keys": ["run_algorithms_portfolio_completed", "algorithm_results"],
                 "timeout": 180,
                 "hitl_required": True,

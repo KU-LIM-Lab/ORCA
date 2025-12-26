@@ -81,7 +81,7 @@ agent = CausalDiscoveryAgent(
         "violation_threshold": 0.1,
         "n_subsets": 3,
         "composite_weights": {
-            "global_consistency": 0.4,
+            "markov_consistency": 0.4,
             "sampling_stability": 0.3,
             "structural_stability": 0.3
         },
@@ -194,7 +194,7 @@ config = {
     {
         "algorithm": "LiNGAM",
         "graph_id": "LiNGAM_12345",
-        "global_consistency": 0.90,
+        "markov_consistency": 0.90,
         "sampling_stability": 0.80,
         "structural_stability": 0.75,
         "composite_score": 0.82

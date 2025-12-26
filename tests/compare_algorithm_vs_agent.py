@@ -397,7 +397,7 @@ def run_agent_pipeline(df: pd.DataFrame, ground_truth: Dict[str, Any],
             if entry.get("algorithm") == algorithm_name:
                 result["graph"] = entry.get("graph")
                 result["agent_scores"] = {
-                    "global_consistency": entry.get("global_consistency"),
+                    "markov_consistency": entry.get("markov_consistency"),
                     "sampling_stability": entry.get("sampling_stability"),
                     "structural_stability": entry.get("structural_stability")
                 }

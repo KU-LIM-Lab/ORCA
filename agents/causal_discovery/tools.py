@@ -6,7 +6,7 @@ import networkx as nx
 from typing import Dict, Any, List, Tuple, Optional, Union
 from scipy import stats
 from sklearn.linear_model import LinearRegression
-from sklearn.gaussian_process import GaussianProcessRegressor
+from pygam import LinearGAM, s, l
 from sklearn.model_selection import cross_val_score, KFold
 from sklearn.metrics import mean_squared_error
 import warnings
@@ -235,40 +235,70 @@ class StatsTool:
     
     @staticmethod
     def linearity_test(x: pd.Series, y: pd.Series) -> Dict[str, Any]:
-        """Test linearity using GLM vs GAM comparison"""
+        """
+        Nested test for nonlinearity:
+        H0: LinearGAM(l(0))  (linear term only)
+        H1: LinearGAM(s(0))  (smooth term)
+        Return:
+        linearity_score = p_value (higher => more linear / no evidence of nonlinearity)
+        """
         try:
-            # Simple linear regression
-            lr = LinearRegression()
-            lr.fit(x.values.reshape(-1, 1), y.values)
-            linear_pred = lr.predict(x.values.reshape(-1, 1))
-            linear_mse = mean_squared_error(y.values, linear_pred)
+            df = pd.DataFrame({"x": x.values, "y": y.values}).dropna()
+            if len(df) < 10:
+                return {"linearity_score": np.nan, "error": "too_few_samples"}
+
+            X = df["x"].values.reshape(-1, 1)
+            Y = df["y"].values
+
+            # --- 1) Fit null (linear) model ---
+            gam_lin = LinearGAM(l(0), fit_intercept=True, max_iter=200, tol=1e-4, verbose=False)
+            gam_lin.fit(X, Y)
+
+            # --- 2) Fit alternative (smooth) model ---
+            gam_smooth = LinearGAM(s(0, n_splines=15, spline_order=3), fit_intercept=True,
+                                max_iter=200, tol=1e-4, verbose=False)
+            lam_grid = np.logspace(-2, 2, 8)
+            gam_smooth.gridsearch(X, Y, lam=lam_grid, progress=False)
+
+            yhat_lin = gam_lin.predict(X)
+            yhat_smooth = gam_smooth.predict(X)
+
+            rss_lin = float(np.sum((Y - yhat_lin) ** 2))
+            rss_smooth = float(np.sum((Y - yhat_smooth) ** 2))
+
+            delta = max(0.0, rss_lin - rss_smooth)
+
+            # edof(=effective DoF) 차이로 자유도 근사
+            edof_lin = float(getattr(gam_lin, "statistics_", {}).get("edof", 2.0))   # intercept+linear ≈ 2
+            edof_smooth = float(getattr(gam_smooth, "statistics_", {}).get("edof", 4.0))
+
+            df_diff = max(1.0, edof_smooth - edof_lin) 
+
+            p_nonlin = 1.0 - stats.chi2.cdf(delta, df=df_diff)
+
+            alpha = 0.05
+            linearity_score = 1.0 if p_nonlin > alpha else 0.0 
             
-            # Gaussian Process (non-parametric) as GAM proxy
-            gp = GaussianProcessRegressor(random_state=42)
-            gp.fit(x.values.reshape(-1, 1), y.values)
-            gam_pred = gp.predict(x.values.reshape(-1, 1))
-            gam_mse = mean_squared_error(y.values, gam_pred)
-            
-            # Calculate linearity score: linear_mse / (linear_mse + gam_mse)
-            # Always in [0, 1]: closer to 0 when GAM is better, closer to 1 when Linear is better
-            total_mse = linear_mse + gam_mse
-            if total_mse > 0:
-                linearity_score = linear_mse / total_mse
-                linearity_ratio = linear_mse / gam_mse if gam_mse > 0 else float('inf')
-            else:
-                linearity_score = 0.5
-                linearity_ratio = 1.0
-            
+            mse_lin = float(mean_squared_error(Y, yhat_lin))
+            mse_smooth = float(mean_squared_error(Y, yhat_smooth))
+
             return {
-                "linearity_score": linearity_score,
-                "linear_mse": linear_mse,
-                "gam_mse": gam_mse,
-                "ratio": linearity_ratio
+                "linearity_score": linearity_score, 
+                "p_nonlin": float(p_nonlin),
+                "rss_lin": rss_lin,
+                "rss_smooth": rss_smooth,
+                "delta_rss": float(delta),
+                "edof_lin": edof_lin,
+                "edof_smooth": edof_smooth,
+                "df_diff": float(df_diff),
+                "mse_lin": mse_lin,
+                "mse_smooth": mse_smooth,
             }
-            
+
         except Exception as e:
             logger.warning(f"Linearity test failed: {e}")
             return {"linearity_score": 0.5, "error": str(e)}
+            
     
     @staticmethod
     def gaussian_eqvar_test(x: pd.Series, y: pd.Series) -> Dict[str, Any]:
@@ -1703,7 +1733,6 @@ class FCITool:
             elif indep_test == "kernel_kcit":
                 test_func = kci
             elif indep_test == "cmi":
-                # PLACEHOLDER: Conditional Mutual Information
                 logger.warning("CMI test not yet implemented for FCI, using kci")
                 test_func = kci
             else:
@@ -1711,13 +1740,57 @@ class FCITool:
                 test_func = test_map.get(indep_test, fisherz)
             
             # Causal-Learn FCI API: fci(data, indep_test, alpha, max_k)
+            # Returns tuple: (G: GeneralGraph, edge_list: List[Edge])
             pag = fci(data, test_func, alpha, max_k=max_k)
-            G = getattr(pag, 'G', None)
-            if G is not None and hasattr(G, 'graph'):
-                for (i, j), v in G.graph.items():
-                    if v != 0:
-                        # Keep adjacency; orientation marks are PAG-specific and not
-                        edges.append((vars_[i], vars_[j]))
+            G, edge_list = pag
+            
+            # Extract node names from GeneralGraph
+            nodes = G.nodes
+            node_names = [n.get_name() for n in nodes]
+            
+            # Map node names to variable indices for edge construction
+            name_to_idx = {name: idx for idx, name in enumerate(node_names)}
+            
+            # Extract edges from edge_list
+            for e in edge_list:
+                u_name = e.get_node1().get_name()
+                v_name = e.get_node2().get_name()
+                ep1 = e.get_endpoint1()  # Endpoint.TAIL, Endpoint.ARROW, Endpoint.CIRCLE
+                ep2 = e.get_endpoint2()
+                
+                # Convert endpoint enums to PAG edge type markers
+                # Endpoint.TAIL (-1) -> "-"
+                # Endpoint.ARROW (1) -> ">"
+                # Endpoint.CIRCLE (2) -> "o"
+                ep1_str = "-" if ep1.value == -1 else (">" if ep1.value == 1 else "o")
+                ep2_str = "-" if ep2.value == -1 else (">" if ep2.value == 1 else "o")
+                
+                # Construct PAG edge type: e.g., "o-o", "o->", "->", etc.
+                if ep1_str == "o" and ep2_str == "o":
+                    edge_type = "o-o"
+                elif ep1_str == "o" and ep2_str == ">":
+                    edge_type = "o->"
+                elif ep1_str == ">" and ep2_str == "o":
+                    edge_type = "<-o"
+                elif ep1_str == "-" and ep2_str == ">":
+                    edge_type = "->"
+                elif ep1_str == ">" and ep2_str == "-":
+                    edge_type = "<-"
+                elif ep1_str == "-" and ep2_str == "-":
+                    edge_type = "--"
+                else:
+                    edge_type = f"{ep1_str}{ep2_str}"
+                
+                # Map node names to our variable names
+                u_idx = name_to_idx.get(u_name)
+                v_idx = name_to_idx.get(v_name)
+                
+                if u_idx is not None and v_idx is not None:
+                    edges.append({
+                        "from": vars_[u_idx],
+                        "to": vars_[v_idx],
+                        "type": edge_type
+                    })
             runtime = time.time() - t0
             params_dict = {"alpha": alpha, "indep_test": indep_test, "graph_type": "PAG", "max_k": max_k}
             if variable_schema:
@@ -2546,8 +2619,13 @@ class EnsembleTool:
     @staticmethod
     def construct_dag(pag: Dict[str, Any], data_profile: Dict[str, Any], top_algorithm: str,
                       execution_plan: List[Dict[str, Any]] = None,
-                      algorithm_results: Dict[str, Any] = None) -> Dict[str, Any]:
+                      algorithm_results: Dict[str, Any] = None,
+                      top_candidates: List[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Construct single DAG with tie-breaking and cycle avoidance.
+        
+        Uses incremental cycle-aware construction:
+        - Rule 2: If resolved direction creates cycle, try opposite direction, drop if both cycle
+        - Rule 3: If no direction evidence, try cycle-safe directions, drop if both cycle
         
         Returns unified schema with graph.graph.edges and metadata.graph_type.
         """
@@ -2569,50 +2647,79 @@ class EnsembleTool:
                     raise ValueError("Invalid pag structure for DAG construction")
             
             dag_dict = pag.copy()
-            
-            # Step 1: Apply tie-breaking to resolve uncertain edges
-            resolved_edges = []
             pag_edges = dag_dict["graph"]["edges"]
             
-            for edge in pag_edges:
-                if edge.get("direction") in ["uncertain", "conflict"]:
-                    resolved_edge = EnsembleTool._apply_tie_breaking(
-                        edge, data_profile, top_algorithm, 
-                        execution_plan=execution_plan,
-                        algorithm_results=algorithm_results
-                    )
-                    resolved_edges.append(resolved_edge)
-                else:
-                    resolved_edges.append(edge)
+            # Sort edges by confidence (highest first) to prioritize reliable edges
+            sorted_edges = sorted(pag_edges, key=lambda e: e.get("confidence", 0.0), reverse=True)
             
-            # Step 2: Build DAG incrementally to avoid cycles
+            # Build DAG incrementally with cycle checking
             G = nx.DiGraph()
             final_edges = []
             skipped_edges = []
             
-            # Sort edges by confidence (highest first) to prioritize reliable edges
-            sorted_edges = sorted(resolved_edges, key=lambda e: e.get("confidence", 0.0), reverse=True)
+            def would_create_cycle(partial_dag, u, v):
+                """Check if adding edge u->v would create a cycle"""
+                if partial_dag.has_node(u) and partial_dag.has_node(v):
+                    return nx.has_path(partial_dag, v, u)
+                return False
             
             for edge in sorted_edges:
                 u, v = str(edge["from"]), str(edge["to"])
+                direction = edge.get("direction")
                 
-                # Check if adding this edge would create a cycle
-                # A cycle occurs if v is already an ancestor of u
-                if G.has_node(u) and G.has_node(v) and nx.has_path(G, v, u):
-                    # Cycle would be created, skip this edge
-                    logger.warning(f"Cycle detected when adding edge {u}->{v}. Skipping to maintain DAG property.")
-                    skipped_edges.append(edge)
+                # Handle uncertain/conflict edges
+                if direction in ["uncertain", "conflict"]:
+                    resolved_edge = EnsembleTool._apply_tie_breaking(
+                        edge, top_candidates=top_candidates,
+                        execution_plan=execution_plan,
+                        algorithm_results=algorithm_results
+                    )
+                    
+                    if resolved_edge:
+                        # Rule 2: Try resolved direction, then opposite if cycle
+                        resolved_u, resolved_v = resolved_edge["from"], resolved_edge["to"]
+                        
+                        if not would_create_cycle(G, resolved_u, resolved_v):
+                            G.add_edge(resolved_u, resolved_v)
+                            final_edge = resolved_edge.copy()
+                            final_edge["type"] = "->"
+                            final_edges.append(final_edge)
+                        elif not would_create_cycle(G, resolved_v, resolved_u):
+                            # Try opposite direction
+                            G.add_edge(resolved_v, resolved_u)
+                            final_edge = resolved_edge.copy()
+                            final_edge["from"], final_edge["to"] = resolved_v, resolved_u
+                            final_edge["type"] = "->"
+                            final_edges.append(final_edge)
+                        else:
+                            # Both create cycles → drop
+                            skipped_edges.append(edge)
+                    else:
+                        # Rule 3: No direction evidence → try cycle-safe directions
+                        if not would_create_cycle(G, u, v):
+                            G.add_edge(u, v)
+                            final_edge = edge.copy()
+                            final_edge["type"] = "->"
+                            final_edges.append(final_edge)
+                        elif not would_create_cycle(G, v, u):
+                            G.add_edge(v, u)
+                            final_edge = edge.copy()
+                            final_edge["from"], final_edge["to"] = v, u
+                            final_edge["type"] = "->"
+                            final_edges.append(final_edge)
+                        else:
+                            # Both create cycles → drop
+                            skipped_edges.append(edge)
                 else:
-                    # Safe to add this edge
-                    G.add_edge(u, v)
-                    # Ensure edge has type field set to "->" for DAG
-                    final_edge = edge.copy()
-                    if "type" not in final_edge:
+                    # Edge already has direction
+                    if not would_create_cycle(G, u, v):
+                        G.add_edge(u, v)
+                        final_edge = edge.copy()
                         final_edge["type"] = "->"
-                    elif final_edge["type"] not in ["->", "--"]:
-                        # Convert PAG types to DAG directed edge
-                        final_edge["type"] = "->"
-                    final_edges.append(final_edge)
+                        final_edges.append(final_edge)
+                    else:
+                        # Cycle would be created, skip this edge
+                        skipped_edges.append(edge)
             
             # Verify final graph is a DAG
             if not nx.is_directed_acyclic_graph(G):
@@ -2643,75 +2750,69 @@ class EnsembleTool:
             return pag
     
     @staticmethod
-    def _apply_tie_breaking(edge: Dict[str, Any], data_profile: Dict[str, Any], 
-                           top_algorithm: str, execution_plan: List[Dict[str, Any]] = None,
-                           algorithm_results: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Apply tie-breaking rules for uncertain edges with mixed data support"""
+    def _apply_tie_breaking(edge: Dict[str, Any], top_candidates: List[Dict[str, Any]] = None,
+                           execution_plan: List[Dict[str, Any]] = None,
+                           algorithm_results: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
+        """Apply tie-breaking by iterating through top_candidates sorted by composite_score.
+        
+        Returns the first algorithm that has a directed edge (->) for the uncertain edge,
+        or None if no directed edge is found in any candidate.
+        """
         try:
             from_var = edge.get("from")
             to_var = edge.get("to")
-            global_props = data_profile.get("global", {})
-            is_mixed = global_props.get("is_mixed", False)
-            pairwise = data_profile.get("pairwise", {})
             
-            # Rule: Linear Mixed Data - use LiM direction
-            if is_mixed and execution_plan:
-                # Check if LiM is in execution plan
-                lim_config = next((c for c in execution_plan if c["alg"] == "LiM"), None)
-                if lim_config:
-                    # Check pairwise properties for linearity
-                    pair_key = f"{from_var}_{to_var}"
-                    pair_key_rev = f"{to_var}_{from_var}"
+            if not top_candidates or not algorithm_results:
+                return None
+            
+            # Sort top_candidates by composite_score descending
+            sorted_candidates = sorted(
+                top_candidates, 
+                key=lambda c: c.get("composite_score", 0.0), 
+                reverse=True
+            )
+            
+            for rank, candidate in enumerate(sorted_candidates, 1):
+                alg_name = candidate.get("algorithm")
+                
+                # Get algorithm result
+                alg_result = algorithm_results.get(alg_name)
+                if not alg_result:
+                    continue
+                
+                # Get edges from algorithm graph
+                try:
+                    graph_edges = get_edges(alg_result)
+                except (ValueError, KeyError):
+                    continue
+                
+                # Find matching edge
+                for graph_edge in graph_edges:
+                    edge_from = graph_edge.get("from")
+                    edge_to = graph_edge.get("to")
+                    edge_type = graph_edge.get("type")
                     
-                    cont_cont_pair = pairwise.get("cont_cont", {}).get(pair_key) or pairwise.get("cont_cont", {}).get(pair_key_rev)
-                    if cont_cont_pair and cont_cont_pair.get("linearity", 0) > 0.6:
-                        # Use LiM direction if available
-                        lim_result = algorithm_results.get("LiM", {}) if algorithm_results else {}
-                        lim_direction = EnsembleTool._extract_lim_direction(lim_result, from_var, to_var)
-                        if lim_direction:
+                    # Check if edge matches (forward or backward)
+                    if (edge_from == from_var and edge_to == to_var) or \
+                       (edge_from == to_var and edge_to == from_var):
+                        # Only use directed edges (->)
+                        if edge_type == "->":
                             resolved_edge = edge.copy()
-                            resolved_edge["from"] = lim_direction["from"]
-                            resolved_edge["to"] = lim_direction["to"]
-                            resolved_edge["direction"] = "forward"
+                            resolved_edge["from"] = graph_edge["from"]
+                            resolved_edge["to"] = graph_edge["to"]
+                            resolved_edge["direction"] = "forward" if (edge_from == from_var) else "backward"
                             resolved_edge["type"] = "->"
-                            resolved_edge["tie_breaking"] = "LiM direction (linear mixed data)"
+                            resolved_edge["tie_breaking"] = f"Rank-{rank} algorithm ({alg_name})"
                             return resolved_edge
+                        # Skip undirected edges (--, o-o, etc.) and continue to next candidate
+                        break
             
-            # Fallback: Original rules
-            if top_algorithm in ["LiNGAM", "PC", "GES"]:
-                # Prefer forward direction for linear algorithms
-                resolved_edge = edge.copy()
-                resolved_edge["direction"] = "forward"
-                resolved_edge["type"] = "->"
-                resolved_edge["tie_breaking"] = f"Linear algorithm preference ({top_algorithm})"
-            elif top_algorithm == "ANM":
-                # Prefer direction based on ANM compatibility
-                if data_profile.get("anm_compatible", False):
-                    resolved_edge = edge.copy()
-                    resolved_edge["direction"] = "forward"
-                    resolved_edge["type"] = "->"
-                    resolved_edge["tie_breaking"] = f"ANM compatibility ({top_algorithm})"
-                else:
-                    resolved_edge = edge.copy()
-                    resolved_edge["direction"] = "backward"
-                    resolved_edge["type"] = "->"
-                    resolved_edge["tie_breaking"] = f"Non-ANM preference ({top_algorithm})"
-            else:
-                # Default: keep original direction
-                resolved_edge = edge.copy()
-                resolved_edge["direction"] = "forward"
-                resolved_edge["type"] = "->"
-                resolved_edge["tie_breaking"] = f"Default preference ({top_algorithm})"
-            
-            # Ensure backward direction always swaps from/to
-            if resolved_edge.get("direction") == "backward":
-                resolved_edge["from"], resolved_edge["to"] = resolved_edge["to"], resolved_edge["from"]
-            
-            return resolved_edge
+            # No directed edge found in any candidate
+            return None
             
         except Exception as e:
             logger.warning(f"Tie-breaking failed: {e}")
-            return edge
+            return None
 
     
     @staticmethod

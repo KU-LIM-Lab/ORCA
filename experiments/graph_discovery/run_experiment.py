@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 import json
+import os
+import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Iterator, Tuple, Optional
 
@@ -9,6 +12,11 @@ import numpy as np
 import pandas as pd
 import yaml
 from tqdm import tqdm
+from dotenv import load_dotenv
+
+# Load environment variables from .env file (project root)
+ROOT_DIR = Path(__file__).parent.parent.parent
+load_dotenv(dotenv_path=ROOT_DIR / ".env")
 
 from experiments.graph_discovery import cd_methods
 METHOD_REGISTRY = cd_methods.METHOD_REGISTRY
@@ -201,7 +209,8 @@ def _save_summary_intermediate(
 
         summary_dir = results_dir / "summary"
         summary_dir.mkdir(parents=True, exist_ok=True)
-        summary_path = summary_dir / f"summary_{dataset}.csv"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        summary_path = summary_dir / f"summary_{dataset}_{timestamp}.csv"
         summary.to_csv(summary_path, index=False)
         print(f"[INFO] Intermediate summary saved: {summary_path} ({len(all_records)} records)")
     except Exception as e:
@@ -258,6 +267,8 @@ def run_experiments(
             if runs is not None and run_id >= runs:
                 continue
 
+            tqdm.write(f"[INFO] Starting experiment: scenario={scenario}, d={d_val}, run={run_id}")
+
             for method_name in methods:
                 if method_name not in METHOD_REGISTRY:
                     tqdm.write(f"Skipping unknown method: {method_name}")
@@ -270,12 +281,14 @@ def run_experiments(
                     "seed": seed + run_id,
                 }
 
-                try:
-                    result = method_fn(df.values, context=context)
-                except Exception as e:
+                result = method_fn(df.values, context=context)
+
+                # Check for error in result (some methods return {"error": "..."} dict)
+                if isinstance(result, dict) and "error" in result:
+                    error_msg = result.get("error", "Unknown error")
                     tqdm.write(
-                        f"[ERROR] Method {method_name} failed "
-                        f"for scenario={scenario}, d={d_val}, run={run_id}: {e}"
+                        f"[ERROR] Method {method_name} returned error "
+                        f"for scenario={scenario}, d={d_val}, run={run_id}: {error_msg}"
                     )
                     continue
 
@@ -312,7 +325,8 @@ def run_experiments(
 
                 out_dir = results_dir / "synthetic_cd" / scenario / f"d_{d_val}" / f"run_{run_id:03d}"
                 out_dir.mkdir(parents=True, exist_ok=True)
-                out_path = out_dir / f"{method_name}.json"
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                out_path = out_dir / f"{method_name}_{timestamp}.json"
                 try:
                     with open(out_path, "w") as f:
                         json.dump(run_record, f, indent=2)
@@ -357,6 +371,8 @@ def run_experiments(
             desc="bnlearn datasets",
             unit="dataset",
         ):
+            tqdm.write(f"[INFO] Starting experiment: bnlearn dataset={name}")
+
             for method_name in methods:
                 if method_name not in METHOD_REGISTRY:
                     tqdm.write(f"Skipping unknown method: {method_name}")
@@ -368,11 +384,13 @@ def run_experiments(
                     "seed": seed,
                 }
 
-                try:
-                    result = method_fn(df.values, context=context)
-                except Exception as e:
+                result = method_fn(df.values, context=context)
+
+                if isinstance(result, dict) and "error" in result:
+                    error_msg = result.get("error", "Unknown error")
                     tqdm.write(
-                        f"[ERROR] Method {method_name} failed for bnlearn dataset={name}: {e}"
+                        f"[ERROR] Method {method_name} returned error "
+                        f"for bnlearn dataset={name}: {error_msg}"
                     )
                     continue
 
@@ -409,7 +427,8 @@ def run_experiments(
 
                 out_dir = results_dir / "bnlearn" / name
                 out_dir.mkdir(parents=True, exist_ok=True)
-                out_path = out_dir / f"{method_name}.json"
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                out_path = out_dir / f"{method_name}_{timestamp}.json"
                 try:
                     with open(out_path, "w") as f:
                         json.dump(run_record, f, indent=2)
@@ -459,7 +478,8 @@ def run_experiments(
 
         summary_dir = results_dir / "summary"
         summary_dir.mkdir(parents=True, exist_ok=True)
-        summary.to_csv(summary_dir / f"summary_{dataset.lower()}.csv", index=False)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        summary.to_csv(summary_dir / f"summary_{dataset.lower()}_{timestamp}.csv", index=False)
 
         # Node-level summary
         if node_records:
@@ -487,7 +507,7 @@ def run_experiments(
             ]
             node_summary = node_summary.reset_index()
             node_summary.to_csv(
-                summary_dir / f"node_summary_{dataset.lower()}.csv", index=False
+                summary_dir / f"node_summary_{dataset.lower()}_{timestamp}.csv", index=False
             )
 
         return summary

@@ -6,7 +6,7 @@ This agent implements the complete causal discovery pipeline:
 1. data_profiling - Profile data characteristics and generate qualitative summary
 2. algorithm_configuration - Configure algorithms based on data profile (replaces algorithm_tiering)
 3. run_algorithms_portfolio - Execute algorithms from execution_plan in parallel
-4. graph_scoring - Calculate 3 scores (global_consistency, sampling_stability, structural_stability) for all graphs
+4. graph_scoring - Calculate 3 scores (markov_consistency, sampling_stability, structural_stability) for all graphs
 5. graph_evaluation - Evaluate and rank graphs using composite scorecard
 6. ensemble_synthesis - Synthesize ensemble with PAG-like and DAG outputs
 """
@@ -194,7 +194,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
         
         # Composite weights 
         self.composite_weights = self.config.get("composite_weights", {
-            "global_consistency": 0.4,
+            "markov_consistency": 0.4,
             "sampling_stability": 0.3,
             "structural_stability": 0.3
         })
@@ -536,11 +536,12 @@ class CausalDiscoveryAgent(SpecialistAgent):
             except Exception as e:
                 logger.warning(f"ANM test failed for {var1}-{var2}: {e}")
                 scores_anm_cont.append(np.nan)
-        
+
+
         pairwise_scores = {
-            "s_pairwise_linearity_median": float(np.nanmedian(scores_lin_cont)) if scores_lin_cont else np.nan,
-            "s_pairwise_non_gaussianity_median": float(np.nanmedian(scores_ng_cont)) if scores_ng_cont else np.nan,
-            "s_pairwise_anm_median": float(np.nanmedian(scores_anm_cont)) if scores_anm_cont else np.nan
+            "s_pairwise_linearity_score": float(np.nanmean(scores_lin_cont)) if scores_lin_cont else np.nan,
+            "s_pairwise_non_gaussianity_score": float(np.nanmedian(scores_ng_cont)) if scores_ng_cont else np.nan,
+            "s_pairwise_anm_score": float(np.nanmedian(scores_anm_cont)) if scores_anm_cont else np.nan
         }
         
         return pairwise_scores
@@ -653,13 +654,13 @@ class CausalDiscoveryAgent(SpecialistAgent):
         
         # Linearity 
         global_linearity_pvalue = global_scores.get("s_global_linearity_pvalue", np.nan)
-        pairwise_linearity_median = pairwise_scores.get("s_pairwise_linearity_median", np.nan)
+        pairwise_linearity_score = pairwise_scores.get("s_pairwise_linearity_score", np.nan)
         
         is_mostly_linear = None  # 기본 가정
         
-        if data_type_profile == "Pure Continuous" and not np.isnan(pairwise_linearity_median):
-            # 1st priority: Pure Continuous uses Pairwise (GLM vs GAM) score
-            is_mostly_linear = True if pairwise_linearity_median >= 0.6 else False
+        if data_type_profile == "Pure Continuous" and not np.isnan(pairwise_linearity_score):
+            # 1st priority: Pure Continuous uses Pairwise score
+            is_mostly_linear = True if pairwise_linearity_score >= 0.5 else False
         elif not np.isnan(global_linearity_pvalue):
             # 2nd priority: Mixed data or failed Pairwise uses Global (Ramsey RESET) score
             is_mostly_linear = True if global_linearity_pvalue >= 0.05 else False   
@@ -700,7 +701,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
             ])
             
             # LiNGAM: Linear + Non-Gaussianity
-            non_gaussian_score = pairwise_scores.get("s_pairwise_non_gaussianity_median", 0.0)
+            non_gaussian_score = pairwise_scores.get("s_pairwise_non_gaussianity_score", 0.0)
             if non_gaussian_score >= 0.5:  # 비정규성 점수가 0.5 이상일 때만
                 execution_plan.append({"alg": "LiNGAM"})
         
@@ -716,7 +717,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
             ])
             
             # ANM: 비선형 + ANM 적합성
-            anm_score = pairwise_scores.get("s_pairwise_anm_median", 0.0)
+            anm_score = pairwise_scores.get("s_pairwise_anm_score", 0.0)
             if anm_score >= 0.5:  # ANM 적합성 점수가 0.5 이상일 때만
                 execution_plan.append({"alg": "ANM"})
         
@@ -855,7 +856,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 scored_graphs.append({
                     "algorithm": alg_name,
                     "graph": result,
-                    "global_consistency": scores["global_consistency"],
+                    "markov_consistency": scores["markov_consistency"],
                     "sampling_stability": scores["sampling_stability"],
                     "structural_stability": scores["structural_stability"]
                 })
@@ -900,7 +901,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 scorecard.append({
                     "algorithm": alg_name,
                     "graph_id": f"{alg_name}_{id(graph)}",
-                    "global_consistency": scored_graph["global_consistency"],
+                    "markov_consistency": scored_graph["markov_consistency"],
                     "sampling_stability": scored_graph["sampling_stability"],
                     "structural_stability": scored_graph["structural_stability"],
                     "graph": graph
@@ -997,20 +998,20 @@ class CausalDiscoveryAgent(SpecialistAgent):
         """Get appropriate metric functions for each algorithm in execution_plan"""
         metric_functions = {}
                 
-        # Find PC/FCI config to determine global_consistency function
+        # Find PC/FCI config to determine markov_consistency function
         pc_config = next((c for c in execution_plan if c["alg"] in ["PC", "FCI"]), None)
         if pc_config and pc_config.get("ci_test") == "lrt":
             def lrt_consistency(graph, candidate, df):
                 # Use LRT-based consistency (1 - violation_ratio)
                 return 1.0 - candidate.get("violation_ratio", 1.0)
-            metric_functions["global_consistency"] = lrt_consistency
+            metric_functions["markov_consistency"] = lrt_consistency
         
         return metric_functions
     
     def _composite_score_ranking(self, scorecard: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Rank graphs using composite score
         
-        For DAG: Uses 3 scores (global_consistency, sampling_stability, structural_stability)
+        For DAG: Uses 3 scores (markov_consistency, sampling_stability, structural_stability)
         For CPDAG: Uses 2 scores (sampling_stability, structural_stability) with weight renormalization
         For PAG: Uses only sampling_stability (composite_score = sampling_stability)
         """
@@ -1020,46 +1021,68 @@ class CausalDiscoveryAgent(SpecialistAgent):
             is_pag = graph_type == "PAG"
             is_cpdag = graph_type == "CPDAG"
             
-            global_consistency = item.get("global_consistency")
+            markov_consistency = item.get("markov_consistency")
+            sampling_stability = item.get("sampling_stability")
+            structural_stability = item.get("structural_stability")
             
             if is_pag:
-                composite_score = item["sampling_stability"]
-            elif is_cpdag:
-                sampling_stability = item.get("sampling_stability", 0.0)
-                structural_stability = item.get("structural_stability", 0.0)
-                
-                w_sampling = self.composite_weights["sampling_stability"]
-                w_structural = self.composite_weights["structural_stability"]
-                
-                # Normalize weights to sum to 1.0
-                total_weight = w_sampling + w_structural
-                if total_weight > 0:
-                    w_sampling_norm = w_sampling / total_weight
-                    w_structural_norm = w_structural / total_weight
+                if sampling_stability is None:
+                    composite_score = 0.0
                 else:
-                    w_sampling_norm = 0.5
-                    w_structural_norm = 0.5
+                    composite_score = sampling_stability
+            elif is_cpdag:
+                # Collect available scores and their weights
+                available_scores = {}
+                available_weights = {}
                 
-                composite_score = (
-                    w_sampling_norm * sampling_stability +
-                    w_structural_norm * structural_stability
-                )
+                if sampling_stability is not None:
+                    available_scores["sampling_stability"] = sampling_stability
+                    available_weights["sampling_stability"] = self.composite_weights["sampling_stability"]
+                
+                if structural_stability is not None:
+                    available_scores["structural_stability"] = structural_stability
+                    available_weights["structural_stability"] = self.composite_weights["structural_stability"]
+                
+                # Normalize weights to sum to 1.0 for available scores
+                total_weight = sum(available_weights.values())
+                if total_weight > 0 and len(available_scores) > 0:
+                    composite_score = sum(
+                        (available_weights[key] / total_weight) * score
+                        for key, score in available_scores.items()
+                    )
+                else:
+                    composite_score = 0.0
             else:
-                gc = item.get("global_consistency")
-                gc = 0.0 if gc is None else gc
-                composite_score = (
-                    self.composite_weights["global_consistency"] * gc +
-                    self.composite_weights["sampling_stability"] * item["sampling_stability"] +
-                    self.composite_weights["structural_stability"] * item["structural_stability"]
-                )
+                available_scores = {}
+                available_weights = {}
+                
+                if markov_consistency is not None:
+                    available_scores["markov_consistency"] = markov_consistency
+                    available_weights["markov_consistency"] = self.composite_weights["markov_consistency"]
+                
+                if sampling_stability is not None:
+                    available_scores["sampling_stability"] = sampling_stability
+                    available_weights["sampling_stability"] = self.composite_weights["sampling_stability"]
+                
+                if structural_stability is not None:
+                    available_scores["structural_stability"] = structural_stability
+                    available_weights["structural_stability"] = self.composite_weights["structural_stability"]
+                
+                # Normalize weights to sum to 1.0 for available scores
+                total_weight = sum(available_weights.values())
+                if total_weight > 0 and len(available_scores) > 0:
+                    composite_score = sum(
+                        (available_weights[key] / total_weight) * score
+                        for key, score in available_scores.items()
+                    )
+                else:
+                    composite_score = 0.0
             
             # Penalty for low edge count
             n_edges = len(get_edges(graph))
             if n_edges == 0:
                 composite_score *= 0.1
-            elif n_edges < 3:
-                composite_score *= 0.5 
-            
+
             item["composite_score"] = composite_score
         
         ranked = sorted(scorecard, key=lambda x: x["composite_score"], reverse=True)
@@ -1072,17 +1095,17 @@ class CausalDiscoveryAgent(SpecialistAgent):
             "sampling": 0.2
         })
         
-        # Step 1: Filter by global_consistency (skip for PAG/CPDAG where it's None)
+        # Step 1: Filter by markov_consistency (skip for PAG/CPDAG where it's None)
         step1 = []
         for g in scorecard:
             graph = g["graph"]
             graph_type = get_graph_type(graph)
             is_pag = graph_type == "PAG"
             is_cpdag = graph_type == "CPDAG"
-            global_consistency = g.get("global_consistency")
+            markov_consistency = g.get("markov_consistency")
             
-            # Skip filtering for PAG/CPDAG (global_consistency is None)
-            if is_pag or is_cpdag or (global_consistency is not None and global_consistency >= pruning_thresholds["consistency"]):
+            # Skip filtering for PAG/CPDAG (markov_consistency is None)
+            if is_pag or is_cpdag or (markov_consistency is not None and markov_consistency >= pruning_thresholds["consistency"]):
                 step1.append(g)
         
         # Step 2: Filter by sampling_stability
@@ -1105,10 +1128,10 @@ class CausalDiscoveryAgent(SpecialistAgent):
             execution_plan: Execution plan for dynamic metric functions
             
         Returns:
-            Dictionary with 3 scores: global_consistency, sampling_stability, structural_stability
+            Dictionary with 3 scores: markov_consistency, sampling_stability, structural_stability
         """
-        def calculate_global_consistency():
-            """Calculate global consistency score"""
+        def calculate_markov_consistency():
+            """Calculate Markov consistency score"""
             try:
                 graph_type = get_graph_type(graph)
                 # CPDAG is MEC (equivalence class), not a single DAG, so skip global_markov_test
@@ -1117,7 +1140,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
                     return None
                 
                 metric_functions = self._get_dynamic_metric_functions(execution_plan)
-                global_consistency_func = metric_functions.get("global_consistency")
+                markov_consistency_func = metric_functions.get("markov_consistency")
                 
                 markov_result = self.use_tool("pruning_tool", "global_markov_test", graph, df, 
                                              alpha=self.ci_alpha, max_pa_size=self.max_pa_size)
@@ -1127,14 +1150,14 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 if violation_ratio is None:
                     return None
                 
-                if global_consistency_func:
+                if markov_consistency_func:
                     candidate_dict = {"violation_ratio": violation_ratio}
-                    return global_consistency_func(graph, candidate_dict, df)
+                    return markov_consistency_func(graph, candidate_dict, df)
                 else:
                     # Default: use 1.0 - violation_ratio
                     return 1.0 - violation_ratio 
             except Exception as e:
-                logger.warning(f"Global consistency calculation failed for {alg_name}: {e}")
+                logger.warning(f"Markov consistency calculation failed for {alg_name}: {e}")
                 return None
         
         def calculate_sampling_stability():
@@ -1169,17 +1192,17 @@ class CausalDiscoveryAgent(SpecialistAgent):
         
         # Calculate 3 scores in parallel
         with ThreadPoolExecutor(max_workers=3) as executor:
-            future_consistency = executor.submit(calculate_global_consistency)
+            future_consistency = executor.submit(calculate_markov_consistency)
             future_sampling = executor.submit(calculate_sampling_stability)
             future_structural = executor.submit(calculate_structural_stability)
             
             # Collect results
-            global_consistency = future_consistency.result()
+            markov_consistency = future_consistency.result()
             sampling_stability = future_sampling.result()
             structural_stability = future_structural.result()
         
         return {
-            "global_consistency": global_consistency,
+            "markov_consistency": markov_consistency,
             "sampling_stability": sampling_stability,
             "structural_stability": structural_stability
         }
@@ -1295,7 +1318,8 @@ class CausalDiscoveryAgent(SpecialistAgent):
             dag_result = self.use_tool("ensemble_tool", "construct_dag", 
                                       pag_result, data_profile, top_algorithm,
                                       execution_plan=execution_plan,
-                                      algorithm_results=algorithm_results)
+                                      algorithm_results=algorithm_results,
+                                      top_candidates=top_candidates)
             
             # Generate synthesis reasoning
             reasoning = self._generate_synthesis_reasoning(top_candidates, pag_result, dag_result, data_profile)
@@ -1414,19 +1438,20 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 top_candidate = top_candidates[0]
                 top_candidate_scores = {
                     "composite_score": top_candidate.get("composite_score", "N/A"),
-                    "global_consistency": top_candidate.get("global_consistency", "N/A"),
+                    "markov_consistency": top_candidate.get("markov_consistency", "N/A"),
                     "sampling_stability": top_candidate.get("sampling_stability", "N/A"),
                     "structural_stability": top_candidate.get("structural_stability", "N/A")
                 }
             
-            logger.info(
-                f"Final selected graph:\n"
-                f"  Algorithm: {top_algorithm}\n"
-                f"  Graph Type: {graph_type}\n"
-                f"  Nodes: {n_nodes}, Edges: {n_edges}\n"
-                f"  Scores: {top_candidate_scores}\n"
-                f"  Reasoning: {reasoning}"
-            )
+            # 실험 돌릴 때만 주석처리
+            # logger.info( 
+            #     f"Final selected graph:\n"
+            #     f"  Algorithm: {top_algorithm}\n"
+            #     f"  Graph Type: {graph_type}\n"
+            #     f"  Nodes: {n_nodes}, Edges: {n_edges}\n"
+            #     f"  Scores: {top_candidate_scores}\n"
+            #     f"  Reasoning: {reasoning}"
+            # )
             
             logger.info(f"Ensemble synthesis completed. Top algorithm: {top_algorithm}")
             return state
@@ -1461,13 +1486,13 @@ class CausalDiscoveryAgent(SpecialistAgent):
             for i, candidate in enumerate(top_candidates, 1):
                 alg = candidate.get("algorithm", "Unknown")
                 comp_score = candidate.get("composite_score", "N/A")
-                gc = candidate.get("global_consistency", "N/A")
+                mc = candidate.get("markov_consistency", "N/A")
                 ss = candidate.get("sampling_stability", "N/A")
                 sts = candidate.get("structural_stability", "N/A")
                 
                 score_str = f"composite={comp_score:.3f}" if isinstance(comp_score, (int, float)) else f"composite={comp_score}"
-                if isinstance(gc, (int, float)):
-                    score_str += f", consistency={gc:.3f}"
+                if isinstance(mc, (int, float)):
+                    score_str += f", markov_consistency={mc:.3f}"
                 if isinstance(ss, (int, float)):
                     score_str += f", sampling={ss:.3f}"
                 if isinstance(sts, (int, float)):
@@ -1505,7 +1530,7 @@ DAG Construction:
 Selection Rationale:
 The ensemble synthesis combines the top {len(top_candidates)} candidates using consensus skeleton building and direction resolution. 
 {top_algorithm} was selected as the leading algorithm based on its highest composite score ({top_comp_str}), which balances 
-global consistency, sampling stability, and structural stability according to the data characteristics ({profile_summary}).
+markov consistency, sampling stability, and structural stability according to the data characteristics ({profile_summary}).
 The PAG preserves uncertainty information for reporting, while the DAG applies assumption-based tie-breaking for downstream inference tasks.
 """
             

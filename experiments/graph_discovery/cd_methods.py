@@ -1,5 +1,15 @@
 from __future__ import annotations
 
+import json
+import time
+import numpy as np
+import pandas as pd
+import networkx as nx
+from typing import Dict, Any, List, Optional, Tuple
+
+from agents.causal_discovery.tools import normalize_graph_result
+
+
 """
 Registry and thin wrappers for causal discovery baselines.
 
@@ -35,10 +45,14 @@ ORCA causal discovery tools, i.e. the structure returned by
     }
 """
 
-from typing import Callable, Dict, Any
+from typing import Callable, Dict, Any, List, Tuple, Optional
+import json
+import re
+import time
 
 import numpy as np
 import pandas as pd
+import networkx as nx
 
 from agents.causal_discovery.tools import (
     normalize_graph_result,
@@ -410,3 +424,275 @@ def orca_method(
         return {"error": "CausalDiscoveryAgent did not produce a DAG in 'selected_graph'"}
     return dag
 
+
+# === 6. GPT-4o-mini (LLM-direct baseline) ===================================
+
+def _safe_corr_topk(df: pd.DataFrame, top_k_pairs: int) -> List[Dict[str, Any]]:
+    """Return top-K (undirected) correlation pairs by |corr|. O(d^2), OK for d<=100."""
+    cols = list(df.columns)
+    d = len(cols)
+    C = df.corr(numeric_only=True).to_numpy()
+    C = np.nan_to_num(C, nan=0.0, posinf=0.0, neginf=0.0)
+
+    pairs: List[Tuple[float, str, str, float]] = []
+    for i in range(d):
+        for j in range(i + 1, d):
+            c = float(C[i, j])
+            pairs.append((abs(c), cols[i], cols[j], c))
+    pairs.sort(key=lambda x: x[0], reverse=True)
+    pairs = pairs[: max(0, min(top_k_pairs, len(pairs)))]
+
+    return [{"u": u, "v": v, "corr": c, "abs_corr": a} for (a, u, v, c) in pairs]
+
+
+def _build_prompt(
+    variables: List[str],
+    top_pairs: List[Dict[str, Any]],
+    max_candidates: int,
+    max_edges: int,
+) -> str:
+    """
+    LLM returns ONLY:
+      - order: permutation of variables
+      - candidates: undirected pairs (u, v) (subset of top_pairs + optional additions)
+    We will orient u->v using the order (earlier -> later) and keep up to max_edges.
+    """
+    payload = {
+        "role": "You are a causal discovery assistant.",
+        "goal": "Propose (1) a plausible causal order over variables and (2) a small set of candidate dependency pairs.",
+        "inputs": {
+            "variables": variables,
+            "top_correlation_pairs": top_pairs,
+        },
+        "hard_constraints": [
+            "Return ONLY valid JSON (no markdown, no extra text).",
+            "order must be a permutation of variables (same names, no missing, no duplicates).",
+            f"candidates must contain at most {max_candidates} undirected pairs.",
+            "Each candidate pair must be an object: {\"u\": <var>, \"v\": <var>} with u!=v and both in variables.",
+            "No duplicate candidate pairs ignoring order (u,v) == (v,u).",
+        ],
+        "what_candidates_mean": [
+            "candidates are NOT directed edges.",
+            "They mean 'these two variables likely have a direct connection (in some direction)'.",
+            "We will direct them later using the order (earlier causes later).",
+        ],
+        "selection_guidance": [
+            "Prefer sparsity and precision: choose pairs that look most likely to be direct dependencies.",
+            "Use top_correlation_pairs as evidence, but do NOT blindly include all highly correlated pairs.",
+            "Avoid adding many redundant pairs that all connect to one variable unless strongly justified.",
+            "If direction is ambiguous, that is fine: order will resolve direction later.",
+            "If you are uncertain, choose fewer candidates rather than more.",
+        ],
+        "output_schema": {
+            "order": ["V0", "V2", "..."],
+            "candidates": [{"u": "V0", "v": "V3"}, {"u": "V2", "v": "V5"}],
+        },
+        "notes_on_limits": {
+            "max_edges_final_dag": max_edges,
+            "how_edges_are_formed": "We will orient each candidate pair from earlier->later in order, then keep up to max_edges using abs_corr from top_correlation_pairs as tie-breaker if needed.",
+        },
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _parse_json(text: str) -> Optional[Dict[str, Any]]:
+    if not isinstance(text, str) or not text.strip():
+        return None
+    try:
+        obj = json.loads(text)
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        pass
+    s, e = text.find("{"), text.rfind("}")
+    if s >= 0 and e > s:
+        try:
+            obj = json.loads(text[s : e + 1])
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            return None
+    return None
+
+
+def _sanitize_order(order: Any, variables: List[str]) -> Optional[List[str]]:
+    if not isinstance(order, list):
+        return None
+    order = [str(x).strip() for x in order]
+    if len(order) != len(variables):
+        return None
+    if set(order) != set(variables):
+        return None
+    # keep as given (already a permutation)
+    return order
+
+
+def _sanitize_candidates(cands: Any, variables: List[str], max_candidates: int) -> List[Tuple[str, str]]:
+    if not isinstance(cands, list):
+        return []
+    var_set = set(variables)
+    seen = set()
+    out: List[Tuple[str, str]] = []
+
+    for item in cands:
+        if not isinstance(item, dict):
+            continue
+        u = str(item.get("u", "")).strip()
+        v = str(item.get("v", "")).strip()
+        if u not in var_set or v not in var_set or u == v:
+            continue
+        key = tuple(sorted([u, v]))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((key[0], key[1]))
+        if len(out) >= max_candidates:
+            break
+    return out
+
+
+def _orient_by_order(
+    order: List[str],
+    candidates: List[Tuple[str, str]],
+    top_pairs: List[Dict[str, Any]],
+    max_edges: int,
+) -> List[Dict[str, Any]]:
+    """
+    Deterministic DAG construction:
+      - orient each undirected pair by order index (earlier -> later)
+      - rank edges by abs_corr if available (otherwise 0)
+      - keep top max_edges
+    """
+    pos = {v: i for i, v in enumerate(order)}
+
+    # map undirected pair -> abs_corr from sketch (if present)
+    score = {}
+    for p in top_pairs:
+        u, v = str(p["u"]), str(p["v"])
+        score[tuple(sorted([u, v]))] = float(p.get("abs_corr", 0.0))
+
+    oriented = []
+    for a, b in candidates:
+        ua, ub = a, b
+        if pos[ua] < pos[ub]:
+            frm, to = ua, ub
+        else:
+            frm, to = ub, ua
+        key = tuple(sorted([ua, ub]))
+        oriented.append({"from": frm, "to": to, "_score": score.get(key, 0.0)})
+
+    # dedup directed edges just in case
+    seen = set()
+    uniq = []
+    for e in oriented:
+        k = (e["from"], e["to"])
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(e)
+
+    # keep strongest first
+    uniq.sort(key=lambda x: x.get("_score", 0.0), reverse=True)
+    uniq = uniq[: max_edges]
+
+    # remove private field
+    return [{"from": e["from"], "to": e["to"]} for e in uniq]
+
+
+@register_method("gpt4o_mini")
+def gpt4o_mini_method(X: np.ndarray, context: dict | None = None) -> dict:
+    """
+    LLM-direct baseline:
+      - compute top correlation pairs (compact evidence)
+      - ask LLM for (order, candidates)
+      - orient candidates by order to get a DAG (acyclic by construction)
+    """
+    from utils.llm import call_llm 
+
+    t0 = time.time()
+    ctx = context or {}
+    df = _context_df(X, ctx)
+    variables = list(df.columns)
+    d = len(variables)
+
+    top_k_pairs = int(ctx.get("top_k_pairs", 2 * d))
+    max_candidates = int(ctx.get("max_candidates", 3 * d))
+    max_edges = int(ctx.get("max_edges", 2 * d))
+    n_retries = int(ctx.get("n_retries", 1))
+    model = ctx.get("model", "gpt-4o-mini")
+    temperature = float(ctx.get("temperature", 0.2))
+    llm_client = ctx.get("llm_client", None)
+
+    top_pairs = _safe_corr_topk(df, top_k_pairs=top_k_pairs)
+    prompt = _build_prompt(
+        variables=variables,
+        top_pairs=top_pairs,
+        max_candidates=max_candidates,
+        max_edges=max_edges,
+    )
+
+    exec_meta = {
+        "top_k_pairs": top_k_pairs,
+        "max_candidates": max_candidates,
+        "max_edges": max_edges,
+        "attempts": 0,
+        "candidates_raw": 0,
+        "candidates_kept": 0,
+        "edges_final": 0,
+    }
+
+    last_text = None
+    obj = None
+    for attempt in range(n_retries + 1):
+        exec_meta["attempts"] = attempt + 1
+        try:
+            if llm_client is not None:
+                last_text = call_llm(prompt, llm=llm_client)
+            else:
+                last_text = call_llm(prompt, model=model, temperature=temperature)
+            obj = _parse_json(last_text)
+            if obj is not None:
+                break
+            obj = None
+        except Exception as e:
+            if attempt == n_retries:
+                return {
+                    "error": f"LLM call failed after {n_retries+1} attempts: {type(e).__name__}: {e}"
+                }
+            # Continue to next retry
+            continue
+
+    if obj is None:
+        return {"error": f"Failed to parse JSON after {n_retries+1} attempts. preview={str(last_text)[:300]}"}
+
+    order = _sanitize_order(obj.get("order"), variables)
+    if order is None:
+        return {"error": "Invalid 'order': must be a permutation of variables."}
+
+    cands_raw = obj.get("candidates", [])
+    exec_meta["candidates_raw"] = len(cands_raw) if isinstance(cands_raw, list) else 0
+
+    cands = _sanitize_candidates(cands_raw, variables=variables, max_candidates=max_candidates)
+    exec_meta["candidates_kept"] = len(cands)
+
+    edges = _orient_by_order(order, cands, top_pairs=top_pairs, max_edges=max_edges)
+    exec_meta["edges_final"] = len(edges)
+
+    runtime = time.time() - t0
+    params = {
+        "backend": "gpt-4o-mini",
+        "model": model,
+        "temperature": temperature,
+        "top_k_pairs": top_k_pairs,
+        "max_candidates": max_candidates,
+        "max_edges": max_edges,
+    }
+
+    result = normalize_graph_result(
+        "GPT-4o-mini(order+candidates)",
+        variables,
+        edges,
+        params=params,
+        runtime=runtime,
+        graph_type="DAG",
+    )
+    result["metadata"]["execution_metadata"] = exec_meta
+    return result
