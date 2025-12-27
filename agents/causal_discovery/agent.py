@@ -332,24 +332,10 @@ class CausalDiscoveryAgent(SpecialistAgent):
             # Request HITL for data profile review if interactive mode
             if state.get("interactive", False):
                 payload = {
-                    "question": "Review data profiling results",
-                    "data_profile": data_profile,
-                    "warnings": [],
-                    "decisions": {
-                        "approve": {
-                            "description": "Proceed with algorithm configuration using this profile",
-                            "required_fields": {"hitl_executed": True}
-                        }
-                    },
-                    "hint": "Review the data profile to understand data characteristics. This will be used for algorithm configuration.",
-                    "response_examples": {
-                        "approve": {
-                            "description": "Proceed with algorithm configuration",
-                            "json": {
-                                "hitl_executed": True
-                            }
-                        }
-                    }
+                    "step": "data_profiling",
+                    "phase": "causal_discovery",
+                    "description": "Data profiling completed. Review the data characteristics before algorithm configuration.",
+                    "decisions": ["approve", "edit", "rerun", "abort"]
                 }
                 state = self.request_hitl(state, payload=payload, hitl_type="data_profiling_review")
                 return state
@@ -565,61 +551,10 @@ class CausalDiscoveryAgent(SpecialistAgent):
             # Request HITL for execution plan review if interactive mode
             if state.get("interactive", False):
                 payload = {
-                    "question": "Review algorithm execution plan",
-                    "execution_plan": execution_plan,
-                    "data_profile": data_profile,
-                    "decisions": {
-                        "approve": {
-                            "description": "Use this execution plan as-is",
-                            "required_fields": {"hitl_executed": True}
-                        },
-                        "edit": {
-                            "description": "Modify the execution plan",
-                            "required_fields": {
-                        "execution_plan": {
-                            "type": "list[dict]",
-                            "description": "List of algorithm configurations",
-                            "structure": {
-                                "alg": "str (algorithm name: PC, GES, LiNGAM, ANM, FCI, LiM, TSCM)",
-                                "ci_test": "str (optional, for PC/FCI: fisherz, gsq, kernel_kcit, lrt)",
-                                "score": "str (optional, for GES: bic-g, bic-d, bic-cg, generalized_rkhs)"
-                            },
-                                    "example": [
-                                        {"alg": "PC", "ci_test": "fisherz"},
-                                        {"alg": "GES", "score": "bic-g"},
-                                        {"alg": "LiNGAM"}
-                                    ]
-                                },
-                                "hitl_executed": True
-                            }
-                        }
-                    },
-                    "hint": (
-                        "Review the execution plan. To modify:\n"
-                        "- Set 'execution_plan' as a list of dicts\n"
-                        "- Each dict should have 'alg' (algorithm name)\n"
-                        "- PC/FCI can include 'ci_test' (fisherz/gsq/kernel_kcit/lrt)\n"
-                        "- GES can include 'score' (bic-g/bic-d/bic-cg/generalized_rkhs)"
-                    ),
-                    "response_examples": {
-                        "approve": {
-                            "description": "Use this execution plan as-is",
-                            "json": {
-                                "hitl_executed": True
-                            }
-                        },
-                        "edit": {
-                            "description": "Modify the execution plan",
-                            "json": {
-                                "execution_plan": [
-                                    {"alg": "PC", "ci_test": "fisherz"},
-                                    {"alg": "GES", "score": "bic-g"},
-                                    {"alg": "LiNGAM"}
-                                ],
-                                "hitl_executed": True
-                            }
-                        }
-                    }
+                    "step": "algorithm_configuration",
+                    "phase": "causal_discovery",
+                    "description": "Algorithm execution plan configured. Review the selected algorithms and configurations.",
+                    "decisions": ["approve", "edit", "rerun", "abort"]
                 }
                 state = self.request_hitl(state, payload=payload, hitl_type="execution_plan_review")
                 return state
@@ -757,6 +692,16 @@ class CausalDiscoveryAgent(SpecialistAgent):
         """Stage 3: Run algorithms from execution_plan in parallel"""
         logger.info("Running algorithm portfolio in parallel...")
         
+        # Get event logger if available
+        event_logger = None
+        try:
+            from monitoring.metrics.collector import get_metrics_collector
+            collector = get_metrics_collector()
+            if collector and hasattr(collector, 'event_logger'):
+                event_logger = collector.event_logger
+        except Exception:
+            pass
+        
         try:
             execution_plan = state.get("execution_plan", [])
             df = self._load_dataframe_from_state(state)
@@ -781,21 +726,71 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 algorithm_timeout = 300
                 for config in algorithm_configs:
                     alg_name = config["alg"]
+                    
+                    # Log algorithm start
+                    if event_logger:
+                        event_logger.log_tool_call_start(
+                            tool_name=f"algorithm_{alg_name}",
+                            step_id="2",
+                            metadata={"algorithm": alg_name, "config": config}
+                        )
+                    
                     future = executor.submit(self._dispatch_algorithm, config, df, data_profile, variable_schema)
                     futures[alg_name] = future
 
                 for alg_name, future in futures.items():
+                    import time
+                    alg_start = time.time()
                     try:
                         result = future.result(timeout=algorithm_timeout)
                         algorithm_results[alg_name] = result
                         logger.info(f"Algorithm {alg_name} completed successfully")
+                        
+                        # Log algorithm success
+                        if event_logger:
+                            duration = time.time() - alg_start
+                            event_logger.log_tool_call_end(
+                                tool_name=f"algorithm_{alg_name}",
+                                duration=duration,
+                                success=True,
+                                step_id="2",
+                                metadata={
+                                    "algorithm": alg_name,
+                                    "nodes": result.get("num_nodes", 0) if isinstance(result, dict) else 0,
+                                    "edges": result.get("num_edges", 0) if isinstance(result, dict) else 0
+                                }
+                            )
                     except TimeoutError:
                         cancelled = future.cancel()
                         logger.error(f"Algorithm {alg_name} timeout after {algorithm_timeout}s. cancel()={cancelled} (thread may still be running)")
                         algorithm_results[alg_name] = {"error": "timeout"}
+                        
+                        # Log algorithm timeout
+                        if event_logger:
+                            duration = time.time() - alg_start
+                            event_logger.log_tool_call_end(
+                                tool_name=f"algorithm_{alg_name}",
+                                duration=duration,
+                                success=False,
+                                error="timeout",
+                                step_id="2",
+                                metadata={"algorithm": alg_name}
+                            )
                     except Exception as e:
                         logger.error(f"Algorithm {alg_name} failed: {e}")
                         algorithm_results[alg_name] = {"error": str(e)}
+                        
+                        # Log algorithm failure
+                        if event_logger:
+                            duration = time.time() - alg_start
+                            event_logger.log_tool_call_end(
+                                tool_name=f"algorithm_{alg_name}",
+                                duration=duration,
+                                success=False,
+                                error=str(e),
+                                step_id="2",
+                                metadata={"algorithm": alg_name}
+                            )
             finally:
                 executor.shutdown(wait=False, cancel_futures=True)  
             
@@ -818,6 +813,17 @@ class CausalDiscoveryAgent(SpecialistAgent):
             state["algorithm_results"] = algorithm_results
             state["executed_algorithms"] = list(algorithm_results.keys())
             state["run_algorithms_portfolio_completed"] = True
+            
+            # Request HITL for algorithm results review if interactive mode
+            if state.get("interactive", False):
+                payload = {
+                    "step": "run_algorithms_portfolio",
+                    "phase": "causal_discovery",
+                    "description": "Algorithms executed. Review the results before graph scoring.",
+                    "decisions": ["approve", "edit", "rerun", "abort"]
+                }
+                state = self.request_hitl(state, payload=payload, hitl_type="algorithm_results_review")
+                return state
             
             logger.info("Algorithm portfolio execution completed")
             return state
@@ -867,6 +873,17 @@ class CausalDiscoveryAgent(SpecialistAgent):
             # Update state
             state["scored_graphs"] = scored_graphs
             state["graph_scoring_completed"] = True
+            
+            # Request HITL for graph scoring review if interactive mode
+            if state.get("interactive", False):
+                payload = {
+                    "step": "graph_scoring",
+                    "phase": "causal_discovery",
+                    "description": "Graph scoring completed. Review the scores before graph evaluation.",
+                    "decisions": ["approve", "edit", "rerun", "abort"]
+                }
+                state = self.request_hitl(state, payload=payload, hitl_type="graph_scoring_review")
+                return state
             
             logger.info(f"Graph scoring completed. Scored {len(scored_graphs)} graphs")
             return state
@@ -931,57 +948,10 @@ class CausalDiscoveryAgent(SpecialistAgent):
             # Request HITL for graph evaluation review if interactive mode
             if state.get("interactive", False):
                 payload = {
-                    "question": "Review graph evaluation results",
-                    "scorecard": scorecard[:5],  # Top 5 for review
-                    "ranked_graphs": ranked_graphs[:5],
-                    "top_candidates": top_candidates,
-                    "decisions": {
-                        "approve": {
-                            "description": "Proceed with ensemble synthesis using top candidates",
-                            "required_fields": {"hitl_executed": True}
-                        },
-                        "edit": {
-                            "description": "Override top candidates selection",
-                            "required_fields": {
-                                "top_candidates": {
-                                    "type": "list[dict]",
-                                    "description": "List of candidate graphs to use for ensemble",
-                                    "structure": {
-                                        "algorithm": "str",
-                                        "graph": "dict (with 'nodes' and 'edges')",
-                                        "composite_score": "float"
-                                    }
-                                },
-                                "hitl_executed": True
-                            }
-                        }
-                    },
-                    "hint": (
-                        "Review the graph evaluation results. To override top candidates:\n"
-                        "- Set 'top_candidates' as a list of candidate dicts\n"
-                        "- Each candidate should have 'algorithm', 'graph', and 'composite_score'"
-                    ),
-                    "response_examples": {
-                        "approve": {
-                            "description": "Proceed with top candidates",
-                            "json": {
-                                "hitl_executed": True
-                            }
-                        },
-                        "edit": {
-                            "description": "Override top candidates",
-                            "json": {
-                                "top_candidates": [
-                                    {
-                                        "algorithm": "PC",
-                                        "graph": {"nodes": ["X", "Y"], "edges": [{"from": "X", "to": "Y"}]},
-                                        "composite_score": 0.85
-                                    }
-                                ],
-                                "hitl_executed": True
-                            }
-                        }
-                    }
+                    "step": "graph_evaluation",
+                    "phase": "causal_discovery",
+                    "description": "Graph evaluation completed. Review the ranked graphs and top candidates.",
+                    "decisions": ["approve", "edit", "rerun", "abort"]
                 }
                 state = self.request_hitl(state, payload=payload, hitl_type="graph_evaluation_review")
                 return state
@@ -1360,74 +1330,10 @@ class CausalDiscoveryAgent(SpecialistAgent):
             # Request HITL for final graph review if interactive mode
             if state.get("interactive", False):
                 payload = {
-                    "question": "Review final causal graph from ensemble synthesis",
-                    "selected_graph": dag_result,
-                    "consensus_pag": pag_result,
-                    "synthesis_reasoning": reasoning,
-                    "top_algorithm": top_algorithm,
-                    "decisions": {
-                        "approve": {
-                            "description": "Use this graph for causal analysis",
-                            "required_fields": {"hitl_executed": True}
-                        },
-                        "edit": {
-                            "description": "Override the selected graph",
-                            "required_fields": {
-                                "selected_graph": {
-                                    "type": "dict",
-                                    "description": "Causal graph structure",
-                                    "structure": {
-                                        "graph": {
-                                            "nodes": "list[str]",
-                                            "edges": "list[dict] (each with 'from' and 'to')"
-                                        },
-                                        "metadata": {
-                                            "graph_type": "DAG | PAG",
-                                            "construction_method": "str"
-                                        }
-                                    },
-                                    "example": {
-                                        "graph": {
-                                            "nodes": ["X", "Y", "Z"],
-                                            "edges": [{"from": "X", "to": "Y"}, {"from": "Z", "to": "Y"}]
-                                        },
-                                        "metadata": {"graph_type": "DAG"}
-                                    }
-                                },
-                                "hitl_executed": True
-                            }
-                        }
-                    },
-                    "hint": (
-                        "Review the final causal graph. To override:\n"
-                        "- Set 'selected_graph' with 'graph' (nodes/edges) and 'metadata'\n"
-                        "- 'graph.nodes' should be a list of variable names\n"
-                        "- 'graph.edges' should be a list of dicts with 'from' and 'to' keys"
-                    ),
-                    "response_examples": {
-                        "approve": {
-                            "description": "Use this graph for causal analysis",
-                            "json": {
-                                "hitl_executed": True
-                            }
-                        },
-                        "edit": {
-                            "description": "Override the selected graph",
-                            "json": {
-                                "selected_graph": {
-                                    "graph": {
-                                        "nodes": ["X", "Y", "Z"],
-                                        "edges": [
-                                            {"from": "X", "to": "Y"},
-                                            {"from": "Z", "to": "Y"}
-                                        ]
-                                    },
-                                    "metadata": {"graph_type": "DAG"}
-                                },
-                                "hitl_executed": True
-                            }
-                        }
-                    }
+                    "step": "ensemble_synthesis",
+                    "phase": "causal_discovery",
+                    "description": "Final causal graph synthesized. Review the selected graph before proceeding to causal analysis.",
+                    "decisions": ["approve", "edit", "rerun", "abort"]
                 }
                 state = self.request_hitl(state, payload=payload, hitl_type="final_graph_review")
                 return state
@@ -1459,6 +1365,42 @@ class CausalDiscoveryAgent(SpecialistAgent):
             # )
             
             logger.info(f"Ensemble synthesis completed. Top algorithm: {top_algorithm}")
+            
+            # Save graph artifacts if artifact manager is available
+            try:
+                from monitoring.experiment.utils import get_artifact_manager
+                artifact_manager = get_artifact_manager()
+                
+                if artifact_manager and state.get("selected_graph"):
+                    selected_graph = state["selected_graph"]
+                    
+                    # Save final graph as JSON
+                    artifact_manager.save_artifact(
+                        artifact_type="graph",
+                        data=selected_graph,
+                        filename="graph_final.json",
+                        step_id="2",
+                        metadata={
+                            "algorithm": selected_graph.get("algorithm"),
+                            "graph_type": selected_graph.get("graph_type"),
+                            "num_nodes": selected_graph.get("num_nodes"),
+                            "num_edges": selected_graph.get("num_edges")
+                        }
+                    )
+                    
+                    # Save adjacency matrix as CSV
+                    if "adjacency_matrix" in selected_graph:
+                        artifact_manager.save_artifact(
+                            artifact_type="graph_adj",
+                            data=selected_graph["adjacency_matrix"],
+                            filename="graph_final_adj.csv",
+                            step_id="2",
+                            metadata={}
+                        )
+            except Exception as e:
+                import logging as log
+                log.getLogger(__name__).warning(f"Failed to save graph artifacts: {e}")
+            
             return state
             
         except Exception as e:

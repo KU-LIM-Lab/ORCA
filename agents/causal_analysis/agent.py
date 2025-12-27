@@ -221,6 +221,17 @@ class CausalAnalysisAgent(SpecialistAgent):
             state["parsed_query"] = result.get("parsed_query")
             state["table_schema_str"] = result.get("table_schema_str")
             state["parse_question_completed"] = True
+            
+            # Request HITL for parse question review if interactive mode
+            if state.get("interactive", False):
+                payload = {
+                    "step": "parse_question",
+                    "phase": "causal_analysis",
+                    "description": "Question parsed. Review the identified variables before configuration.",
+                    "decisions": ["approve", "edit", "rerun", "abort"]
+                }
+                state = self.request_hitl(state, payload=payload, hitl_type="parse_question_review")
+                return state
         else:
             state["error"] = result.get("error", "Parse question failed")
         
@@ -241,70 +252,10 @@ class CausalAnalysisAgent(SpecialistAgent):
             # Request HITL for strategy review if interactive mode
             if state.get("interactive", False):
                 payload = {
-                    "question": "Review selected causal analysis strategy",
-                    "strategy": result.get("strategy"),
-                    "parsed_query": state.get("parsed_query"),
-                    "decisions": {
-                        "approve": {
-                            "description": "Use this strategy for causal analysis",
-                            "required_fields": {"hitl_executed": True}
-                        },
-                        "edit": {
-                            "description": "Modify the strategy configuration",
-                            "required_fields": {
-                                "strategy": {
-                                    "type": "dict",
-                                    "description": "Causal analysis strategy configuration",
-                                    "structure": {
-                                        "method": "str (backdoor, frontdoor, instrumental_variable, etc.)",
-                                        "estimand_type": "str (nonparametric-ate, etc.)",
-                                        "estimate_method": "str (propensity_score_matching, regression_discontinuity, etc.)",
-                                        "treatment_variable": "str",
-                                        "outcome_variable": "str",
-                                        "confounders": "list[str]",
-                                        "instrumental_variables": "list[str] (optional)"
-                                    },
-                                    "example": {
-                                        "method": "backdoor",
-                                        "estimand_type": "nonparametric-ate",
-                                        "estimate_method": "propensity_score_matching",
-                                        "treatment_variable": "gender",
-                                        "outcome_variable": "used_coupon",
-                                        "confounders": ["age", "income"]
-                                    }
-                                },
-                                "hitl_executed": True
-                            }
-                        }
-                    },
-                    "hint": (
-                        "Review the selected strategy. To modify:\n"
-                        "- Set 'strategy' as a dict with method, estimand_type, estimate_method\n"
-                        "- Include treatment_variable, outcome_variable, and confounders\n"
-                        "- Optionally include instrumental_variables"
-                    ),
-                    "response_examples": {
-                        "approve": {
-                            "description": "Use this strategy for causal analysis",
-                            "json": {
-                                "hitl_executed": True
-                            }
-                        },
-                        "edit": {
-                            "description": "Modify the strategy configuration",
-                            "json": {
-                                "strategy": {
-                                    "method": "backdoor",
-                                    "estimand_type": "nonparametric-ate",
-                                    "estimate_method": "propensity_score_matching",
-                                    "treatment_variable": "gender",
-                                    "outcome_variable": "used_coupon",
-                                    "confounders": ["age", "income"]
-                                },
-                                "hitl_executed": True
-                            }
-                        }
-                    }
+                    "step": "select_configuration",
+                    "phase": "causal_analysis",
+                    "description": "Causal analysis strategy configured. Review the treatment, outcome, confounders, and estimation method.",
+                    "decisions": ["approve", "edit", "rerun", "abort"]
                 }
                 state = self.request_hitl(state, payload=payload, hitl_type="strategy_review")
                 return state
@@ -351,55 +302,6 @@ class CausalAnalysisAgent(SpecialistAgent):
             # Fallback to simple answer generation
             state["final_answer"] = self._generate_simple_answer(state)
             state["generate_answer_completed"] = True
-        
-        # Request HITL for interpretation review if interactive mode
-        if state.get("interactive", True):
-            payload = {
-                "question": "Review causal analysis interpretation",
-                "final_answer": state.get("final_answer"),
-                "causal_effect_ate": state.get("causal_effect_ate"),
-                "causal_effect_ci": state.get("causal_effect_ci"),
-                "refutation_result": state.get("refutation_result"),
-                "decisions": {
-                    "approve": {
-                        "description": "Accept the interpretation and complete analysis",
-                        "required_fields": {"hitl_executed": True}
-                    },
-                    "edit": {
-                        "description": "Modify the final answer text",
-                        "required_fields": {
-                            "final_answer": {
-                                "type": "str",
-                                "description": "Human-readable explanation of causal analysis results",
-                                "example": "The causal effect of gender on used_coupon is 0.15 (95% CI: [0.10, 0.20])"
-                            },
-                            "hitl_executed": True
-                        }
-                    }
-                },
-                "hint": (
-                    "Review the final interpretation. To modify:\n"
-                    "- Set 'final_answer' as a string with the updated explanation\n"
-                    "- Include treatment variable, outcome variable, ATE, and confidence interval"
-                ),
-                "response_examples": {
-                    "approve": {
-                        "description": "Accept the interpretation and complete analysis",
-                        "json": {
-                            "hitl_executed": True
-                        }
-                    },
-                    "edit": {
-                        "description": "Modify the final answer text",
-                        "json": {
-                            "final_answer": "The causal effect of gender on used_coupon is 0.15 (95% CI: [0.10, 0.20]). This indicates that gender has a positive effect on coupon usage.",
-                            "hitl_executed": True
-                        }
-                    }
-                }
-            }
-            state = self.request_hitl(state, payload=payload, hitl_type="interpretation_review")
-            return state
         
         return state
     

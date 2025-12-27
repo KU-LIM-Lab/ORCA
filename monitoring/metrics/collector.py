@@ -57,12 +57,14 @@ class PerformanceSnapshot:
 class MetricsCollector:
     """Central metrics collection and management"""
     
-    def __init__(self, session_id: str):
+    def __init__(self, session_id: str, event_logger: Any = None, artifact_manager: Any = None):
         self.session_id = session_id
         self.metrics: List[MetricPoint] = []
         self.performance_snapshots: List[PerformanceSnapshot] = []
         self._lock = threading.Lock()
         self._start_time = time.time()
+        self.event_logger = event_logger  # EventLogger for experiment tracking
+        self.artifact_manager = artifact_manager  # ArtifactManager for experiment tracking
         
         # Performance tracking
         self._monitoring_thread = None

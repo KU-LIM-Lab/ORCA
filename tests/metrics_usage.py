@@ -6,7 +6,6 @@ import time
 import random
 from monitoring.metrics.collector import MetricsCollector, set_metrics_collector, track_execution_time, track_memory_usage
 from monitoring.llm.tracker import track_llm_call, track_llm_generation, create_llm_tracker, record_llm_tokens
-from monitoring.visualization.dashboard import create_dashboard
 from core.base import BaseAgent, AgentType, SpecialistAgent
 
 def main():
@@ -33,7 +32,7 @@ def main():
     # 5. Stop monitoring
     collector.stop_monitoring()
     
-    # 6. Generate reports and visualizations
+    # 6. Generate reports
     print("\n=== Metrics Summary ===")
     summary = collector.get_metrics_summary()
     print(f"Total metrics: {summary['total_metrics']}")
@@ -51,21 +50,12 @@ def main():
             tokens = agent_metrics['by_type']['token_count']
             print(f"  Total tokens: {tokens['total']:.0f}")
     
-    # 7. Create visualizations
-    dashboard = create_dashboard(collector)
-    
-    # Save overview dashboard
-    dashboard.create_performance_overview("metrics_overview.png")
-    print("\nOverview dashboard saved to metrics_overview.png")
-    
-    # Save agent-specific dashboards
-    for agent_name in ["data_explorer", "causal_discovery"]:
-        dashboard.create_agent_detailed_view(agent_name, f"metrics_{agent_name}.png")
-        print(f"Agent dashboard for {agent_name} saved to metrics_{agent_name}.png")
-    
-    # Export comprehensive report
-    dashboard.export_metrics_report("metrics_report.json")
-    print("Comprehensive report saved to metrics_report.json")
+    # Export metrics to JSON
+    import json
+    metrics_json = collector.export_metrics("json")
+    with open("metrics_report.json", "w") as f:
+        f.write(metrics_json)
+    print("\nMetrics exported to metrics_report.json")
 
 class DataExplorerAgent(SpecialistAgent):
     """Example Data Explorer Agent with metrics"""

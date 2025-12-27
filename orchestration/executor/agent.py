@@ -84,6 +84,10 @@ class ExecutorAgent(OrchestratorAgent):
                 return t(_convert_numpy_types(v) for v in obj)
             return obj
 
+        def clear_hitl_flags(s: AgentState):
+            for k in ["hitl_executed", "hitl_decision", "decision", "edits", "feedback"]:
+                s.pop(k, None)
+
         # Execute steps based on current_execute_step pointer
         # This loop handles step execution and HITL gates:
         # 1. Execute step (if not already executed)
@@ -91,7 +95,7 @@ class ExecutorAgent(OrchestratorAgent):
         # 3. On resume, check HITL decision and process accordingly
         while True:
             idx = state.get("current_execute_step", 0)
-            if idx >= len(plan)-1:
+            if idx >= len(plan):
                 state["executor_completed"] = True
                 break
             step = plan[idx]
@@ -113,6 +117,10 @@ class ExecutorAgent(OrchestratorAgent):
                     state[phase_status_map[phase]] = state.get(phase_status_map[phase], "skipped")
                 continue
 
+            # Update current_substep and current_phase for all steps
+            state["current_substep"] = step["substep"]
+            state["current_phase"] = step.get("phase", "")
+            
             # Execute substep
             if not state.get("current_state_executed"):
                 result = self._execute_step(step, state, llm)
@@ -150,7 +158,7 @@ class ExecutorAgent(OrchestratorAgent):
                 state["current_state_executed"] = False
                 continue
 
-            # HITL gate: Process user decision
+            # HITL gate: Process user decision or trigger interrupt
             if state.get("hitl_executed", False):
                 decision = state.get("hitl_decision", "approve")
                 edits = state.get("edits", {})
@@ -165,6 +173,24 @@ class ExecutorAgent(OrchestratorAgent):
 
                 if decision == "edit":
                     self._apply_edits(state, edits)
+                    print(f"\n✏️  Edits applied. Re-running {step['substep']} with new parameters...")
+                    
+                    current_substep = step["substep"]
+                    current_phase = step.get("phase", "")
+
+                    if current_phase == "data_exploration" and current_substep == "data_preprocessing":
+                        state["completed_substeps"] = []
+                        logger.info(f"Edit in data_preprocessing: cleared all completed substeps for fresh execution")
+                                        
+                    # 재실행 준비
+                    state["current_state_executed"] = False
+                    clear_hitl_flags(state)
+
+                    return AgentResult(
+                        success=True,
+                        data={**state},
+                        metadata={"action": "edit_and_rerun", "substep": step["substep"]},
+                    )
 
                 if decision == "rerun":
                     rerun_ok = False
@@ -181,45 +207,63 @@ class ExecutorAgent(OrchestratorAgent):
                             state.update(re.data or {})
                             self.results[step["substep"]] = re.data or {}
                             rerun_ok = True
-                            state["current_state_executed"] = False
                             break
+                        
                     if not rerun_ok:
                         return AgentResult(
                             success=False,
                             error=f"Rerun failed at {step['substep']}",
                             metadata={"execution_log": self.execution_log}
                         )
-                    
-                # Decision processed - advance to next step and clear HITL flags
-                state.setdefault("completed_substeps", []).append(step["substep"])
-                next_step_idx = idx + 1
-                state["current_execute_step"] = next_step_idx
-                state["current_state_executed"] = False
-                for key in ["hitl_executed", "hitl_decision", "edits", "feedback"]:
-                    state.pop(key, None)
+                        
+                    state["current_state_executed"] = True
+                    # Don't clear hitl flags - we want to re-prompt for approval
+                    # Set hitl_executed = False to trigger another HITL check
+                    state["hitl_executed"] = False
+
+                    return AgentResult(
+                        success=True,
+                        data={**state},
+                        metadata={"action": "rerun_done_need_reapproval", "substep": step["substep"]},
+                    )
                 
-                # Return to persist state changes (current_execute_step increment)
-                return AgentResult(
-                    success=True,
-                    data={
-                        "current_execute_step": next_step_idx,
-                        "current_state_executed": False
-                    },
-                    metadata={"substep": step["substep"], "hitl_processed": True}
-                )
-            
-            # Trigger interrupt - this pauses execution and waits for user input in graph.py
-            # Flow:
-            # 1. interrupt() called → graph.py stream loop catches __interrupt__ event
-            # 2. User provides decision → state updated with hitl_executed=True, hitl_decision, etc.
-            # 3. Executor resumes → current_state_executed=True so we skip step execution
-            # 4. Enter HITL gate above → process decision and advance to next step
-            self._hitl_gate(step, state)
-            return AgentResult(
-                success=True,
-                data={},
-                metadata={"substep": step["substep"], "waiting_for_hitl": True}
-            )
+                # For approve, advance to next step and clear HITL flags  
+                if decision == "approve":
+                    next_idx = idx + 1
+                    next_step_name = plan[next_idx]["substep"] if next_idx < len(plan) else "END"
+                    print(f"\n✅ Step approved: {step['substep']} (advancing from step {idx} to {next_idx}: {next_step_name})")
+                    state.setdefault("completed_substeps", []).append(step["substep"])
+                    state["current_execute_step"] = next_idx
+                    state["current_state_executed"] = False
+                    clear_hitl_flags(state)
+                    
+                    # Must return to persist state changes
+                    # The graph will re-invoke executor, which will pick up the incremented step
+                    return AgentResult(
+                        success=True,
+                        data={**state},
+                        metadata={"action": "approved_advance_to_next", "substep": step["substep"], "next_step_idx": next_idx, "next_step_name": next_step_name},
+                    )
+            else:
+                # HITL required but not executed yet - agent should have triggered interrupt
+                # If we reach here, it means the agent didn't call request_hitl()
+                # Return to allow graph.py to handle the interrupt
+                # The state should have __hitl_requested__ flag set by the agent
+                if state.get("__hitl_requested__"):
+                    # Agent requested HITL, return to let graph.py handle interrupt
+                    return AgentResult(
+                        success=True,
+                        data={**state},
+                        metadata={"action": "waiting_for_hitl", "substep": step["substep"]},
+                    )
+                else:
+                    # HITL required but no interrupt triggered - this shouldn't happen
+                    # Advance anyway to prevent infinite loop
+                    logger.warning(f"HITL required for {step['substep']} but no interrupt triggered. Advancing anyway.")
+                    state.setdefault("completed_substeps", []).append(step["substep"])
+                    state["current_execute_step"] = idx + 1
+                    state["current_state_executed"] = False
+                    continue
             
         return AgentResult(
             success=True,
@@ -413,7 +457,7 @@ class ExecutorAgent(OrchestratorAgent):
         return {
             "selected_tables": {
                 "type": "list[str]",
-                "description": "List of table names to use for analysis",
+                "description": "List of table names selected for analysis",
                 "example": ["users", "orders", "products"]
             },
             "sql_query": {
@@ -453,8 +497,38 @@ class ExecutorAgent(OrchestratorAgent):
             },
             "target_columns": {
                 "type": "list[str]",
-                "description": "List of column names to include in analysis",
-                "example": ["col1", "col2", "col3"]
+                "description": "Specific columns to include in analysis (optional - if not set, all columns will be used)",
+                "example": ["age", "gender", "purchase_amount"]
+            },
+            "clean_nulls_ratio": {
+                "type": "float",
+                "description": "Drop columns with null ratio above this threshold (0.0-1.0)",
+                "default": 0.95
+            },
+            "one_hot_threshold": {
+                "type": "int",
+                "description": "Maximum unique values for one-hot encoding categorical columns",
+                "default": 20
+            },
+            "high_cardinality_threshold": {
+                "type": "int",
+                "description": "Threshold for detecting high cardinality categorical variables",
+                "default": 50
+            },
+            "execution_plan": {
+                "type": "list[dict]",
+                "description": "Algorithm execution plan with selected algorithms and configurations",
+                "example": [{"algorithm": "PC", "params": {}}, {"algorithm": "GES", "params": {}}]
+            },
+            "mediators": {
+                "type": "list[str]",
+                "description": "Mediator variables (on causal path between treatment and outcome)",
+                "example": ["mediator_var"]
+            },
+            "strategy": {
+                "type": "dict",
+                "description": "Causal analysis strategy configuration",
+                "example": {"task": "ATE", "identification_method": "backdoor", "estimator": "propensity_score_matching"}
             }
         }
 
@@ -478,6 +552,7 @@ class ExecutorAgent(OrchestratorAgent):
         allowed = {
             "selected_tables",
             "sql_query",
+            "final_sql",
             "selected_algorithms",
             "selected_graph",
             "treatment_variable",
@@ -485,6 +560,12 @@ class ExecutorAgent(OrchestratorAgent):
             "confounders",
             "instrumental_variables",
             "target_columns",
+            "clean_nulls_ratio",
+            "one_hot_threshold",
+            "high_cardinality_threshold",
+            "execution_plan",
+            "mediators",
+            "strategy"
         }
         for k, v in (edits or {}).items():
             if k in allowed:

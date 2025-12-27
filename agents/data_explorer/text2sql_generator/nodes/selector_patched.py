@@ -205,7 +205,7 @@ def selector_node(state, llm: BaseChatModel):
     }
 
     if too_large:
-        print("📦 Schema too large. Pruning with LLM...")
+        print("   📦 Schema too large. Filtering relevant columns with LLM...")
         extracted, treatment_info, outcome_info = prune_schema_with_llm(db_id, schema_info, fk_info, query, evidence, llm, mode)
         pruned_tables = apply_pruning(schema_tables, extracted)
         schema_info = "\n\n".join(format_metadata(t) for t in pruned_tables)

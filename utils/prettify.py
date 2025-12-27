@@ -120,7 +120,7 @@ def print_final_output_sql(final_output: dict) -> str:
     columns = final_output.get("columns")
 
     if isinstance(result, list):
-        display_rows = result[:10] if len(result) > 10 else result
+        display_rows = result[:5] if len(result) > 5 else result
         
         if columns:
             col_widths = [len(col) for col in columns]
@@ -139,7 +139,7 @@ def print_final_output_sql(final_output: dict) -> str:
             for row in display_rows:
                 lines.append(" | ".join(str(cell) for cell in row))
         if len(result) > 10:
-            lines.append(f"\nToo many rows returned ({len(result)} rows). Showing top 10.")
+            lines.append(f"\nToo many rows returned ({len(result)} rows). Showing first 5 rows.")
     else:
         lines.append(str(result))
     lines.append("")

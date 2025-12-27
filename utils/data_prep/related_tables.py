@@ -263,5 +263,5 @@ def update_table_relations(db_id) -> bool:
         print("Schema updated in Redis.")
         return new_schema, True
     
-    print("Did not update because schema did not change.")
+    # print("Did not update because schema did not change.") # for debugging
     return new_schema, False

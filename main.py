@@ -49,10 +49,61 @@ def select_analysis_mode() -> str:
             print("❌ Invalid choice. Please enter 1 or 2.")
 
 
+def prompt_next_step_after_data() -> str:
+    """
+    Ask user what to do after data is generated/extracted.
+    Returns: '1' (causal analysis), '2' (continue exploration), '3' (exit)
+    """
+    print("\n" + "="*60)
+    print("📌 Data Ready! What's Next?")
+    print("="*60)
+    print("Your data has been successfully extracted and is ready to use.")
+    print()
+    print("Options:")
+    print("  1) Proceed to Causal Analysis with this data")
+    print("  2) Continue Data Exploration")
+    print("  3) Exit session")
+    print("="*60)
+    
+    while True:
+        choice = input("\n💬 Your choice (1-3): ").strip().lower()
+        
+        if choice in ["quit", "exit", "q"]:
+            if confirm_quit():
+                return "3"
+            else:
+                continue
+        
+        if choice in ["1", "2", "3"]:
+            return choice
+        else:
+            print("❌ Invalid choice. Please enter 1, 2, or 3.")
+
+
+def confirm_quit() -> bool:
+    """
+    Ask user to confirm they want to quit the session.
+    Returns True if user confirms quit, False otherwise.
+    """
+    print("\n" + "="*60)
+    print("⚠️  WARNING: Exiting will clear all session data!")
+    print("="*60)
+    print("   - All exploration results will be lost")
+    print("   - Any preprocessed data will be deleted")
+    print("   - You will need to start over")
+    print()
+    confirm = input("❓ Are you sure you want to quit? (yes/no): ").strip().lower()
+    if confirm in ["yes", "y"]:
+        return True
+    else:
+        print("✓ Continuing session...")
+        return False
+
+
 def select_data_exploration_mode() -> str:
     """Prompt user to select data exploration method."""
     print("\n" + "="*60)
-    print("📊 Data Exploration Mode Selected")
+    print("📊 Data Exploration Mode")
     print("="*60)
     print("Select exploration method:")
     print()
@@ -65,13 +116,22 @@ def select_data_exploration_mode() -> str:
     print("  3) Text2SQL Generator")
     print("     - Generate SQL from natural language query")
     print()
-    print("  4) Automated Data Selection and Extraction")
-    print("     - Full pipeline: recommender → SQL → preprocessing")
+    print("  4) Automated Data Pipeline")
+    print("     - Automatically select relevant tables, generate SQL, and extract data")
+    print("     - Data is ready for immediate use in causal discovery/inference")
+    print()
+    print("  Or type 'done' to switch to Causal Analysis mode")
     print("="*60)
+    print("\n💡 Tips:")
+    print("   • Type 'done' to try a different exploration method")
+    print("   • Type 'quit' to exit the entire session")
     
     while True:
-        choice = input("\n💬 Your choice (1-4): ").strip()
-        if choice == "1":
+        choice = input("\n💬 Your choice (1-4 or 'done'): ").strip().lower()
+        
+        if choice == "done":
+            return "done"
+        elif choice == "1":
             return "table_explorer"
         elif choice == "2":
             return "table_recommender"
@@ -79,8 +139,13 @@ def select_data_exploration_mode() -> str:
             return "text2sql"
         elif choice == "4":
             return "full_pipeline"
+        elif choice in ["quit", "exit", "q"]:
+            if confirm_quit():
+                return "done"
+            else:
+                continue
         else:
-            print("❌ Invalid choice. Please enter 1-4.")
+            print("❌ Invalid choice. Please enter 1-4 or 'done'.")
 
 
 def prompt_data_reuse(previous_state: Dict[str, Any]) -> str:
@@ -114,13 +179,22 @@ def prompt_data_reuse(previous_state: Dict[str, Any]) -> str:
     
     print()
     print("Options:")
-    print("  1) Reuse existing data")
-    print("  2) Explore new data")
-    print("  3) Exit session")
+    print("  1) Use this data for causal analysis")
+    print("  2) Explore new data (clear previous data)")
+    print("  3) Switch to data exploration mode")
+    print("  4) Exit session")
     print("="*60)
     
     while True:
-        choice = input("\n💬 Your choice (1-3): ").strip()
+        choice = input("\n💬 Your choice (1-4): ").strip().lower()
+        
+        # Handle quit commands
+        if choice in ["quit", "exit", "q", "4"]:
+            if confirm_quit():
+                return "4"  # Exit
+            else:
+                continue
+        
         if choice in ["1", "2", "3"]:
             return choice
         else:
@@ -158,7 +232,8 @@ def run_data_exploration_only(
         result_state = {}
         
         if exploration_mode == "table_explorer":
-            print(f"\n🔍 Exploring table: {query}")
+            print(f"\n🔍 Analyzing table structure: {query}")
+            print("   Please wait while we examine the table schema, relationships, and data characteristics...")
             agent = TableExplorerAgent(llm=llm, name="table_explorer")
             agent_state = {
                 "db_id": db_id,
@@ -204,7 +279,8 @@ def run_data_exploration_only(
                 raise RuntimeError(f"Table recommendation failed: {result.error}")
         
         elif exploration_mode == "text2sql":
-            print(f"\n🔍 Generating SQL for: {query}")
+            print(f"\n🔍 Generating SQL query for: {query}")
+            print("   Please wait while we convert your natural language query into SQL...")
             agent = Text2SQLGeneratorAgent(llm=llm, name="text2sql_generator")
             agent_state = {
                 "db_id": db_id,
@@ -261,6 +337,7 @@ def run_data_exploration_only(
         
         elif exploration_mode == "full_pipeline":
             print(f"\n🔍 Running full data exploration pipeline for: {query}")
+            print("   Please wait while we select tables, generate SQL, and extract data...")
             agent = DataExplorerAgent(llm=llm, name="data_explorer")
             agent_state = {
                 "db_id": db_id,
@@ -293,6 +370,16 @@ def run_data_exploration_only(
                     print(f"   Data shape: {shape[0]} rows × {shape[1]} columns")
                 if result_state.get("data_preprocessing_completed"):
                     print(f"   ✓ Data preprocessing completed")
+                
+                # Show next steps
+                print("\n" + "="*60)
+                print("📌 What's Next?")
+                print("="*60)
+                print("You can now:")
+                print("  • Continue exploring")
+                print("  • Change mode: Type 'done' to select different analysis mode")
+                print("  • Exit session: Type 'quit' to end")
+                print("="*60)
             else:
                 raise RuntimeError(f"Data exploration pipeline failed: {result_state.get('error')}")
         
@@ -334,6 +421,7 @@ def run_full_pipeline(
     orchestration_config: Optional[Dict[str, Any]] = None,
     use_synthetic_df: bool = False,
     analysis_mode: str = "full_pipeline",
+    event_logger: Optional[Any] = None,
 ) -> Dict[str, Any]:
     # 1) Initialize system (db + metadata)
     init = initialize_system(db_id, "postgresql", {})
@@ -346,6 +434,7 @@ def run_full_pipeline(
         executor_config=executor_config,
         orchestration_config=orchestration_config,
         metrics_collector=None,
+        event_logger=event_logger,
     )
     graph.compile()
 
@@ -475,10 +564,10 @@ if __name__ == "__main__":
         print("\n" + "="*60)
         print("🤖 ORCA: Causal Analysis System")
         print("="*60)
-        print("\n💡 Tips:")
-        print("   • Select your analysis mode at session start")
-        print("   • After data exploration, you can reuse the data for subsequent queries")
-        print("   • Type 'exit' or 'quit' at any time to end the session")
+        print("\n💡 Navigation Tips:")
+        print("   • Type 'done' to return to change modes")
+        print("   • Type 'quit' to exit the entire session")
+        print("   • After data exploration, you can reuse data for subsequent queries")
         print()
         
         # Initialize session
@@ -499,24 +588,16 @@ if __name__ == "__main__":
         while True:
             print("\n" + "-"*60)
             
-            # Step 2: Check if we should prompt for data reuse
-            if (previous_state and 
-                previous_state.get("data_exploration_status") == "completed" and
-                (previous_state.get("df_raw_redis_key") or previous_state.get("df_clean_redis_key"))):
-                reuse_choice = prompt_data_reuse(previous_state)
-                
-                if reuse_choice == "3":  # Exit
-                    print("👋 Goodbye!")
-                    break
-                elif reuse_choice == "2":  # Explore new data
-                    # Clear previous state and let user select mode again
-                    previous_state = None
-                    analysis_mode = select_analysis_mode()
-            
-            # Step 3: Get query from user and execute
+            # Step 2: Execute based on analysis mode
             if analysis_mode == "data_exploration":
                 # For data exploration, ask for sub-mode selection
                 exploration_mode = select_data_exploration_mode()
+                
+                # Handle 'done' - user wants to change analysis mode
+                if exploration_mode == "done":
+                    print("✓ Returning to analysis mode selection...")
+                    analysis_mode = select_analysis_mode()
+                    continue  # Start over with new analysis mode
                 
                 # Each exploration mode has its own interaction loop
                 if exploration_mode == "table_explorer":
@@ -549,16 +630,24 @@ if __name__ == "__main__":
                     
                     exit_program = False
                     while True:
-                        query = input("\n🧑 Enter table name to explore (or 'done' to return to main menu / 'exit' to quit): ").strip()
-                        
-                        if not query or query.lower() in ["exit", "quit"]:
-                            print("👋 Goodbye!")
-                            exit_program = True
-                            break  # Exit table explorer loop and program
+                        query = input("\n🧑 Enter table name to explore (or 'done' to select another exploration method): ").strip()
                         
                         if query.lower() == "done":
-                            print("✓ Table exploration completed")
-                            break  # Exit table explorer loop
+                            print("✓ Returning to exploration method selection...")
+                            break  # Exit table explorer loop, return to select_data_exploration_mode
+                        
+                        # Handle empty input - stay in current mode
+                        if not query:
+                            continue
+                        
+                        # Handle 'quit' - exit program
+                        if query.lower() in ["exit", "quit", "q"]:
+                            if confirm_quit():
+                                print("👋 Goodbye!")
+                                exit_program = True
+                                break  # Exit table explorer loop and program
+                            else:
+                                continue
                         
                         try:
                             output = run_data_exploration_only(
@@ -587,15 +676,28 @@ if __name__ == "__main__":
                     continue
                 
                 elif exploration_mode == "table_recommender":
-                    query = input("\n🧑 Enter your analysis objective or query: ").strip()
+                    query = input("\n🧑 Enter your analysis objective (or 'done' for another exploration method): ").strip()
                 elif exploration_mode == "text2sql":
-                    query = input("\n🧑 Enter your data query in natural language: ").strip()
+                    query = input("\n🧑 Enter your data query in natural language (or 'done' for another exploration method): ").strip()
                 else:  # full_pipeline
-                    query = input("\n🧑 Enter your data exploration query: ").strip()
+                    query = input("\n🧑 What would you like to analyze? (e.g., 'effect of gender on purchase', or 'done' for another method): ").strip()
                 
-                if not query or query.lower() in ["exit", "quit"]:
-                    print("👋 Goodbye!")
-                    break
+                # Handle 'done' - return to exploration method selection
+                if query.lower() == "done":
+                    print("✓ Returning to exploration method selection...")
+                    continue  # Go back to select_data_exploration_mode
+                
+                # Handle empty input - stay in current mode
+                if not query:
+                    continue
+                
+                # Handle 'quit' - exit program
+                if query.lower() in ["exit", "quit", "q"]:
+                    if confirm_quit():
+                        print("👋 Goodbye!")
+                        break  # Exit main loop
+                    else:
+                        continue  # Stay in current mode
                 
                 # Execute non-table-explorer modes
                 try:
@@ -609,6 +711,23 @@ if __name__ == "__main__":
                     
                     if output["success"]:
                         previous_state = output["state"]  # Save state for next query
+                        
+                        # If data was generated (text2sql or full_pipeline), ask what to do next
+                        if (exploration_mode in ["text2sql", "full_pipeline"] and 
+                            previous_state.get("df_raw_redis_key")):
+                            
+                            next_choice = prompt_next_step_after_data()
+                            
+                            if next_choice == "1":  # Proceed to causal analysis
+                                print("✓ Switching to Causal Analysis mode...")
+                                analysis_mode = "causal_analysis"
+                                continue
+                            elif next_choice == "2":  # Continue exploration
+                                print("✓ Continuing data exploration...")
+                                continue  # Back to select_data_exploration_mode
+                            elif next_choice == "3":  # Exit
+                                print("👋 Goodbye!")
+                                break
                     else:
                         print(f"❌ Error: {output['state'].get('error')}")
                 
@@ -617,12 +736,47 @@ if __name__ == "__main__":
                     print(f"❌ Error: {e}")
             
             else:
-                # For full pipeline, just ask for the causal query
-                query = input("\n🧑 Enter your causal analysis query: ").strip()
+                # Causal Analysis mode: check for previous data first
+                if (previous_state and 
+                    previous_state.get("data_exploration_status") == "completed" and
+                    (previous_state.get("df_raw_redis_key") or previous_state.get("df_clean_redis_key"))):
+                    reuse_choice = prompt_data_reuse(previous_state)
+                    
+                    if reuse_choice == "4":  # Exit
+                        print("👋 Goodbye!")
+                        break
+                    elif reuse_choice == "1":  # Use data for causal analysis
+                        print("✓ Proceeding to causal analysis with existing data...")
+                        # Continue to query input below
+                    elif reuse_choice == "2":  # Explore new data
+                        previous_state = None
+                        analysis_mode = select_analysis_mode()
+                        continue
+                    elif reuse_choice == "3":  # Continue current exploration
+                        print("✓ Switching to data exploration...")
+                        analysis_mode = "data_exploration"
+                        continue
                 
-                if not query or query.lower() in ["exit", "quit"]:
-                    print("👋 Goodbye!")
-                    break
+                # For causal analysis, ask for the causal query
+                query = input("\n🧑 Enter your causal analysis query (or 'done' to change mode, 'quit' to exit): ").strip()
+                
+                # Handle 'done' - return to mode selection
+                if query.lower() == "done":
+                    print("✓ Returning to mode selection...")
+                    analysis_mode = select_analysis_mode()
+                    continue
+                
+                # Handle empty input - stay in current mode
+                if not query:
+                    continue
+                
+                # Handle 'quit' - exit program
+                if query.lower() in ["exit", "quit", "q"]:
+                    if confirm_quit():
+                        print("👋 Goodbye!")
+                        break
+                    else:
+                        continue
                 
                 # Execute full causal analysis pipeline
                 try:

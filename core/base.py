@@ -248,8 +248,6 @@ class BaseAgent(ABC):
         and a LangGraph node (e.g., `_executor_node` in `orchestration/graph.py`) 
         is responsible for calling `interrupt()` in the LangGraph context.
         """
-        if not isinstance(state, dict):
-            raise TypeError("state must be a dict when requesting HITL")
 
         state["__hitl_requested__"] = True
         state["__hitl_payload__"] = payload
@@ -390,7 +388,7 @@ class OrchestratorAgent(BaseAgent):
                 "description": "Parse natural language question to identify causal variables",
                 "required_state_keys": ["initial_query", "selected_graph", "df_preprocessed"],
                 "timeout": 120,
-                "hitl_required": False,
+                "hitl_required": True,
                 "hitl_executed": False
             },
             {
@@ -422,7 +420,7 @@ class OrchestratorAgent(BaseAgent):
                 "description": "Interpret and validate results",
                 "required_state_keys": ["causal_estimates"],
                 "timeout": 180,
-                "hitl_required": True,
+                "hitl_required": False,
                 "hitl_executed": False
             },
             
@@ -503,38 +501,6 @@ class SpecialistAgent(BaseAgent):
         """Set domain expertise"""
         self.domain_expertise = expertise
         
-    def validate_input(self, data: Any) -> bool:
-        """Validate input data"""
-        # Implement schema-based validation logic
-        return True
-        
-    def validate_output(self, data: Any) -> bool:
-        """Validate output data"""
-        # Implement schema-based validation logic
-        return True
-
-    def requires_hitl(self, state: AgentState, phase: PipelinePhase, substep: str) -> bool:
-        """Check if this specialist agent requires HITL at the given phase/substep"""
-        # Define HITL requirements for each specialist agent
-        hitl_requirements = {
-            "data_explorer": {
-                PipelinePhase.DATA_EXPLORATION: ["table_selection", "table_retrieval"]
-            },
-            "causal_discovery": {
-                PipelinePhase.CAUSAL_DISCOVERY: ["assumption_method_matrix", "algorithm_scoring", "final_graph_selection"]
-            },
-            "causal_analysis": {
-                PipelinePhase.CAUSAL_INFERENCE: ["select_configuration", "interpretation"]
-            }
-        }
-        
-        agent_name = self.name.lower()
-        if agent_name in hitl_requirements:
-            phase_requirements = hitl_requirements[agent_name]
-            if phase in phase_requirements:
-                return substep in phase_requirements[phase]
-        
-        return False
 
 class SubgraphAgent(BaseAgent):
     """Subgraph agent (LangGraph based)"""

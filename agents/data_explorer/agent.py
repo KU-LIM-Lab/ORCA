@@ -335,7 +335,7 @@ class DataExplorerAgent(SpecialistAgent):
     # 5. 단계별 실행 메서드
     def _execute_table_recommendation(self, state: AgentState) -> AgentState:
         """Execute table recommendation step"""
-        print("[DATA_EXPLORER] Step: Table recommendation...")
+        print("\n🔍 Analyzing query and selecting relevant tables...")
         
         # 커스텀 도구 사용
         result = self.use_tool("table_selection", state)
@@ -346,14 +346,28 @@ class DataExplorerAgent(SpecialistAgent):
             state["objective_summary"] = result.get("objective_summary", "")
             state["erd_image_path"] = result.get("erd_image_path", "")
             state["table_recommendation_completed"] = True
-        else:
-            state["error"] = result.get("error", "Table recommendation failed")
+            
+            # Show selected tables
+            tables = result.get("recommended_tables", [])
+            if tables:
+                print(f"   ✓ Selected tables: {', '.join(tables)}")
+            
+            # Request HITL for table selection review if interactive mode
+            if state.get("interactive", False):
+                payload = {
+                    "step": "table_selection",
+                    "phase": "data_exploration",
+                    "description": "Tables selected. Review the selected tables before proceeding.",
+                    "decisions": ["approve", "edit", "rerun", "abort"]
+                }
+                state = self.request_hitl(state, payload=payload, hitl_type="table_selection_review")
+                return state
         
         return state
     
     def _execute_text2sql_generation(self, state: AgentState) -> AgentState:
         """Execute text2sql generation step"""
-        print("[DATA_EXPLORER] Step: Text2SQL generation...")
+        print("\n📝 Generating SQL query from natural language...")
         
         # 커스텀 도구 사용
         result = self.use_tool("table_retrieval", state)
@@ -361,20 +375,30 @@ class DataExplorerAgent(SpecialistAgent):
         if result.get("success"):
             # 상태 업데이트
             state["sql_query"] = result.get("final_sql", "")
+            state["final_sql"] = result.get("final_sql", "")  # Also set final_sql for consistency
             state["df_raw"] = result.get("result", [])
             # Keep columns if provided for DataFrame coercion in fetch_node
             if result.get("columns"):
                 state["columns"] = result.get("columns")
             state["llm_review"] = result.get("llm_review", "")
             state["text2sql_generation_completed"] = True
-        else:
-            state["error"] = result.get("error", "Text2SQL generation failed")
-        
+            
+            # Request HITL for SQL query review if interactive mode
+            if state.get("interactive", False):
+                payload = {
+                    "step": "table_retrieval",
+                    "phase": "data_exploration",
+                    "description": "SQL query generated. Review the query before execution.",
+                    "decisions": ["approve", "edit", "rerun", "abort"]
+                }
+                state = self.request_hitl(state, payload=payload, hitl_type="sql_review")
+                return state
+                   
         return state
     
     def _execute_table_exploration(self, state: AgentState) -> AgentState:
         """Execute table exploration step"""
-        print("[DATA_EXPLORER] Step: Table exploration...")
+        print("\n🔍 Analyzing selected tables and their relationships...")
         
         # 커스텀 도구 사용
         result = self.use_tool("table_exploration", state)
@@ -396,6 +420,7 @@ class DataExplorerAgent(SpecialistAgent):
             
             state["all_related_tables"] = list(all_related_tables)
             state["analysis_recommendations"] = analysis_recommendations
+            print(f"   ✓ Table analysis completed")
         else:
             state["error"] = result.get("error", "Table exploration failed")
         
@@ -403,7 +428,7 @@ class DataExplorerAgent(SpecialistAgent):
     
     def _execute_data_preprocessing(self, state: AgentState) -> AgentState:
         """Execute data preprocessing step"""
-        print("[DATA_EXPLORER] Step: Data preprocessing...")
+        print("\n🧹 Preprocessing data for causal analysis...")
         
         # 커스텀 도구 사용
         result = self.use_tool("data_preprocessing", state)
@@ -438,7 +463,11 @@ class DataExplorerAgent(SpecialistAgent):
     
     def _execute_full_pipeline(self, state: AgentState) -> AgentState:
         """Execute full data exploration pipeline"""
-        print("[DATA_EXPLORER] Executing full pipeline...")
+        print("\n" + "="*60)
+        print("🚀 Starting Automated Data Pipeline")
+        print("="*60)
+        print("This will: 1) Select tables → 2) Generate SQL → 3) Analyze schema → 4) Preprocess data")
+        print()
         
         try:
             # Validate input
@@ -474,7 +503,7 @@ class DataExplorerAgent(SpecialistAgent):
             if state.get("error"):
                 return state
             
-            print("[DATA_EXPLORER] Pipeline completed successfully!")
+            print("\n✅ Pipeline completed successfully!")
             return state
             
         except Exception as e:

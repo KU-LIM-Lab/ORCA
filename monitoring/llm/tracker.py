@@ -16,6 +16,20 @@ def track_llm_call(agent_name: str, model_name: Optional[str] = None):
             start_time = time.time()
             start_tokens = 0  # Will be updated if available
             
+            # Get event logger if available
+            event_logger = None
+            if hasattr(collector, 'event_logger'):
+                event_logger = collector.event_logger
+            
+            # Log LLM call start
+            if event_logger:
+                event_logger.log_llm_call_start(
+                    model=model_name or "unknown",
+                    agent_name=agent_name,
+                    operation=func.__name__,
+                    metadata={}
+                )
+            
             try:
                 result = func(*args, **kwargs)
                 
@@ -39,6 +53,18 @@ def track_llm_call(agent_name: str, model_name: Optional[str] = None):
                 if token_count > 0:
                     collector.record_token_count(agent_name, token_count, metadata)
                 
+                # Log LLM call end
+                if event_logger:
+                    event_logger.log_llm_call_end(
+                        model=model_name or "unknown",
+                        agent_name=agent_name,
+                        operation=func.__name__,
+                        duration=duration,
+                        token_count=token_count if token_count > 0 else None,
+                        success=True,
+                        metadata={}
+                    )
+                
                 return result
                 
             except Exception as e:
@@ -52,6 +78,19 @@ def track_llm_call(agent_name: str, model_name: Optional[str] = None):
                 
                 collector.record_api_call(agent_name, func.__name__, duration, metadata)
                 collector.record_error(agent_name, type(e).__name__, metadata)
+                
+                # Log LLM call end (failure)
+                if event_logger:
+                    event_logger.log_llm_call_end(
+                        model=model_name or "unknown",
+                        agent_name=agent_name,
+                        operation=func.__name__,
+                        duration=duration,
+                        success=False,
+                        error=str(e),
+                        metadata={}
+                    )
+                
                 raise
                 
         return wrapper

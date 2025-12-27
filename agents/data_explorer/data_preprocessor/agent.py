@@ -82,6 +82,19 @@ class DataPreprocessorAgent(SpecialistAgent):
         
         logger.info(f"DataPreprocessorAgent executing substep: {substep}")
         
+        # Check if we need to reset internal state
+        # This happens when:
+        # 1. We're starting fresh (fetch not completed yet)
+        # 2. User edited and we need to re-run (fetch removed from completed list)
+        completed_substeps = state.get("completed_substeps", [])
+        
+        # If fetch is not in completed list, we need to reset and start fresh
+        if "fetch" not in completed_substeps:
+            logger.info("Resetting DataPreprocessorAgent internal state for re-execution")
+            self.df = None
+            self._data_fetched = False
+            self.df_redis_key = None
+        
         # Fetch data on first step if not already fetched
         if not self._data_fetched and substep != "fetch":
             state = self._fetch(state)
@@ -97,7 +110,8 @@ class DataPreprocessorAgent(SpecialistAgent):
                 return self._clean_nulls(state)
             elif substep == "encode":
                 return self._encode(state)
-            elif substep == "full_pipeline":
+            elif substep in ["full_pipeline", "data_preprocessing"]:
+                # Both "full_pipeline" and "data_preprocessing" run the full pipeline
                 return self._full_pipeline(state)
             else:
                 raise ValueError(f"Unknown substep: {substep}")
@@ -229,81 +243,20 @@ class DataPreprocessorAgent(SpecialistAgent):
                 )
 
             # Trigger HITL if needed
+            # Always request HITL in interactive mode to allow users to review and edit (e.g., target_columns)
             hitl_required = (
                 state.get("hitl_required", False) or
+                state.get("interactive", False) or  # Always show HITL in interactive mode
                 schema.get("mixed_data_types") or
                 len(schema.get("high_cardinality_vars", [])) > 0
             )
 
             if hitl_required and state.get("interactive", False):
                 payload = {
-                    "question": "Review detected data types and cardinality",
-                    "schema": schema,
-                    "warnings": warnings,
-                    "decisions": {
-                        "approve": {
-                            "description": "Use detected schema as-is",
-                            "required_fields": {"hitl_executed": True}
-                        },
-                        "edit": {
-                            "description": "Override detected schema with custom variable types",
-                            "required_fields": {
-                                "variable_schema": {
-                                    "type": "dict",
-                                    "description": "Schema dictionary with 'variables' key containing variable definitions",
-                                    "structure": {
-                                        "variables": {
-                                            "<variable_name>": {
-                                                "data_type": "Continuous | Nominal | Binary | Ordinal",
-                                                "cardinality": "int (for categorical)",
-                                                "unique_values": "list (for categorical)"
-                                            }
-                                        },
-                                        "statistics": {
-                                            "n_continuous": "int",
-                                            "n_categorical": "int",
-                                            "n_binary": "int"
-                                        }
-                                    },
-                                    "example": {
-                                        "variables": {
-                                            "age": {"data_type": "Continuous"},
-                                            "gender": {"data_type": "Binary", "cardinality": 2}
-                                        },
-                                        "statistics": {"n_continuous": 1, "n_categorical": 0, "n_binary": 1}
-                                    }
-                                },
-                                "hitl_executed": True
-                            }
-                        }
-                    },
-                    "hint": (
-                        "Review the detected schema. To override:\n"
-                        "- Set 'variable_schema' in response with the same structure as 'schema'\n"
-                        "- Each variable should have 'data_type' (Continuous/Nominal/Binary/Ordinal)\n"
-                        "- Categorical variables should include 'cardinality' and optionally 'unique_values'"
-                    ),
-                    "response_examples": {
-                        "approve": {
-                            "description": "Use detected schema as-is",
-                            "json": {
-                                "hitl_executed": True
-                            }
-                        },
-                        "edit": {
-                            "description": "Override detected schema",
-                            "json": {
-                                "variable_schema": {
-                                    "variables": {
-                                        "age": {"data_type": "Continuous"},
-                                        "gender": {"data_type": "Binary", "cardinality": 2, "unique_values": [0, 1]}
-                                    },
-                                    "statistics": {"n_continuous": 1, "n_categorical": 0, "n_binary": 1}
-                                },
-                                "hitl_executed": True
-                            }
-                        }
-                    }
+                    "step": "data_preprocessing",
+                    "phase": "data_exploration",
+                    "description": "Data schema detected. Review the variable types and characteristics.",
+                    "decisions": ["approve", "edit", "rerun", "abort"]
                 }
                 if isinstance(payload, (pd.Series, pd.Index)):
                     return payload.tolist()
@@ -404,6 +357,33 @@ class DataPreprocessorAgent(SpecialistAgent):
         if state.get("error"):
             return state
         
+        # Apply column filtering if target_columns specified (after fetch)
+        if self.df is not None and not self.df.empty:
+            target_columns = state.get("target_columns")
+            if target_columns and isinstance(target_columns, list):
+                # Validate columns exist
+                missing_cols = [col for col in target_columns if col not in self.df.columns]
+                if missing_cols:
+                    state.setdefault("warnings", []).append(
+                        f"Some target_columns not found: {missing_cols}"
+                    )
+                # Filter to available target columns
+                available_targets = [col for col in target_columns if col in self.df.columns]
+                if available_targets:
+                    self.df = self.df[available_targets]
+                    state.setdefault("warnings", []).append(
+                        f"Filtered to {len(available_targets)} target columns"
+                    )
+                    # Update state with filtered columns
+                    state["columns"] = list(self.df.columns)
+                    state["df_shape"] = tuple(self.df.shape)
+                    # Update Redis cache with filtered dataframe
+                    if self.df_redis_key:
+                        try:
+                            from utils.redis_df import save_df_parquet
+                            save_df_parquet(self.df_redis_key, self.df)
+                        except Exception as e:
+                            state.setdefault("warnings", []).append(f"Failed to cache filtered dataframe: {e}")
         
 
         state = self._schema_detection(state)

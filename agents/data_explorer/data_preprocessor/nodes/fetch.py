@@ -47,6 +47,74 @@ def fetch_node(state: Dict) -> Dict:
         except Exception as e:
             state.setdefault("warnings", []).append(f"Failed to cache dataframe in Redis: {e}")
             redis_key = None
+    
+    # Save artifacts if artifact manager is available
+    try:
+        from monitoring.experiment.utils import get_artifact_manager
+        artifact_manager = get_artifact_manager()
+        
+        if artifact_manager:
+            # Save SQL query
+            artifact_manager.save_artifact(
+                artifact_type="sql",
+                data=final_sql,
+                filename="step1_final.sql",
+                step_id="1",
+                metadata={"db_id": db_id, "cached": loaded_from_cache}
+            )
+            
+            # Save dataset (sample if too large)
+            if df is not None and not df.empty:
+                # Save full dataset
+                artifact_manager.save_artifact(
+                    artifact_type="dataset",
+                    data=df,
+                    filename="step1_dataset.parquet",
+                    step_id="1",
+                    metadata={"rows": len(df), "columns": len(df.columns)}
+                )
+                
+                # Save schema
+                schema_info = {
+                    "columns": list(df.columns),
+                    "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},
+                    "shape": df.shape,
+                    "null_counts": df.isnull().sum().to_dict()
+                }
+                artifact_manager.save_artifact(
+                    artifact_type="schema",
+                    data=schema_info,
+                    filename="step1_schema.json",
+                    step_id="1",
+                    metadata={}
+                )
+    except Exception as e:
+        # Don't fail if artifact saving fails
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to save artifacts: {e}")
+
+    # Apply column filtering if target_columns specified
+    if df is not None and not df.empty:
+        target_columns = state.get("target_columns")
+        if target_columns and isinstance(target_columns, list):
+            # Validate columns exist
+            missing_cols = [col for col in target_columns if col not in df.columns]
+            if missing_cols:
+                state.setdefault("warnings", []).append(
+                    f"Some target_columns not found: {missing_cols}"
+                )
+            # Filter to available target columns
+            available_targets = [col for col in target_columns if col in df.columns]
+            if available_targets:
+                df = df[available_targets]
+                state.setdefault("warnings", []).append(
+                    f"Filtered to {len(available_targets)} target columns"
+                )
+                # Update redis cache with filtered dataframe
+                try:
+                    save_df_parquet(redis_key, df)
+                except Exception as e:
+                    state.setdefault("warnings", []).append(f"Failed to cache filtered dataframe: {e}")
 
     state["df_redis_key"] = redis_key
     state["df_shape"] = tuple(df.shape) if df is not None else None
