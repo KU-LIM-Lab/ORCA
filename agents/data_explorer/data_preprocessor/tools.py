@@ -15,7 +15,7 @@ def coerce_df_to_numeric(
     df: pd.DataFrame,
     dropna: bool = True,
     datetime_unit: str = "s",
-    verbose: bool = False,
+    verbose: bool = True,
     # NEW:
     drop_text_cols: bool = True,
     text_unique_ratio_thresh: float = 0.5,   # high-cardinality text
@@ -126,8 +126,24 @@ def coerce_df_to_numeric(
 
     if dropna:
         before = len(df_out)
+        if verbose:
+            print(df_out.head(3))
+            print(f"[Data row]:{len(df_out)}")
+            # Show which columns contain NaNs and how many before dropping rows.
+            na_counts = df_out.isna().sum()
+            na_cols = na_counts[na_counts > 0].sort_values(ascending=False)
+            if not na_cols.empty:
+                print("[NaN columns]\n" + na_cols.to_string())
+            else:
+                print("[NaN columns] None")
         df_out = df_out.dropna()
         if verbose: print(f"Dropped {before - len(df_out)} rows due to NaN")
+
+    # Cap rows to 1000 with random sampling to keep downstream methods tractable.
+    if len(df_out) > 1000:
+        df_out = df_out.sample(n=1000, random_state=42)
+        if verbose:
+            print("[Row cap] Sampled 2000 rows")
 
     return df_out
 
@@ -353,4 +369,3 @@ def detect_schema_tool(
             "n_binary": n_binary
         }
     }
-
