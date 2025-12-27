@@ -33,7 +33,7 @@ experiments:
       - gpt4o_mini
     scenarios: [CD-1_Baseline, CD-2_Graph, CD-4_SCM]
     d_list: [2, 3, 5, 10]
-    runs: 5
+    runs: 
     results_dir: experiments/results/graph_discovery
     seed: 0
 

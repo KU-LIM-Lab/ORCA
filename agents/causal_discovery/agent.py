@@ -1085,7 +1085,12 @@ class CausalDiscoveryAgent(SpecialistAgent):
 
             item["composite_score"] = composite_score
         
-        ranked = sorted(scorecard, key=lambda x: x["composite_score"], reverse=True)
+        # Sort by composite_score, with tie-breaking: DAG algorithms first, then by sampling_stability
+        ranked = sorted(scorecard, key=lambda x: (
+            x["composite_score"],
+            get_graph_type(x["graph"]) == "DAG",
+            x.get("sampling_stability", 0.0)  
+        ), reverse=True)
         return ranked
     
     def _sequential_pruning(self, scorecard: List[Dict[str, Any]], 
