@@ -116,7 +116,8 @@ class OrchestrationGraph:
     
     
     def _route_after_execution(self, state: AgentState) -> str:
-        """Route after executor execution"""
+        """Generate final analysis report"""
+        """ llm으로 결과 작성하는 specialist agent로 구성 예정 """
         if state.get("error"):
             return "error"
         if state.get("executor_completed"):
@@ -251,12 +252,19 @@ class OrchestrationGraph:
                         payload = {}
                     
                     interrupt_count += 1
-                    print(f"\n⏸️  INTERRUPT #{interrupt_count} DETECTED!")
                     step_name_from_payload = payload.get('step', 'unknown')
                     phase_name = payload.get('phase', 'unknown')
                     description = payload.get('description', 'N/A')
-                    print(f"📋 Step: {step_name_from_payload} ({phase_name})")
-                    print(f"   Description: {description}")
+                    
+                    # User-friendly message instead of technical "INTERRUPT"
+                    print(f"\n{'='*60}")
+                    print(f"⏸️  Please check the following information (#{interrupt_count})")
+                    print(f"{'='*60}")
+                    print(f"📋  Step: {step_name_from_payload} ({phase_name})")
+                    if description and description != 'N/A':
+                        print(f"   {description}")
+                    print(f"\nPlease check the following information before proceeding to the next step.")
+                    result_fields = {"df_shape": "Data shape", "variable_schema": "Variable schema"}
                     
                     # Show current step results and editable fields before decision
                     try:

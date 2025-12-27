@@ -2,7 +2,7 @@ import logging
 import sys
 import os
 import warnings
-# Fix OpenMP duplicate library error on macOS
+from datetime import datetime
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 from typing import Optional, Dict, Any
@@ -14,18 +14,326 @@ from core.state import create_initial_state
 from orchestration.graph import create_orchestration_graph
 from utils.system_init import initialize_system
 from utils.synthetic_data import generate_er_synthetic
+from utils.llm import get_llm
+from agents.data_explorer.table_explorer.agent import TableExplorerAgent
+from agents.data_explorer.table_recommender.agent import TableRecommenderAgent
+from agents.data_explorer.text2sql_generator.agent import Text2SQLGeneratorAgent
+from agents.data_explorer.agent import DataExplorerAgent
 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
 
+
+def select_analysis_mode() -> str:
+    """Prompt user to select analysis mode at session start."""
+    print("\n" + "="*60)
+    print("🤖 ORCA: Welcome! Select analysis mode:")
+    print("="*60)
+    print("  1) Data Exploration")
+    print("     - Explore database tables and extract data")
+    print("     - Useful for understanding the data and its relationships")
+    print()
+    print("  2) Fully Automated Causal Analysis Pipeline")
+    print("     - Complete end-to-end causal analysis")
+    print("     - Includes data exploration, causal discovery, and inference")
+    print("="*60)
+    
+    while True:
+        choice = input("\n💬 Your choice (1 or 2): ").strip()
+        if choice == "1":
+            return "data_exploration"
+        elif choice == "2":
+            return "full_pipeline"
+        else:
+            print("❌ Invalid choice. Please enter 1 or 2.")
+
+
+def select_data_exploration_mode() -> str:
+    """Prompt user to select data exploration method."""
+    print("\n" + "="*60)
+    print("📊 Data Exploration Mode Selected")
+    print("="*60)
+    print("Select exploration method:")
+    print()
+    print("  1) Table Explorer")
+    print("     - Explore specific table schema and relationships")
+    print()
+    print("  2) Table Recommender")
+    print("     - Get table recommendations from query/document")
+    print()
+    print("  3) Text2SQL Generator")
+    print("     - Generate SQL from natural language query")
+    print()
+    print("  4) Automated Data Selection and Extraction")
+    print("     - Full pipeline: recommender → SQL → preprocessing")
+    print("="*60)
+    
+    while True:
+        choice = input("\n💬 Your choice (1-4): ").strip()
+        if choice == "1":
+            return "table_explorer"
+        elif choice == "2":
+            return "table_recommender"
+        elif choice == "3":
+            return "text2sql"
+        elif choice == "4":
+            return "full_pipeline"
+        else:
+            print("❌ Invalid choice. Please enter 1-4.")
+
+
+def prompt_data_reuse(previous_state: Dict[str, Any]) -> str:
+    """Prompt user whether to reuse existing data or explore new data."""
+    print("\n" + "="*60)
+    print("ℹ️  Previous data available:")
+    print("="*60)
+    
+    # Display previous data info
+    if previous_state.get("exploration_mode"):
+        print(f"   Exploration method: {previous_state['exploration_mode']}")
+    if previous_state.get("selected_tables"):
+        tables = previous_state["selected_tables"]
+        if isinstance(tables, list):
+            print(f"   Tables: {', '.join(tables)}")
+        else:
+            print(f"   Tables: {tables}")
+    if previous_state.get("sql_query") or previous_state.get("final_sql"):
+        sql = previous_state.get("final_sql") or previous_state.get("sql_query")
+        sql_preview = sql[:100] + "..." if len(sql) > 100 else sql
+        print(f"   SQL: {sql_preview}")
+    if previous_state.get("df_shape"):
+        shape = previous_state["df_shape"]
+        print(f"   Data shape: {shape[0]} rows × {shape[1]} columns")
+    
+    # Show preprocessing status
+    if previous_state.get("data_preprocessing_completed"):
+        print(f"   Status: ✓ Preprocessed and ready for analysis")
+    else:
+        print(f"   Status: ⚠️  Raw data (will be preprocessed if used for causal analysis)")
+    
+    print()
+    print("Options:")
+    print("  1) Reuse existing data")
+    print("  2) Explore new data")
+    print("  3) Exit session")
+    print("="*60)
+    
+    while True:
+        choice = input("\n💬 Your choice (1-3): ").strip()
+        if choice in ["1", "2", "3"]:
+            return choice
+        else:
+            print("❌ Invalid choice. Please enter 1, 2, or 3.")
+
+
+def run_data_exploration_only(
+    query: str,
+    db_id: str,
+    session_id: str,
+    exploration_mode: str,
+    llm: Any,
+) -> Dict[str, Any]:
+    """
+    Run data exploration only.
+    
+    Args:
+        query: User query or table name
+        db_id: Database identifier
+        session_id: Session identifier
+        exploration_mode: One of 'table_explorer', 'table_recommender', 'text2sql', 'full_pipeline'
+        llm: LLM instance
+    
+    Returns:
+        Dictionary with exploration results and state
+    """
+    try:
+        # Initialize system
+        init = initialize_system(db_id, "postgresql", {})
+        if not (init and init.is_connected):
+            raise RuntimeError("System initialization failed")
+        
+        logger.info(f"Running data exploration mode: {exploration_mode}")
+        
+        result_state = {}
+        
+        if exploration_mode == "table_explorer":
+            print(f"\n🔍 Exploring table: {query}")
+            agent = TableExplorerAgent(llm=llm, name="table_explorer")
+            agent_state = {
+                "db_id": db_id,
+                "input": query
+            }
+            result = agent.execute(agent_state)
+            
+            if result.success and result.data:
+                result_state = result.data
+                result_state["exploration_mode"] = exploration_mode
+                # Don't set data_exploration_status to "completed" for table_explorer
+                print(f"\n✅ Table exploration completed!")
+                if result.data.get("final_output"):
+                    from utils.prettify import print_final_output_explorer
+                    prettified = print_final_output_explorer(result.data['final_output'])
+                    print(f"\n{prettified}")
+            else:
+                raise RuntimeError(f"Table exploration failed: {result.error}")
+        
+        elif exploration_mode == "table_recommender":
+            print(f"\n🔍 Getting table recommendations for: {query}")
+            agent = TableRecommenderAgent(llm=llm, name="table_recommender")
+            agent_state = {
+                "db_id": db_id,
+                "input": query,
+                "input_type": "text"
+            }
+            result = agent.execute(agent_state)
+            
+            if result.success and result.data:
+                result_state = result.data
+                result_state["exploration_mode"] = exploration_mode
+                # Don't set data_exploration_status to "completed" for table_recommender
+                result_state["selected_tables"] = result.data.get("recommended_tables", [])
+                print(f"\n✅ Table recommendation completed!")
+                if result.data.get("final_output"):
+                    from utils.prettify import print_final_output_recommender
+                    prettified = print_final_output_recommender(result.data['final_output'])
+                    print(f"\n{prettified}")
+                elif result.data.get("recommended_tables"):
+                    print(f"   Recommended tables: {', '.join(result.data['recommended_tables'])}")
+            else:
+                raise RuntimeError(f"Table recommendation failed: {result.error}")
+        
+        elif exploration_mode == "text2sql":
+            print(f"\n🔍 Generating SQL for: {query}")
+            agent = Text2SQLGeneratorAgent(llm=llm, name="text2sql_generator")
+            agent_state = {
+                "db_id": db_id,
+                "query": query,
+                "messages": [],
+                "evidence": "",
+                "analysis_mode": "data_exploration"
+            }
+            result = agent.execute(agent_state)
+            
+            if result.success and result.data:
+                result_state = result.data
+                result_state["exploration_mode"] = exploration_mode
+                result_state["data_exploration_status"] = "completed"
+                result_state["sql_query"] = result.data.get("final_sql", "")
+                result_state["final_sql"] = result.data.get("final_sql", "")
+                
+                # Execute SQL and get data (RAW - not preprocessed)
+                if result.data.get("result"):
+                    from utils.redis_df import save_df_parquet
+                    import pandas as pd
+                    
+                    # Convert result to DataFrame
+                    df = pd.DataFrame(result.data["result"])
+                    if result.data.get("columns"):
+                        df.columns = result.data["columns"]
+                    
+                    # Save RAW data to Redis (will be preprocessed later if needed)
+                    df_key = f"{db_id}:df_raw:{session_id}"
+                    save_df_parquet(df_key, df)
+                    result_state["df_raw_redis_key"] = df_key
+                    result_state["df_shape"] = df.shape
+                    result_state["columns"] = list(df.columns)
+                    
+                    # Mark that preprocessing is NOT done yet
+                    result_state["data_preprocessing_completed"] = False
+                    
+                    print(f"\n✅ SQL generation and execution completed!")
+                    
+                    from utils.prettify import print_final_output_sql
+                    output_dict = {
+                        "sql": result.data.get('final_sql', ''),
+                        "result": result.data.get("result", []),
+                        "columns": result.data.get("columns", []),
+                        "error": result.data.get("error"),
+                        "llm_review": result.data.get("llm_review")
+                    }
+                    prettified = print_final_output_sql(output_dict)
+                    print(f"\n{prettified}")
+                    print(f"\n   Data shape: {df.shape[0]} rows × {df.shape[1]} columns")
+                    print(f"   ⚠️  Note: Data is raw (not preprocessed)")
+            else:
+                raise RuntimeError(f"Text2SQL generation failed: {result.error}")
+        
+        elif exploration_mode == "full_pipeline":
+            print(f"\n🔍 Running full data exploration pipeline for: {query}")
+            agent = DataExplorerAgent(llm=llm, name="data_explorer")
+            agent_state = {
+                "db_id": db_id,
+                "initial_query": query,
+                "input": query,
+                "current_substep": "full_pipeline",
+                "session_id": session_id,
+                "persist_to_redis": True,
+                "analysis_mode": "data_exploration"
+            }
+            
+            result_state = agent.step(agent_state)
+            result_state["exploration_mode"] = exploration_mode
+            
+            if not result_state.get("error"):
+                result_state["data_exploration_status"] = "completed"
+                # Check if preprocessing was completed
+                if result_state.get("data_preprocessing_completed"):
+                    result_state["data_preprocessing_completed"] = True
+                
+                print(f"\n✅ Data exploration pipeline completed!")
+                
+                if result_state.get("selected_tables"):
+                    print(f"   Tables: {', '.join(result_state['selected_tables'])}")
+                if result_state.get("sql_query") or result_state.get("final_sql"):
+                    sql = result_state.get("final_sql") or result_state.get("sql_query")
+                    print(f"   SQL: {sql[:100]}...")
+                if result_state.get("df_shape"):
+                    shape = result_state["df_shape"]
+                    print(f"   Data shape: {shape[0]} rows × {shape[1]} columns")
+                if result_state.get("data_preprocessing_completed"):
+                    print(f"   ✓ Data preprocessing completed")
+            else:
+                raise RuntimeError(f"Data exploration pipeline failed: {result_state.get('error')}")
+        
+        return {
+            "success": True,
+            "state": result_state
+        }
+    
+    except Exception as e:
+        logger.exception(f"Data exploration failed: {e}")
+        return {
+            "success": False,
+            "state": {"error": str(e)}
+        }
+
+
+def print_previous_state_summary(previous_state: Dict[str, Any]) -> None:
+    """Print a summary of the previous state."""
+    if not previous_state:
+        return
+    
+    print("\n📋 Session State:")
+    if previous_state.get("exploration_mode"):
+        print(f"   Mode: {previous_state['exploration_mode']}")
+    if previous_state.get("data_exploration_status") == "completed":
+        print(f"   Status: Data exploration completed ✓")
+        if previous_state.get("df_shape"):
+            shape = previous_state["df_shape"]
+            print(f"   Data: {shape[0]} rows × {shape[1]} columns")
+
+
 def run_full_pipeline(
     query: str,
     db_id: str = "reef_db",
+    session_id: Optional[str] = None,
+    previous_state: Optional[Dict[str, Any]] = None,
     planner_config: Optional[Dict[str, Any]] = None,
     executor_config: Optional[Dict[str, Any]] = None,
     orchestration_config: Optional[Dict[str, Any]] = None,
     use_synthetic_df: bool = False,
+    analysis_mode: str = "full_pipeline",
 ) -> Dict[str, Any]:
     # 1) Initialize system (db + metadata)
     init = initialize_system(db_id, "postgresql", {})
@@ -41,9 +349,9 @@ def run_full_pipeline(
     )
     graph.compile()
 
-    # 3) Create initial state
-    state = create_initial_state(query, db_id)
-    state["analysis_mode"] = "full_pipeline"
+    # 3) Create initial state with session_id
+    state = create_initial_state(query, db_id, session_id=session_id)
+    state["analysis_mode"] = analysis_mode
     if use_synthetic_df:
         df, _meta = generate_er_synthetic(n_nodes=5, edge_prob=0.3, n_samples=300, seed=123)
         try:
@@ -59,8 +367,58 @@ def run_full_pipeline(
     state.setdefault("schema_info", {"tables": []})
     state.setdefault("table_metadata", {})
 
-    # 4) Execute
-    result_state = graph.execute(query, context=state)
+    # 4) Prepare context from previous state if available
+    context = {}
+    if previous_state:
+        # If data exploration was completed, reuse the data
+        if previous_state.get("data_exploration_status") == "completed":
+            # Determine which steps to skip based on what was completed
+            skip_steps = []
+            
+            # Always skip table selection and retrieval if data exists
+            skip_steps.extend(["table_selection", "table_retrieval"])
+            
+            # Only skip preprocessing if it was actually completed
+            if previous_state.get("data_preprocessing_completed"):
+                skip_steps.append("data_preprocessing")
+                # Use preprocessed data
+                if previous_state.get("df_redis_key"):
+                    context["df_redis_key"] = previous_state["df_redis_key"]
+                logger.info("Reusing preprocessed data from previous query")
+            else:
+                # Data exists but not preprocessed - need to preprocess before causal discovery
+                if previous_state.get("df_raw_redis_key"):
+                    context["df_raw_redis_key"] = previous_state["df_raw_redis_key"]
+                elif previous_state.get("df_redis_key"):
+                    # Legacy: if only df_redis_key exists, assume it's raw
+                    context["df_raw_redis_key"] = previous_state["df_redis_key"]
+                logger.info("Raw data available - will preprocess before causal analysis")
+            
+            # Set skip steps
+            context["skip"] = skip_steps
+            
+            # Preserve SQL query
+            if previous_state.get("final_sql"):
+                context["final_sql"] = previous_state["final_sql"]
+            elif previous_state.get("sql_query"):
+                context["sql_query"] = previous_state["sql_query"]
+            
+            context["data_exploration_status"] = "completed"
+            
+            # Preserve exploration metadata
+            if previous_state.get("exploration_mode"):
+                context["exploration_mode"] = previous_state["exploration_mode"]
+            if previous_state.get("selected_tables"):
+                context["selected_tables"] = previous_state["selected_tables"]
+            if previous_state.get("df_shape"):
+                context["df_shape"] = previous_state["df_shape"]
+            if previous_state.get("columns"):
+                context["columns"] = previous_state["columns"]
+            if previous_state.get("data_preprocessing_completed") is not None:
+                context["data_preprocessing_completed"] = previous_state["data_preprocessing_completed"]
+
+    # 5) Execute
+    result_state = graph.execute(query, context={**state, **context}, session_id=session_id)
 
     logger.info("Selected algorithms: %s", result_state.get("selected_algorithms"))
     logger.info("Selected graph edges: %d", len(result_state.get("selected_graph", {}).get("edges", [])))
@@ -87,33 +445,213 @@ if __name__ == "__main__":
     args = _parse_args()
     logging.getLogger().setLevel(getattr(logging, args.log_level))
 
-    # Get query from argument or terminal input
-    query = args.query
-    if not query:
-        print("🤖 ORCA Agent: Enter your query (or 'exit' to quit)")
-        query = input("🧑 Query: ").strip()
-        if not query or query.lower() in ["exit", "quit"]:
-            print("👋 Goodbye!")
-            sys.exit(0)
-
-    planner_cfg: Dict[str, Any] = {}
-    executor_cfg: Dict[str, Any] = {}
-    orchestration_cfg: Dict[str, Any] = {"interactive": bool(args.interactive)}
-
-    output = run_full_pipeline(
-        query,
-        db_id=args.db_id,
-        planner_config=planner_cfg,
-        executor_config=executor_cfg,
-        orchestration_config=orchestration_cfg,
-        use_synthetic_df=False,
-    )
-    if output["success"]:
-        logger.info("Success")
-        if args.print_report and output["state"].get("final_report"):
-            fr = output["state"].get("final_report", {})
-            print("\n=== Final Report (Markdown) ===")
-            print(fr.get("markdown", ""))
+    # If query provided as argument, run once and exit
+    if args.query:
+        planner_cfg: Dict[str, Any] = {}
+        executor_cfg: Dict[str, Any] = {}
+        orchestration_cfg: Dict[str, Any] = {"interactive": bool(args.interactive)}
+        
+        session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        output = run_full_pipeline(
+            args.query,
+            db_id=args.db_id,
+            session_id=session_id,
+            planner_config=planner_cfg,
+            executor_config=executor_cfg,
+            orchestration_config=orchestration_cfg,
+            use_synthetic_df=False,
+        )
+        if output["success"]:
+            logger.info("Success")
+            if args.print_report and output["state"].get("final_report"):
+                fr = output["state"].get("final_report", {})
+                print("\n=== Final Report (Markdown) ===")
+                print(fr.get("markdown", ""))
+        else:
+            logger.error("Failed: %s", output["state"].get("error"))
+            sys.exit(1)
     else:
-        logger.error("Failed: %s", output["state"].get("error"))
-        sys.exit(1)
+        # Interactive mode: loop until user exits
+        print("\n" + "="*60)
+        print("🤖 ORCA: Causal Analysis System")
+        print("="*60)
+        print("\n💡 Tips:")
+        print("   • Select your analysis mode at session start")
+        print("   • After data exploration, you can reuse the data for subsequent queries")
+        print("   • Type 'exit' or 'quit' at any time to end the session")
+        print()
+        
+        # Initialize session
+        session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        previous_state: Optional[Dict[str, Any]] = None
+        
+        planner_cfg: Dict[str, Any] = {}
+        executor_cfg: Dict[str, Any] = {}
+        orchestration_cfg: Dict[str, Any] = {"interactive": bool(args.interactive)}
+        
+        # Initialize LLM for data exploration
+        llm = get_llm(model="gpt-4o-mini", temperature=0.3, provider="openai")
+        
+        # Step 1: Select analysis mode at session start
+        analysis_mode = select_analysis_mode()
+        
+        # Main query loop
+        while True:
+            print("\n" + "-"*60)
+            
+            # Step 2: Check if we should prompt for data reuse
+            if (previous_state and 
+                previous_state.get("data_exploration_status") == "completed" and
+                (previous_state.get("df_raw_redis_key") or previous_state.get("df_clean_redis_key"))):
+                reuse_choice = prompt_data_reuse(previous_state)
+                
+                if reuse_choice == "3":  # Exit
+                    print("👋 Goodbye!")
+                    break
+                elif reuse_choice == "2":  # Explore new data
+                    # Clear previous state and let user select mode again
+                    previous_state = None
+                    analysis_mode = select_analysis_mode()
+            
+            # Step 3: Get query from user and execute
+            if analysis_mode == "data_exploration":
+                # For data exploration, ask for sub-mode selection
+                exploration_mode = select_data_exploration_mode()
+                
+                # Each exploration mode has its own interaction loop
+                if exploration_mode == "table_explorer":
+                    # Show available tables once at the start
+                    try:
+                        from utils.redis_client import redis_client
+                        import json
+                        
+                        # Try to get table list from table_relations (from runner.py)
+                        relations_key = f"{args.db_id}:table_relations"
+                        relations_raw = redis_client.get(relations_key)
+                        
+                        available_tables = []
+                        if relations_raw:
+                            relations_info = json.loads(relations_raw)
+                            source_schema = relations_info.get("source_schema", {})
+                            available_tables = list(source_schema.keys())
+                        
+                        if available_tables:
+                            print(f"\n📋 Available tables in {args.db_id}:")
+                            for i, table in enumerate(sorted(available_tables), 1):
+                                print(f"   {i}. {table}")
+                            print()
+                        else:
+                            print(f"\n⚠️  No tables found in database '{args.db_id}'")
+                            print("💡 Tip: Run 'python utils/data_prep/runner.py' to generate metadata")
+                    except Exception as e:
+                        print(f"\n⚠️  Could not retrieve table list: {e}")
+                        logger.exception("Failed to retrieve table list")
+                    
+                    exit_program = False
+                    while True:
+                        query = input("\n🧑 Enter table name to explore (or 'done' to return to main menu / 'exit' to quit): ").strip()
+                        
+                        if not query or query.lower() in ["exit", "quit"]:
+                            print("👋 Goodbye!")
+                            exit_program = True
+                            break  # Exit table explorer loop and program
+                        
+                        if query.lower() == "done":
+                            print("✓ Table exploration completed")
+                            break  # Exit table explorer loop
+                        
+                        try:
+                            output = run_data_exploration_only(
+                                query=query,
+                                db_id=args.db_id,
+                                session_id=session_id,
+                                exploration_mode=exploration_mode,
+                                llm=llm,
+                            )
+                            
+                            if output["success"]:
+                                pass
+                            else:
+                                print(f"❌ Error: {output['state'].get('error')}")
+                                print("💡 Tip: Check the available tables listed above")
+                        
+                        except Exception as e:
+                            logger.exception("Table exploration failed")
+                            print(f"❌ Error: {e}")
+                    
+                    # If user chose to exit, break main loop
+                    if exit_program:
+                        break
+                    
+                    # After table explorer loop, continue to next iteration
+                    continue
+                
+                elif exploration_mode == "table_recommender":
+                    query = input("\n🧑 Enter your analysis objective or query: ").strip()
+                elif exploration_mode == "text2sql":
+                    query = input("\n🧑 Enter your data query in natural language: ").strip()
+                else:  # full_pipeline
+                    query = input("\n🧑 Enter your data exploration query: ").strip()
+                
+                if not query or query.lower() in ["exit", "quit"]:
+                    print("👋 Goodbye!")
+                    break
+                
+                # Execute non-table-explorer modes
+                try:
+                    output = run_data_exploration_only(
+                        query=query,
+                        db_id=args.db_id,
+                        session_id=session_id,
+                        exploration_mode=exploration_mode,
+                        llm=llm,
+                    )
+                    
+                    if output["success"]:
+                        previous_state = output["state"]  # Save state for next query
+                    else:
+                        print(f"❌ Error: {output['state'].get('error')}")
+                
+                except Exception as e:
+                    logger.exception("Data exploration failed")
+                    print(f"❌ Error: {e}")
+            
+            else:
+                # For full pipeline, just ask for the causal query
+                query = input("\n🧑 Enter your causal analysis query: ").strip()
+                
+                if not query or query.lower() in ["exit", "quit"]:
+                    print("👋 Goodbye!")
+                    break
+                
+                # Execute full causal analysis pipeline
+                try:
+                    print_previous_state_summary(previous_state)
+                    
+                    output = run_full_pipeline(
+                        query,
+                        db_id=args.db_id,
+                        session_id=session_id,
+                        previous_state=previous_state,
+                        planner_config=planner_cfg,
+                        executor_config=executor_cfg,
+                        orchestration_config=orchestration_cfg,
+                        use_synthetic_df=False,
+                    )
+                    
+                    if output["success"]:
+                        logger.info("Success")
+                        previous_state = output["state"]  # Save state for next query
+                        
+                        if args.print_report and output["state"].get("final_report"):
+                            fr = output["state"].get("final_report", {})
+                            print("\n=== Final Report (Markdown) ===")
+                            print(fr.get("markdown", ""))
+                    else:
+                        logger.error("Failed: %s", output["state"].get("error"))
+                        print(f"❌ Error: {output['state'].get('error')}")
+                
+                except Exception as e:
+                    logger.exception("Execution failed")
+                    print(f"❌ Error: {e}")
+                    # Don't break the loop, allow user to try again

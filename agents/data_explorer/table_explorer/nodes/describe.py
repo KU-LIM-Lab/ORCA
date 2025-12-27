@@ -13,11 +13,34 @@ def describe_table(db_id, table_name: str, llm: BaseChatModel) -> TableAnalysis:
         # Redis에서 schema 정보 불러오기
         redis_key = f"{db_id}:metadata:{table_name}"
         metadata_raw = redis_client.get(redis_key)
+        
+        if metadata_raw is None:
+            # Get available tables for helpful error message
+            try:
+                schema_key = f"{db_id}:schema"
+                schema_raw = redis_client.get(schema_key)
+                if schema_raw:
+                    schema_info = json.loads(schema_raw)
+                    available_tables = schema_info.get("tables", [])
+                    if available_tables:
+                        table_list = ", ".join(available_tables)
+                        raise ValueError(
+                            f"Table '{table_name}' not found in database '{db_id}'.\n"
+                            f"Available tables: {table_list}"
+                        )
+            except Exception:
+                pass
+            
+            raise ValueError(
+                f"Table '{table_name}' not found in database '{db_id}'. "
+                f"Please check the table name and try again."
+            )
+        
         metadata = json.loads(metadata_raw)
         schema = metadata.get("schema")
         
         if not schema:
-            raise ValueError(f"Error: No 'schema' field found for table: {table_name}")
+            raise ValueError(f"No schema information found for table: {table_name}")
 
         schema_str = generate_table_markdown({table_name: schema})
 
