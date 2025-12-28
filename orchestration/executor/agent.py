@@ -404,8 +404,11 @@ class ExecutorAgent(OrchestratorAgent):
             },
             "strategy": {
                 "type": "dict",
-                "description": "Causal analysis strategy configuration",
-                "example": {"task": "ATE", "identification_method": "backdoor", "estimator": "propensity_score_matching"}
+                "description": "Causal analysis strategy configuration with task, identification_method, estimator, and optional refuter. Tasks: estimating_causal_effect (ATE), mediation_analysis, causal_prediction, what_if, root_cause. Identification: backdoor, frontdoor, iv, mediation, id_algorithm. Estimators: backdoor.linear_regression, backdoor.propensity_score_matching, backdoor.generalized_linear_model, iv.instrumental_variable, etc.",
+                "example": [
+                    {"task": "estimating_causal_effect", "identification_method": "backdoor", "estimator": "backdoor.propensity_score_matching", "refuter": "placebo_treatment_refuter"},
+                    {"task": "estimating_causal_effect", "identification_method": "backdoor", "estimator": "backdoor.linear_regression", "refuter": None},
+                ]
             }
         }
 

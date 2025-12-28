@@ -109,9 +109,7 @@ class OrchestrationGraph:
         
         # Execute single step - returns state with advanced step counter
         updated_state = self.executor.step(state)
-        
-        print(f"🔍 DEBUG [_executor_node]: Received from executor.step(): current_execute_step={updated_state.get('current_execute_step', 'N/A')}")
-        
+                
         state = updated_state
         
         # Log step exit if event logger available
@@ -126,7 +124,6 @@ class OrchestrationGraph:
             )
         
         # Return state immediately so LangGraph persists it to checkpoint
-        print(f"🔍 DEBUG [_executor_node]: Returning state with current_execute_step={state.get('current_execute_step', 'N/A')}")
         return state
     
     def _hitl_gate_node(self, state: AgentState) -> AgentState:
@@ -150,10 +147,7 @@ class OrchestrationGraph:
         # Get the substep that just executed (step counter was already advanced)
         plan = state.get("execution_plan", [])
         current_idx = state.get("current_execute_step", 1) - 1  # Step already advanced
-        substep = plan[current_idx]["substep"] if 0 <= current_idx < len(plan) else "unknown"
-        
-        print(f"🔍 DEBUG [HITL Gate]: HITL requested for substep '{substep}', checkpoint has current_execute_step={state.get('current_execute_step', 'N/A')}")
-        
+        substep = plan[current_idx]["substep"] if 0 <= current_idx < len(plan) else "unknown"        
         
         # Log HITL prompt
         step_id = self._map_substep_to_step_id(substep)
@@ -173,7 +167,6 @@ class OrchestrationGraph:
         
         if user_input and isinstance(user_input, dict):
             decision = user_input.get("decision", "approve")
-            print(f"🔍 DEBUG [HITL Gate]: User decision: {decision}")
             
             # Log decision
             if self.event_logger and step_id:
@@ -283,6 +276,252 @@ class OrchestrationGraph:
             return "success"
         return "continue"
     
+    def _display_step_results(self, result_fields: Dict[str, str], current_state: Dict[str, Any]) -> None:
+        """Display current step results with formatted output for each field type.
+        
+        Args:
+            result_fields: Dictionary mapping field names to their labels
+            current_state: Current state dictionary containing the field values
+        """
+        print("\n📊 Current step results:")
+        for field, label in result_fields.items():
+            value = current_state.get(field)
+                                            
+            if value is not None: 
+                if field == "selected_tables" and isinstance(value, list):
+                    if value:
+                        print(f"   ✓ {', '.join(value)}")
+                elif field == "data_profile" and isinstance(value, dict):
+                    basic_checks = value.get("basic_checks", {})
+                    global_scores = value.get("global_scores", {})
+                    pairwise_scores = value.get("pairwise_scores", {})
+                    print(f"   - {label}:")
+                    
+                    # Show basic checks details
+                    if basic_checks:
+                        print(f"     • Basic checks ({len(basic_checks)} performed):")
+                        for key, val in list(basic_checks.items())[:5]:  # Show first 5
+                            print(f"       - {key}: {val}")
+                        if len(basic_checks) > 5:
+                            print(f"       ... and {len(basic_checks) - 5} more")
+                    
+                    # Show global scores summary
+                    if global_scores:
+                        print(f"     • Global scores ({len(global_scores)} scores computed):")
+                        for key, val in list(global_scores.items())[:3]:  # Show first 3
+                            if isinstance(val, (int, float)):
+                                print(f"       - {key}: {val:.4f}" if isinstance(val, float) else f"       - {key}: {val}")
+                            else:
+                                print(f"       - {key}: {val}")
+                        if len(global_scores) > 3:
+                            print(f"       ... and {len(global_scores) - 3} more")
+                    
+                    # Show pairwise scores count
+                    if pairwise_scores:
+                        print(f"     • Pairwise scores: {len(pairwise_scores)} pairs analyzed")
+                    
+                    if not basic_checks and not global_scores and not pairwise_scores:
+                        print(f"     (empty profile)")
+                # Special handling for columns - show count and sample
+                elif field == "columns" and isinstance(value, list):
+                    col_count = len(value)
+                    if col_count > 10:
+                        sample_cols = ", ".join(value[:10])
+                        print(f"   - {label}: {col_count} columns")
+                        print(f"     Sample (first 10): {sample_cols}, ...")
+                    else:
+                        print(f"   - {label}: {', '.join(value)}")
+                # Special handling for cd_execution_plan - show algorithm list
+                elif field == "cd_execution_plan" and isinstance(value, list):
+                    print(f"   - {label}: {len(value)} algorithm(s)")
+                    for i, alg_config in enumerate(value[:10], 1):  # Show first 10
+                        alg_name = alg_config.get("alg", "Unknown")
+                        config_str = ", ".join([f"{k}={v}" for k, v in alg_config.items() if k != "alg"])
+                        if config_str:
+                            print(f"     {i}. {alg_name} ({config_str})")
+                        else:
+                            print(f"     {i}. {alg_name}")
+                    if len(value) > 10:
+                        print(f"     ... and {len(value) - 10} more algorithm(s)")
+                # Special handling for executed_algorithms - show algorithm list
+                elif field == "executed_algorithms" and isinstance(value, list):
+                    print(f"   - {label}: {len(value)} algorithm(s)")
+                    if value:
+                        print(f"     • {', '.join(value)}")
+                # Special handling for algorithm_graph_visualization_paths - show visualization paths
+                elif field == "algorithm_graph_visualization_paths" and isinstance(value, dict):
+                    print(f"   - {label}:")
+                    print(f"     📊 Graph visualizations saved for {len(value)} algorithm(s):")
+                    for alg_name, paths in value.items():
+                        if isinstance(paths, dict) and "error" not in paths:
+                            png_path = paths.get("png", "N/A")
+                            print(f"       • {alg_name}:")
+                            if png_path != "N/A":
+                                print(f"         PNG: {png_path}")
+                        elif isinstance(paths, dict) and "error" in paths:
+                            print(f"       • {alg_name}: (visualization failed - {paths.get('error', 'Unknown error')})")
+                        else:
+                            print(f"       • {alg_name}: (no visualization available)")
+                    print(f"     💡 You can view these graph visualizations to see the causal structures discovered by each algorithm.")
+                # Special handling for ranked_graphs - show detailed scores
+                elif field == "ranked_graphs" and isinstance(value, list):
+                    print(f"   - {label}: {len(value)} graph(s)")
+                    for i, graph_item in enumerate(value, 1):
+                        alg_name = graph_item.get("algorithm", "Unknown")
+                        mc = graph_item.get("markov_consistency")
+                        ss = graph_item.get("sampling_stability")
+                        sts = graph_item.get("structural_stability")
+                        comp_score = graph_item.get("composite_score")
+                        
+                        score_parts = []
+                        if mc is not None:
+                            score_parts.append(f"markov_consistency={mc:.3f}")
+                        if ss is not None:
+                            score_parts.append(f"sampling_stability={ss:.3f}")
+                        if sts is not None:
+                            score_parts.append(f"structural_stability={sts:.3f}")
+                        if comp_score is not None:
+                            score_parts.append(f"composite_score={comp_score:.3f}")
+                        
+                        score_str = ", ".join(score_parts) if score_parts else "N/A"
+                        print(f"     {i}. {alg_name}: {score_str}")
+                # Special handling for scored_graphs - show algorithm names and scores only
+                elif field == "scored_graphs" and isinstance(value, list):
+                    print(f"   - {label}: {len(value)} graph(s)")
+                    for i, scored_graph in enumerate(value, 1):
+                        alg_name = scored_graph.get("algorithm", "Unknown")
+                        
+                        score_parts = []
+                        mc = scored_graph.get("markov_consistency")
+                        ss = scored_graph.get("sampling_stability")
+                        sts = scored_graph.get("structural_stability")
+                        
+                        if mc is not None:
+                            score_parts.append(f"markov_consistency={mc:.3f}")
+                        if ss is not None:
+                            score_parts.append(f"sampling_stability={ss:.3f}")
+                        if sts is not None:
+                            score_parts.append(f"structural_stability={sts:.3f}")
+                        
+                        score_str = ", ".join(score_parts) if score_parts else "N/A"
+                        print(f"     {i}. {alg_name}: {score_str}")
+                # Special handling for top_candidates - show algorithm names and scores only
+                elif field == "top_candidates" and isinstance(value, list):
+                    print(f"   - {label}: {len(value)} graph(s)")
+                    for i, candidate in enumerate(value, 1):
+                        alg_name = candidate.get("algorithm", "Unknown")
+                        comp_score = candidate.get("composite_score")
+                        
+                        score_parts = []
+                        mc = candidate.get("markov_consistency")
+                        ss = candidate.get("sampling_stability")
+                        sts = candidate.get("structural_stability")
+                        
+                        if mc is not None:
+                            score_parts.append(f"markov_consistency={mc:.3f}")
+                        if ss is not None:
+                            score_parts.append(f"sampling_stability={ss:.3f}")
+                        if sts is not None:
+                            score_parts.append(f"structural_stability={sts:.3f}")
+                        if comp_score is not None:
+                            score_parts.append(f"composite_score={comp_score:.3f}")
+                        
+                        score_str = ", ".join(score_parts) if score_parts else "N/A"
+                        print(f"     {i}. {alg_name}: {score_str}")
+                # Special handling for graph_visualization_path - show visualization paths
+                elif field == "graph_visualization_path" and isinstance(value, dict):
+                    print(f"   - {label}:")
+                    png_path = value.get("png", "N/A")
+                    svg_path = value.get("svg", "N/A")
+                    if png_path != "N/A":
+                        print(f"     📊 PNG: {png_path}")
+                    if svg_path != "N/A":
+                        print(f"     📊 SVG: {svg_path}")
+                    if png_path == "N/A" and svg_path == "N/A":
+                        print(f"     (No visualization available)")
+                # Special handling for selected_graph - show nodes and edges
+                elif field == "selected_graph" and isinstance(value, dict):
+                    print(f"   - {label}:")
+                    try:
+                        from agents.causal_discovery.tools import get_variables, get_edges
+                        nodes = get_variables(value)
+                        edges = get_edges(value)
+                        
+                        print(f"     📊 Nodes ({len(nodes)}): {', '.join(nodes)}")
+                        print(f"     📊 Edges ({len(edges)}):")
+                        for i, edge in enumerate(edges[:20], 1):  # Show first 20 edges
+                            from_node = edge.get("from", "?")
+                            to_node = edge.get("to", "?")
+                            edge_type = edge.get("type", "->")
+                            print(f"       {i}. {from_node} --{edge_type}--> {to_node}")
+                        if len(edges) > 20:
+                            print(f"       ... and {len(edges) - 20} more edge(s)")
+                    except Exception as e:
+                        print(f"     (Could not parse graph structure: {e})")
+                        print(f"     Graph type: {value.get('metadata', {}).get('graph_type', 'Unknown')}")
+                # Special handling for parsed_query - show variable roles
+                elif field == "parsed_query" and isinstance(value, dict):
+                    print(f"   - {label}:")
+                    treatment = value.get("treatment")
+                    outcome = value.get("outcome")
+                    confounders = value.get("confounders", [])
+                    mediators = value.get("mediators", [])
+                    instrumental_variables = value.get("instrumental_variables", [])
+                    colliders = value.get("colliders", [])
+                    
+                    if treatment:
+                        print(f"     - Treatment: {treatment}")
+                    if outcome:
+                        print(f"     - Outcome: {outcome}")
+                    if confounders:
+                        print(f"     - Confounders ({len(confounders)}): {', '.join(confounders)}")
+                    else:
+                        print(f"     - Confounders: None")
+                    if mediators:
+                        print(f"     - Mediators ({len(mediators)}): {', '.join(mediators)}")
+                    else:
+                        print(f"     - Mediators: None")
+                    if instrumental_variables:
+                        print(f"     - Instrumental Variables ({len(instrumental_variables)}): {', '.join(instrumental_variables)}")
+                    else:
+                        print(f"     - Instrumental Variables: None")
+                    if colliders:
+                        print(f"     ⚪ Colliders ({len(colliders)}): {', '.join(colliders)}")
+                    else:
+                        print(f"     ⚪ Colliders: None")
+                # Special handling for strategy - show strategy components
+                elif field == "strategy":
+                    print(f"   - {label}:")
+                    # Strategy can be a BaseModel (Pydantic) or dict
+                    if hasattr(value, "task"):
+                        # Pydantic BaseModel
+                        task = value.task
+                        identification_method = value.identification_method
+                        estimator = value.estimator
+                        refuter = value.refuter if hasattr(value, "refuter") else None
+                    elif isinstance(value, dict):
+                        # Dict
+                        task = value.get("task")
+                        identification_method = value.get("identification_method")
+                        estimator = value.get("estimator")
+                        refuter = value.get("refuter")
+                    else:
+                        continue
+                    
+                    print(f"     - Task: {task}")
+                    print(f"     - Identification Method: {identification_method}")
+                    print(f"     - Estimator: {estimator}")
+                    if refuter:
+                        print(f"     - Refuter: {refuter}")
+                    else:
+                        print(f"     - Refuter: None")
+                elif isinstance(value, (list, dict)) and len(str(value)) > 300:
+                    print(f"   - {label}: {str(value)[:300]}...")
+                else:
+                    print(f"   - {label}: {value}")
+            else:
+                print(f"   - {label}: (not set)")
+
     def _route_after_hitl(self, state: AgentState) -> str:
         """Route after HITL gate node.
         
@@ -513,188 +752,7 @@ class OrchestrationGraph:
                             }
                         
                         if result_fields:
-                            print("\n📊 Current step results:")
-                            for field, label in result_fields.items():
-                                value = current_state.get(field)
-                                                                
-                                if value is not None: 
-                                    if field == "selected_tables" and isinstance(value, list):
-                                        if value:
-                                            print(f"   ✓ {', '.join(value)}")
-                                    elif field == "data_profile" and isinstance(value, dict):
-                                        basic_checks = value.get("basic_checks", {})
-                                        global_scores = value.get("global_scores", {})
-                                        pairwise_scores = value.get("pairwise_scores", {})
-                                        print(f"   - {label}:")
-                                        
-                                        # Show basic checks details
-                                        if basic_checks:
-                                            print(f"     • Basic checks ({len(basic_checks)} performed):")
-                                            for key, val in list(basic_checks.items())[:5]:  # Show first 5
-                                                print(f"       - {key}: {val}")
-                                            if len(basic_checks) > 5:
-                                                print(f"       ... and {len(basic_checks) - 5} more")
-                                        
-                                        # Show global scores summary
-                                        if global_scores:
-                                            print(f"     • Global scores ({len(global_scores)} scores computed):")
-                                            for key, val in list(global_scores.items())[:3]:  # Show first 3
-                                                if isinstance(val, (int, float)):
-                                                    print(f"       - {key}: {val:.4f}" if isinstance(val, float) else f"       - {key}: {val}")
-                                                else:
-                                                    print(f"       - {key}: {val}")
-                                            if len(global_scores) > 3:
-                                                print(f"       ... and {len(global_scores) - 3} more")
-                                        
-                                        # Show pairwise scores count
-                                        if pairwise_scores:
-                                            print(f"     • Pairwise scores: {len(pairwise_scores)} pairs analyzed")
-                                        
-                                        if not basic_checks and not global_scores and not pairwise_scores:
-                                            print(f"     (empty profile)")
-                                    # Special handling for columns - show count and sample
-                                    elif field == "columns" and isinstance(value, list):
-                                        col_count = len(value)
-                                        if col_count > 10:
-                                            sample_cols = ", ".join(value[:10])
-                                            print(f"   - {label}: {col_count} columns")
-                                            print(f"     Sample (first 10): {sample_cols}, ...")
-                                        else:
-                                            print(f"   - {label}: {', '.join(value)}")
-                                    # Special handling for cd_execution_plan - show algorithm list
-                                    elif field == "cd_execution_plan" and isinstance(value, list):
-                                        print(f"   - {label}: {len(value)} algorithm(s)")
-                                        for i, alg_config in enumerate(value[:10], 1):  # Show first 10
-                                            alg_name = alg_config.get("alg", "Unknown")
-                                            config_str = ", ".join([f"{k}={v}" for k, v in alg_config.items() if k != "alg"])
-                                            if config_str:
-                                                print(f"     {i}. {alg_name} ({config_str})")
-                                            else:
-                                                print(f"     {i}. {alg_name}")
-                                        if len(value) > 10:
-                                            print(f"     ... and {len(value) - 10} more algorithm(s)")
-                                    # Special handling for executed_algorithms - show algorithm list
-                                    elif field == "executed_algorithms" and isinstance(value, list):
-                                        print(f"   - {label}: {len(value)} algorithm(s)")
-                                        if value:
-                                            print(f"     • {', '.join(value)}")
-                                    # Special handling for algorithm_graph_visualization_paths - show visualization paths
-                                    elif field == "algorithm_graph_visualization_paths" and isinstance(value, dict):
-                                        print(f"   - {label}:")
-                                        print(f"     📊 Graph visualizations saved for {len(value)} algorithm(s):")
-                                        for alg_name, paths in value.items():
-                                            if isinstance(paths, dict) and "error" not in paths:
-                                                png_path = paths.get("png", "N/A")
-                                                svg_path = paths.get("svg", "N/A")
-                                                print(f"       • {alg_name}:")
-                                                if png_path != "N/A":
-                                                    print(f"         PNG: {png_path}")
-                                                if svg_path != "N/A":
-                                                    print(f"         SVG: {svg_path}")
-                                            elif isinstance(paths, dict) and "error" in paths:
-                                                print(f"       • {alg_name}: (visualization failed - {paths.get('error', 'Unknown error')})")
-                                            else:
-                                                print(f"       • {alg_name}: (no visualization available)")
-                                        print(f"     💡 You can view these graph visualizations to see the causal structures discovered by each algorithm.")
-                                    # Special handling for ranked_graphs - show detailed scores
-                                    elif field == "ranked_graphs" and isinstance(value, list):
-                                        print(f"   - {label}: {len(value)} graph(s)")
-                                        for i, graph_item in enumerate(value, 1):
-                                            alg_name = graph_item.get("algorithm", "Unknown")
-                                            mc = graph_item.get("markov_consistency")
-                                            ss = graph_item.get("sampling_stability")
-                                            sts = graph_item.get("structural_stability")
-                                            comp_score = graph_item.get("composite_score")
-                                            
-                                            score_parts = []
-                                            if mc is not None:
-                                                score_parts.append(f"markov_consistency={mc:.3f}")
-                                            if ss is not None:
-                                                score_parts.append(f"sampling_stability={ss:.3f}")
-                                            if sts is not None:
-                                                score_parts.append(f"structural_stability={sts:.3f}")
-                                            if comp_score is not None:
-                                                score_parts.append(f"composite_score={comp_score:.3f}")
-                                            
-                                            score_str = ", ".join(score_parts) if score_parts else "N/A"
-                                            print(f"     {i}. {alg_name}: {score_str}")
-                                    # Special handling for scored_graphs - show algorithm names and scores only
-                                    elif field == "scored_graphs" and isinstance(value, list):
-                                        print(f"   - {label}: {len(value)} graph(s)")
-                                        for i, scored_graph in enumerate(value, 1):
-                                            alg_name = scored_graph.get("algorithm", "Unknown")
-                                            
-                                            score_parts = []
-                                            mc = scored_graph.get("markov_consistency")
-                                            ss = scored_graph.get("sampling_stability")
-                                            sts = scored_graph.get("structural_stability")
-                                            
-                                            if mc is not None:
-                                                score_parts.append(f"markov_consistency={mc:.3f}")
-                                            if ss is not None:
-                                                score_parts.append(f"sampling_stability={ss:.3f}")
-                                            if sts is not None:
-                                                score_parts.append(f"structural_stability={sts:.3f}")
-                                            
-                                            score_str = ", ".join(score_parts) if score_parts else "N/A"
-                                            print(f"     {i}. {alg_name}: {score_str}")
-                                    # Special handling for top_candidates - show algorithm names and scores only
-                                    elif field == "top_candidates" and isinstance(value, list):
-                                        print(f"   - {label}: {len(value)} graph(s)")
-                                        for i, candidate in enumerate(value, 1):
-                                            alg_name = candidate.get("algorithm", "Unknown")
-                                            comp_score = candidate.get("composite_score")
-                                            
-                                            score_parts = []
-                                            mc = candidate.get("markov_consistency")
-                                            ss = candidate.get("sampling_stability")
-                                            sts = candidate.get("structural_stability")
-                                            
-                                            if mc is not None:
-                                                score_parts.append(f"markov_consistency={mc:.3f}")
-                                            if ss is not None:
-                                                score_parts.append(f"sampling_stability={ss:.3f}")
-                                            if sts is not None:
-                                                score_parts.append(f"structural_stability={sts:.3f}")
-                                            if comp_score is not None:
-                                                score_parts.append(f"composite_score={comp_score:.3f}")
-                                            
-                                            score_str = ", ".join(score_parts) if score_parts else "N/A"
-                                            print(f"     {i}. {alg_name}: {score_str}")
-                                    # Special handling for graph_visualization_path - show visualization paths
-                                    elif field == "graph_visualization_path" and isinstance(value, dict):
-                                        print(f"   - {label}:")
-                                        png_path = value.get("png", "N/A")
-                                        svg_path = value.get("svg", "N/A")
-                                        if png_path != "N/A":
-                                            print(f"     📊 PNG: {png_path}")
-                                        if svg_path != "N/A":
-                                            print(f"     📊 SVG: {svg_path}")
-                                        if png_path == "N/A" and svg_path == "N/A":
-                                            print(f"     (No visualization available)")
-                                    # Special handling for selected_graph - show nodes and edges
-                                    elif field == "selected_graph" and isinstance(value, dict):
-                                        print(f"   - {label}:")
-                                        try:
-                                            from agents.causal_discovery.tools import get_variables, get_edges
-                                            nodes = get_variables(value)
-                                            edges = get_edges(value)
-                                            
-                                            print(f"     📊 Nodes ({len(nodes)}): {', '.join(nodes)}")
-                                            print(f"     📊 Edges ({len(edges)}):")
-                                            for i, edge in enumerate(edges[:20], 1):  # Show first 20 edges
-                                                from_node = edge.get("from", "?")
-                                                to_node = edge.get("to", "?")
-                                                edge_type = edge.get("type", "->")
-                                                print(f"       {i}. {from_node} --{edge_type}--> {to_node}")
-                                            if len(edges) > 20:
-                                                print(f"       ... and {len(edges) - 20} more edge(s)")
-                                        except Exception as e:
-                                            print(f"     (Could not parse graph structure: {e})")
-                                            print(f"     Graph type: {value.get('metadata', {}).get('graph_type', 'Unknown')}")
-
-                                else:
-                                    print(f"   - {label}: (not set)")
+                            self._display_step_results(result_fields, current_state)
                         
                         # Show editable fields information before decision
                         from orchestration.executor.agent import ExecutorAgent
@@ -735,7 +793,13 @@ class OrchestrationGraph:
                                 
                                 print(f"   - {field_name} ({field_info['type']}): {field_info['description']}")
                                 if 'example' in field_info:
-                                    print(f"     Example: {field_info['example']}")
+                                    example = field_info['example']
+                                    if isinstance(example, list):
+                                        print(f"     Examples:")
+                                        for i, ex in enumerate(example, 1):
+                                            print(f"       {i}. {ex}")
+                                    else:
+                                        print(f"     Example: {example}")
                         else:
                             print("\n📝 This step requires approval only (no editable fields)")
                             print("   Available decisions: approve, rerun, abort")
@@ -771,44 +835,82 @@ class OrchestrationGraph:
                         print("\n" + "="*60)
                         print("📝 Edit Instructions")
                         print("="*60)
-                        print("You can use one of these input formats:")
-                        print()
                         
-                        # Show specific example based on step
+                        # Show specific instructions based on step
                         if step_name == "data_preprocessing":
                             # Show available columns if they exist
                             available_cols = current_state.get("columns")
                             if available_cols:
-                                print("💡 Note: All columns will be used by default.")
-                                print("   You can filter specific columns using formats below.")
-                                print()
-                                print("Available columns:")
-                                print(f"  {', '.join(available_cols[:30])}")
+                                print("📋 Available columns:")
+                                print(f"   {', '.join(available_cols[:30])}")
                                 if len(available_cols) > 30:
-                                    print(f"  ... and {len(available_cols) - 30} more")
-                                print(f"  (Total: {len(available_cols)} columns)")
+                                    print(f"   ... and {len(available_cols) - 30} more")
+                                print(f"   (Total: {len(available_cols)} columns)")
                                 print()
-                            print("Input formats:")
-                            print("  1️⃣  Simple column list (recommended):")
-                            print("     age, gender, purchase_amount")
+                            print("💡 Input formats:")
+                            print("   1️⃣  Simple column list (recommended):")
+                            print("      age, gender, purchase_amount")
                             print()
-                            print("  2️⃣  Keep all settings:")
-                            print("     {} or just press Enter")
+                            print("   2️⃣  Full JSON to edit multiple settings:")
+                            print('      {"target_columns": ["age", "gender"], "clean_nulls_ratio": 0.9, "one_hot_threshold": 20}')
                             print()
-                            print("  3️⃣  Full JSON to edit specific settings:")
-                            print('     {"target_columns": ["age", "gender"], "clean_nulls_ratio": 0.9}')
-                            print()
-                            print("Or enter {} to keep all current settings (use all columns)")
                         elif step_name == "table_selection":
-                            print('  {"selected_tables": ["users", "orders", "products"]}')
+                            print("💡 Edit the selected tables:")
+                            print('   Example: {"selected_tables": ["users", "orders", "products"]}')
+                            print()
+                            
                         elif step_name == "table_retrieval":
-                            print('  {"sql_query": "SELECT * FROM users WHERE age > 18"}')
+                            print("💡 Edit the SQL query:")
+                            print('   Example: {"sql_query": "SELECT * FROM users WHERE age > 18"}')
+                            print()
+                            
+                        elif step_name == "select_configuration":
+                            print("💡 Edit the causal analysis strategy:")
+                            print('   Example: {"strategy": {"task": "estimating_causal_effect", "identification_method": "backdoor", "estimator": "backdoor.propensity_score_matching", "refuter": "placebo_treatment_refuter"}}')
+                            print()
+                            print("   Available options:")
+                            print("   - task: estimating_causal_effect, mediation_analysis, causal_prediction, what_if, root_cause")
+                            print("   - identification_method: backdoor, frontdoor, iv, mediation, id_algorithm")
+                            print("   - estimator: backdoor.linear_regression, backdoor.propensity_score_matching, backdoor.generalized_linear_model, iv.instrumental_variable, etc.")
+                            print("   - refuter: placebo_treatment_refuter, random_common_cause, data_subset_refuter, add_unobserved_common_cause (or null)")
+                            print()
+                            
+                        elif step_name == "ensemble_synthesis":
+                            print("💡 Edit the final causal graph:")
+                            print("   You can modify the graph structure by editing edges:")
+                            print('   Example: {"selected_graph": {"graph": {"variables": ["X", "Y", "Z"], "edges": [{"from": "X", "to": "Y", "type": "->"}, {"from": "Y", "to": "Z", "type": "->"}]}, "metadata": {"graph_type": "DAG"}}}')
+                            print()
+                            print("   Edge types: '->' (directed), '--' (undirected), 'o->' (PAG edge)")
+                            print()
+                            
+                        elif step_name == "parse_question":
+                            print("💡 Edit the parsed causal variables:")
+                            print('   Example: {"treatment_variable": "users_age", "outcome_variable": "purchase_amount", "confounders": ["users_gender"], "mediators": [], "instrumental_variables": []}')
+                            print()
+                            
+                        else:
+                            # Generic instruction for other steps
+                            print("💡 Enter edits as a JSON object:")
+                            print("   Format: {\"field_name\": value, ...}")
+                            print()
+                            if relevant_fields:
+                                print("   Editable fields:")
+                                for field_name in relevant_fields[:5]:  # Show first 5
+                                    if field_name in all_editable_fields:
+                                        field_info = all_editable_fields[field_name]
+                                        print(f"   - {field_name} ({field_info['type']})")
+                                if len(relevant_fields) > 5:
+                                    print(f"   ... and {len(relevant_fields) - 5} more")
+                            print()
                         
+                        print("💡 Tips:")
+                        print("   - Only include fields you want to change")
+                        print("   - JSON format: use double quotes for strings")
                         print("="*60)
                         
                         while True:
                             try:
-                                edits_input = input("\n💬 Enter edits (column list, JSON, or '{}' for no edits): ").strip()
+                                edits_input = input("\n💬 Enter edits (or '{}' for no edits): ").strip()
                                 
                                 if not edits_input:
                                     edits_input = "{}"
@@ -817,14 +919,24 @@ class OrchestrationGraph:
                                 try:
                                     edits = json.loads(edits_input)
                                     if isinstance(edits, dict):
+                                        # Validate that all keys are in relevant_fields
+                                        invalid_keys = [k for k in edits.keys() if k not in relevant_fields]
+                                        if invalid_keys:
+                                            print(f"⚠️  Warning: These fields are not editable for this step: {', '.join(invalid_keys)}")
+                                            print(f"   Editable fields: {', '.join(relevant_fields)}")
+                                            confirm = input("   Continue anyway? (y/n): ").strip().lower()
+                                            if confirm != 'y':
+                                                continue
+                                        
                                         user_data["edits"] = edits
                                         break
                                     else:
                                         print("❌ Edits must be a JSON object (dictionary)")
+                                        print("   Example: {\"field_name\": \"value\"}")
                                         continue
                                 except json.JSONDecodeError:                                    
-                                    # Check if it's a simple column list (comma-separated)
-                                    if "," in edits_input and "{" not in edits_input:
+                                    # Check if it's a simple column list (only for data_preprocessing)
+                                    if step_name == "data_preprocessing" and "," in edits_input and "{" not in edits_input:
                                         # Parse as comma-separated column names
                                         columns = [col.strip() for col in edits_input.split(",") if col.strip()]
                                         if columns:
@@ -833,15 +945,32 @@ class OrchestrationGraph:
                                             print(f"✓ Parsed as column list: {len(columns)} columns")
                                             break
                                     
-                                    # Otherwise, show JSON error
-                                    raise
+                                    # Otherwise, show JSON error with helpful message
+                                    print(f"❌ Invalid JSON format")
+                                    print(f"\n💡 Common issues:")
+                                    print(f"   - Use double quotes: {{\"key\": \"value\"}} not {{\'key\': \'value\'}}")
+                                    print(f"   - Check for missing commas or brackets")
+                                    print(f"   - For null values, use: null (not None or 'null')")
+                                    print(f"\n💡 Example format:")
+                                    if relevant_fields and len(relevant_fields) > 0:
+                                        example_field = relevant_fields[0]
+                                        if example_field in all_editable_fields:
+                                            example = all_editable_fields[example_field].get('example')
+                                            if example:
+                                                if isinstance(example, list) and len(example) > 0:
+                                                    print(f"   {json.dumps({example_field: example[0]}, indent=2)}")
+                                                elif isinstance(example, dict):
+                                                    print(f"   {json.dumps({example_field: example}, indent=2)}")
                                     
-                            except json.JSONDecodeError as e:
-                                print(f"❌ Invalid input format: {e}")
-                                print(f"\n💡 You can use these formats:")
-                                print(f"   1) Column list: col1, col2, col3")
-                                print(f"   2) Keep all: {{}} or press Enter")
-                                print(f"   3) Full JSON: {{\"target_columns\": [\"col1\", \"col2\"]}}")
+                                    continue
+                                    
+                            except KeyboardInterrupt:
+                                print("\n\n⚠️  Edit cancelled. Returning to decision menu...")
+                                break
+                            except Exception as e:
+                                print(f"❌ Error: {e}")
+                                print("   Please try again or enter {} to cancel")
+                                continue
                     
                     elif decision == "rerun":
                         # Get feedback
@@ -872,8 +1001,8 @@ class OrchestrationGraph:
                     node_state = step[step_name]
                     
                     if isinstance(node_state, dict):
-                        print(f"\n✅ Node '{step_name}' completed")
-                        print(f"📊 Current state:")
+                        # print(f"\n✅ Node '{step_name}' completed")
+                        # print(f"📊 Current state:")
                         completed_key = f'{step_name}_completed'
                         completed_value = node_state.get(completed_key)
                         if completed_value is None:
@@ -882,19 +1011,16 @@ class OrchestrationGraph:
                                 completed_value = current_state.get(completed_key, 'N/A')
                             except Exception:
                                 completed_value = 'N/A'
-                        print(f"   - {completed_key}: {completed_value}")
+                        # print(f"   - {completed_key}: {completed_value}")
                         final_state = node_state
             
             # Check if stream completed without interrupts
             if not found_interrupt:
                 completed = True
-                print(f"🔍 DEBUG [Graph]: Stream completed without interrupts")
                 break
 
             # Interrupt occurred - resume from checkpoint in next iteration
             # Setting current_input=None makes LangGraph resume from checkpoint
-            print(f"🔍 DEBUG [Graph]: Interrupt handled, resuming from checkpoint...")
-            print(f"🔍 DEBUG [Graph]: Checkpoint state should have current_execute_step advanced")
             current_input = None
             
         return final_state
