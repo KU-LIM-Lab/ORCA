@@ -10,6 +10,8 @@ class AgentState(TypedDict):
     desc_str: Optional[str]
     fk_str: Optional[str]
     extracted_schema: Optional[dict]
+    treatment: Optional[str]
+    outcome: Optional[str]
     table_columns: Optional[dict]
     table_column_types: Optional[dict]
     pruned: bool

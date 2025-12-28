@@ -7,10 +7,12 @@
 
 # [Instruction]:
 # Step 1: Causal Role Identification
-# - Analyze the `{query}` to determine what is being manipulated (Treatment) and what is being measured (Outcome).
+# - Analyze the query to determine what is being manipulated (Treatment) and what is being measured (Outcome).
 # - Map these to the most appropriate columns in the `{desc_str}`.
 
 # Step 2: Table & Column Scouting (for Confounders)
+# - IMPORTANT: For the table(s) containing the Treatment and Outcome variables, set the table decision to "keep_all".
+# - Also explicitly return the Treatment and Outcome mappings in the output JSON (see format below).
 # - Identify the table(s) containing Treatment and Outcome.
 # - Trace Foreign Keys: Look for "Parent Tables" (e.g., User, Store, Product) connected to the T/Y tables.
 # - Include Parent Tables: Select these tables as they likely contain confounders (e.g., user demographics, store region).
@@ -19,10 +21,14 @@
 #     - Mark tables as "keep_all" if most columns are useful features.
 #     - Mark irrelevant tables (logs, system configs) as "drop_all".
 
-# Requirements:
-# 1. If a table has less than or equal to 5 columns, mark it as "keep_all".
-# 2. If a table is completely irrelevant to the user question and evidence, mark it as "drop_all".
-# 3. Prioritize the columns in each relevant table based on their relevance.
+# [ABSOLUTE OUTPUT RULES — DO NOT VIOLATE]
+# 1) You MUST output a JSON object with EXACT keys: "selected_schema", "treatment", "outcome".
+# 2) "selected_schema" MUST be a mapping: {{ "<table_name>": "keep_all" | "drop_all" | ["col1","col2",...] }}.
+# 3) CRITICAL: The table that contains the Treatment column MUST be "keep_all".
+# 4) CRITICAL: The table that contains the Outcome column MUST be "keep_all".
+#    - Even if you think only a few columns are needed, you must still output "keep_all" for those tables.
+# 5) Do NOT replace "keep_all" with a list of columns for Treatment/Outcome tables.
+# 6) If you violate this format, the system will treat the answer as incorrect.
 
 # Here is a typical example:
 
@@ -79,10 +85,14 @@
 # 【Answer】
 # ```json
 # {{
-#   "loan": "keep_all",
-#   "account": ["frequency", "date"],
-#   "client": ["gender", "birth_date"],
-#   "district": ["A11", "A12", "A13", "A4"]
+#   "selected_schema": {{
+#     "loan": "keep_all",
+#     "account": ["frequency", "date"],
+#     "client": ["gender", "birth_date"],
+#     "district": ["A11", "A12", "A13", "A4"]
+#   }},
+#   "treatment": {{"table": "loan", "column": "duration"}},
+#   "outcome": {{"table": "loan", "column": "amount"}}
 # }}
 # ```
 # Question Solved.
@@ -117,7 +127,7 @@ Step 1: Causal Role Identification
 - Map these to the most appropriate columns in the `{desc_str}`.
 
 Step 2: Table & Column Scouting (for Confounders)
-- IMPORTANT: For the table(s) containing the Treatment and Outcome variables, set the table decision to "keep_all".
+- IMPORTANT: Treatment and Outcome variables, Must be selected.
 - Also explicitly return the Treatment and Outcome mappings in the output JSON (see format below).
 - Identify the table(s) containing Treatment and Outcome.
 - Trace Foreign Keys: Look for "Parent Tables" (e.g., User, Store, Product) connected to the T/Y tables.
@@ -129,11 +139,9 @@ Step 2: Table & Column Scouting (for Confounders)
 
 [ABSOLUTE OUTPUT RULES — DO NOT VIOLATE]
 1) You MUST output a JSON object with EXACT keys: "selected_schema", "treatment", "outcome".
-2) "selected_schema" MUST be a mapping: {{ "<table_name>": "keep_all" | "drop_all" | ["col1","col2",...] }}.
-3) CRITICAL: The table that contains the Treatment column MUST be "keep_all".
-4) CRITICAL: The table that contains the Outcome column MUST be "keep_all".
-   - Even if you think only a few columns are needed, you must still output "keep_all" for those tables.
-5) Do NOT replace "keep_all" with a list of columns for Treatment/Outcome tables.
+2) "selected_schema" MUST be a mapping: {{ "<table_name>": ["col1","col2",...] }}.
+3) CRITICAL: The table that contains the Treatment column MUST be included.
+4) CRITICAL: The table that contains the Outcome column MUST be included.
 6) If you violate this format, the system will treat the answer as incorrect.
 
 Here is a typical example:
@@ -192,7 +200,7 @@ How does the loan duration affect the approved loan amount?
 ```json
 {{
   "selected_schema": {{
-    "loan": "keep_all",
+    "loan": ["duration","amount", "payments", "status"],
     "account": ["frequency", "date"],
     "client": ["gender", "birth_date"],
     "district": ["A11", "A12", "A13", "A4"]

@@ -571,8 +571,6 @@ def run_experiments(
 
             if setting == "oracle_graph":
                 causal_graph = create_oracle_causal_graph(df, treatment="T", outcome="Y")
-            elif setting == "agent_graph":
-                causal_graph = create_oracle_causal_graph(df, treatment="T", outcome="Y")
             else:
                 raise ValueError(f"Unknown setting: {setting}")
 
@@ -848,7 +846,7 @@ def run_experiments(
         
         ##### Load Scenarios #####
         # Scenarios는 experiments/questions/reef/causal_analysis.json에 들어 있음 
-        scenarios_path = Path("experiments/questions/reef/causal_analysis_sql.json")
+        scenarios_path = Path("experiments/questions/reef/for_user_study.json")
         if not scenarios_path.exists():
             raise FileNotFoundError(f"Scenarios file not found: {scenarios_path}")
         
@@ -857,7 +855,7 @@ def run_experiments(
         print(f"Running experiments on REEF dataset: {len(scenarios)} scenarios, methods={methods}, setting={setting}")
 
         # full pipeline: question-only -> text2sql -> discovery -> inference
-        if setting == "full_pipeline":
+        if setting == "full_pipeline" or setting == "agent_graph":
             from orchestration.graph import create_orchestration_graph
             from monitoring.metrics.collector import MetricsCollector, set_metrics_collector
             from core.state import create_initial_state
@@ -981,7 +979,7 @@ def run_experiments(
 
                     out_dir = results_dir / "REEF" / setting
                     out_dir.mkdir(parents=True, exist_ok=True)
-                    out_path = out_dir / f"{method_name}.json"
+                    out_path = out_dir / f"{method_name}_user_study.json"
                     try:
                         if out_path.exists():
                             with open(out_path, "r") as f:
