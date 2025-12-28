@@ -107,6 +107,8 @@ class OrchestrationGraph:
         # executor.step() returns the complete updated state
         updated_state = self.executor.step(state)
         
+        print(f"🔍 DEBUG [_executor_node]: Received from executor.step(): current_execute_step={updated_state.get('current_execute_step', 'N/A')}")
+        
         state = updated_state
         
         # Log step exit if event logger available
@@ -140,7 +142,7 @@ class OrchestrationGraph:
             state.pop("__hitl_requested__", None)
             state.pop("__hitl_payload__", None)
             state.pop("__hitl_type__", None)
-            
+                        
             # Now we're in a LangGraph node, so interrupt() will work properly
             # This will be caught by the stream() loop as __interrupt__ event
             user_input = interrupt(payload)
@@ -171,6 +173,7 @@ class OrchestrationGraph:
                     )
         
         # state["executor_completed"] = True
+        print(f"🔍 DEBUG [_executor_node]: Returning state with current_execute_step={state.get('current_execute_step', 'N/A')}")
         return state
     
     
@@ -334,7 +337,12 @@ class OrchestrationGraph:
             for step in self.compiled_graph.stream(current_input, config=config):
                 step_name = list(step.keys())[0]
                 
+                # Debug: Log which node is being executed
+                if step_name not in ['__interrupt__']:
+                    print(f"🔍 Debug: Executing node: {step_name}")
+                
                 if step_name == '__interrupt__':
+                    print(f"🔍 Debug: Interrupted by: {step_name}")
                     state_data = step[step_name]
                     interrupt_obj = state_data[0] if isinstance(state_data, tuple) else state_data
                     payload = interrupt_obj.value if hasattr(interrupt_obj, 'value') else (interrupt_obj if isinstance(interrupt_obj, dict) else {})
@@ -342,6 +350,14 @@ class OrchestrationGraph:
                     # Ensure payload is a dict
                     if not isinstance(payload, dict):
                         payload = {}
+                    
+                    # ✅ DEBUG: Check checkpoint state after interrupt
+                    try:
+                        checkpoint_state = self.compiled_graph.get_state(config).values
+                        current_step_idx = checkpoint_state.get("current_execute_step", "N/A")
+                        print(f"🔍 DEBUG [Graph]: Checkpoint state has current_execute_step={current_step_idx}")
+                    except Exception as e:
+                        print(f"🔍 DEBUG [Graph]: Could not read checkpoint: {e}")
                     
                     interrupt_count += 1
                     step_name_from_payload = payload.get('step', 'unknown')
@@ -360,7 +376,11 @@ class OrchestrationGraph:
                     
                     # Show current step results and editable fields before decision
                     try:
+                        # The executor node has returned with advanced step counter
+                        # So the checkpoint now has the correct state with current results
+                        # This works because we moved step advancement BEFORE HITL check
                         current_state = self.compiled_graph.get_state(config).values
+                        
                         step_name = payload.get('step', '')
                         
                         result_fields = {}
@@ -611,8 +631,13 @@ class OrchestrationGraph:
                     elif decision == "rerun" and "feedback" in user_data:
                         print(f"   Feedback: {user_data['feedback']}")
                 
-
+                    # ✅ DEBUG: Show state update
+                    print(f"🔍 DEBUG [Graph]: Updating state with user decision: {decision}")
                     self.compiled_graph.update_state(config, user_data)
+                    
+                    # ✅ DEBUG: Verify checkpoint state after update
+                    updated_checkpoint = self.compiled_graph.get_state(config).values
+                    print(f"🔍 DEBUG [Graph]: After update, checkpoint has current_execute_step={updated_checkpoint.get('current_execute_step', 'N/A')}")
                     
                     found_interrupt = True
 
@@ -622,8 +647,8 @@ class OrchestrationGraph:
                     node_state = step[step_name]
                     
                     if isinstance(node_state, dict):
-                        # print(f"\n✅ Node '{step_name}' completed")
-                        # print(f"📊 Current state:")
+                        print(f"\n✅ Node '{step_name}' completed")
+                        print(f"📊 Current state:")
                         completed_key = f'{step_name}_completed'
                         completed_value = node_state.get(completed_key)
                         if completed_value is None:
@@ -632,16 +657,19 @@ class OrchestrationGraph:
                                 completed_value = current_state.get(completed_key, 'N/A')
                             except Exception:
                                 completed_value = 'N/A'
-                        # print(f"   - {completed_key}: {completed_value}")
+                        print(f"   - {completed_key}: {completed_value}")
                         final_state = node_state
             
             # Check if stream completed without interrupts
             if not found_interrupt:
                 completed = True
+                print(f"🔍 DEBUG [Graph]: Stream completed without interrupts")
                 break
 
             # Interrupt occurred - resume from checkpoint in next iteration
             # Setting current_input=None makes LangGraph resume from checkpoint
+            print(f"🔍 DEBUG [Graph]: Interrupt handled, resuming from checkpoint...")
+            print(f"🔍 DEBUG [Graph]: Checkpoint state should have current_execute_step advanced")
             current_input = None
             
         return final_state

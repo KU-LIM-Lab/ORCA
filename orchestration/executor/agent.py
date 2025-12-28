@@ -88,10 +88,17 @@ class ExecutorAgent(OrchestratorAgent):
 
         while True:
             idx = state.get("current_execute_step", 0)
+            # ✅ DEBUG: Track step progression
+            print(f"🔍 DEBUG [Executor]: Loop iteration - idx={idx}, total_steps={len(plan)}")
+            
             if idx >= len(plan):
                 state["executor_completed"] = True
                 break
             step = plan[idx]
+            
+            # ✅ DEBUG: Show current step being processed
+            print(f"🔍 DEBUG [Executor]: Processing step '{step['substep']}' (phase: {step.get('phase', 'N/A')})")
+            print(f"🔍 DEBUG [Executor]: current_state_executed={state.get('current_state_executed', False)}")
 
             # Skip step if in skip list
             skip_list = state.get("skip_steps", []) or []
@@ -116,6 +123,7 @@ class ExecutorAgent(OrchestratorAgent):
             
             # Execute substep (only if not already executed)
             if not state.get("current_state_executed"):
+                print(f"🔍 DEBUG [Executor]: Executing step '{step['substep']}'...")
                 result = self._execute_step(step, state, llm)
                 self.execution_log.append({
                     "phase": step["phase"],
@@ -141,17 +149,22 @@ class ExecutorAgent(OrchestratorAgent):
                 state.update(safe_data)
                 self.results[step["substep"]] = safe_data
                 state["current_state_executed"] = True
+                print(f"🔍 DEBUG [Executor]: Step '{step['substep']}' executed successfully")
+                
+                completed_substeps = state.get("completed_substeps", [])
+                if step["substep"] not in completed_substeps:
+                    state.setdefault("completed_substeps", []).append(step["substep"])
+                state["current_execute_step"] = idx + 1
+                state["current_state_executed"] = False  # Reset for next step
+                print(f"🔍 DEBUG [Executor]: Step counter advanced: {idx} -> {idx + 1}")
+                print(f"🔍 DEBUG [Executor]: Completed substeps: {state.get('completed_substeps', [])}")
                 
                 # Check if HITL was requested - if so, stop here and return current state
                 # The orchestration graph will handle the interrupt
+                # Step counter has already been advanced above, so resume will continue from next step
                 if state.get("__hitl_requested__"):
-                    # Advance to next step BEFORE returning so resume continues from next step
-                    completed_substeps = state.get("completed_substeps", [])
-                    if step["substep"] not in completed_substeps:
-                        state.setdefault("completed_substeps", []).append(step["substep"])
-                    state["current_execute_step"] = idx + 1
-                    state["current_state_executed"] = False
-                    
+                    print(f"🔍 DEBUG [Executor]: HITL requested for step '{step['substep']}'")
+                    print(f"🔍 DEBUG [Executor]: Returning state with current_execute_step={state.get('current_execute_step')}")
                     state["execution_log"] = self.execution_log
                     state["results"] = self.results
                     return AgentResult(
@@ -159,8 +172,13 @@ class ExecutorAgent(OrchestratorAgent):
                         data=state,
                         metadata={"executor": self.name, "hitl_requested": True}
                     )
+                
+                print(f"🔍 DEBUG [Executor]: No HITL requested, continuing to next step")
+                # Continue to next iteration (step already advanced above)
+                continue
 
-            # Advance to next step (only if HITL was not requested)
+            # If current_state_executed is True, skip execution and advance to next step
+            print(f"🔍 DEBUG [Executor]: Step '{step['substep']}' already executed, advancing...")
             completed_substeps = state.get("completed_substeps", [])
             if step["substep"] not in completed_substeps:
                 state.setdefault("completed_substeps", []).append(step["substep"])
@@ -459,11 +477,11 @@ class ExecutorAgent(OrchestratorAgent):
         else:
             result = self.execute_plan(state)
         
-        # execute_plan now returns complete state in result.data
-        # So we can just return it directly after handling errors
         if result.success:
-            # result.data already contains the full updated state
             updated_state = result.data or state
+            
+            # ✅ DEBUG: Log what we're returning
+            print(f"🔍 DEBUG [Executor.step]: Returning state with current_execute_step={updated_state.get('current_execute_step', 'N/A')}")
             
             # Preserve executor action for graph.py to detect HITL needs
             if result.metadata and result.metadata.get("action"):
