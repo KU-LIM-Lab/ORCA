@@ -57,7 +57,8 @@ class PerformanceSnapshot:
 class MetricsCollector:
     """Central metrics collection and management"""
     
-    def __init__(self, session_id: str, event_logger: Any = None, artifact_manager: Any = None):
+    def __init__(self, session_id: str, event_logger: Any = None, artifact_manager: Any = None, 
+                 max_metrics: int = 10000, max_snapshots: int = 3600):
         self.session_id = session_id
         self.metrics: List[MetricPoint] = []
         self.performance_snapshots: List[PerformanceSnapshot] = []
@@ -65,6 +66,10 @@ class MetricsCollector:
         self._start_time = time.time()
         self.event_logger = event_logger  # EventLogger for experiment tracking
         self.artifact_manager = artifact_manager  # ArtifactManager for experiment tracking
+        
+        # Memory limits to prevent unbounded growth
+        self.max_metrics = max_metrics  # Maximum number of metrics to keep
+        self.max_snapshots = max_snapshots  # Maximum number of snapshots to keep (e.g., 1 hour at 1s interval)
         
         # Performance tracking
         self._monitoring_thread = None
@@ -96,6 +101,11 @@ class MetricsCollector:
                 snapshot = self._capture_performance_snapshot()
                 with self._lock:
                     self.performance_snapshots.append(snapshot)
+                    # Limit snapshot list size to prevent memory growth
+                    if len(self.performance_snapshots) > self.max_snapshots:
+                        # Remove oldest snapshots (keep most recent)
+                        excess = len(self.performance_snapshots) - self.max_snapshots
+                        self.performance_snapshots = self.performance_snapshots[excess:]
             except Exception as e:
                 logger.error(f"Error in performance monitoring: {e}")
     
@@ -127,6 +137,11 @@ class MetricsCollector:
         
         with self._lock:
             self.metrics.append(metric)
+            # Limit metrics list size to prevent memory growth
+            if len(self.metrics) > self.max_metrics:
+                # Remove oldest metrics (keep most recent)
+                excess = len(self.metrics) - self.max_metrics
+                self.metrics = self.metrics[excess:]
         
         logger.debug(f"Recorded metric: {metric_type.value}={value} for {agent_name}")
     

@@ -6,8 +6,8 @@ This script is the entry point for user study experiments, supporting two condit
 2. Baseline: Alternative baseline system
 
 Usage example:
-    python user_study_entry.py --participant_id P001 --condition orca
-    python user_study_entry.py --participant_id P002 --condition baseline
+    python user_study_entry.py --participant_id P001 --condition orca --task-id task1
+    python user_study_entry.py --participant_id P002 --condition baseline --task-id task2
 """
 
 import logging
@@ -332,6 +332,22 @@ def run_orca_condition(
                 print(f"❌ Error: {e}")
                 # Don't break the loop, allow user to try again
     
+    # Cleanup: Stop metrics collection and clear session memory
+    try:
+        from monitoring.metrics.collector import get_metrics_collector
+        from core.memory import session_memory
+        
+        metrics_collector = get_metrics_collector()
+        if metrics_collector:
+            metrics_collector.stop_monitoring()
+            logger.info("Metrics collection stopped")
+        
+        # Clear session memory for this session
+        session_memory.clear_session(session_id)
+        logger.info(f"Session memory cleared for {session_id}")
+    except Exception as e:
+        logger.warning(f"Error during cleanup: {e}")
+    
     print(f"\n✅ Session completed for participant {participant_id}")
     logger.info(f"ORCA condition completed for participant {participant_id}")
     # Explicitly exit to ensure clean termination
@@ -377,6 +393,12 @@ def run_baseline_condition(
         )
         print(f"\n✅ Session completed for participant {participant_id}")
         logger.info(f"Baseline condition completed for participant {participant_id}")
+        # Explicitly exit to ensure clean termination
+        sys.exit(0)
+    except KeyboardInterrupt:
+        print("\n\n⚠️  Session interrupted by user (Ctrl+C)")
+        logger.info(f"Session interrupted for participant {participant_id}")
+        sys.exit(0)
     except Exception as e:
         logger.exception(f"Baseline condition failed for participant {participant_id}")
         print(f"❌ Error: {e}")

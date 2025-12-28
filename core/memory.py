@@ -122,19 +122,35 @@ class AgentMemory:
 class SessionMemory:
     """Session-based memory management"""
     
-    def __init__(self):
+    def __init__(self, max_sessions: int = 100):
         self.sessions: Dict[str, AgentMemory] = {}
         self.default_max_size = 1000
         self.default_ttl = 3600  # 1 hour
+        self.max_sessions = max_sessions  # Maximum number of sessions to keep
     
     def get_session(self, session_id: str) -> AgentMemory:
         """Get or create session memory"""
         if session_id not in self.sessions:
+            # Clean up old sessions if we're at capacity
+            if len(self.sessions) >= self.max_sessions:
+                self._cleanup_old_sessions()
             self.sessions[session_id] = AgentMemory(
                 max_size=self.default_max_size,
                 default_ttl=self.default_ttl
             )
         return self.sessions[session_id]
+    
+    def _cleanup_old_sessions(self) -> None:
+        """Remove oldest or least recently used sessions"""
+        if not self.sessions:
+            return
+        
+        # Remove sessions that are expired or least recently accessed
+        # For simplicity, remove oldest sessions (FIFO)
+        sessions_to_remove = len(self.sessions) - self.max_sessions + 1
+        session_ids = list(self.sessions.keys())
+        for i in range(min(sessions_to_remove, len(session_ids))):
+            del self.sessions[session_ids[i]]
     
     def get(self, session_id: str, key: str) -> Optional[Any]:
         """Get value from session memory"""

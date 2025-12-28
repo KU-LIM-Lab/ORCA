@@ -37,20 +37,19 @@ class CodeRunner:
     # Forbidden builtins and functions
     FORBIDDEN_BUILTINS = {
         "__import__", "open", "exec", "eval", "compile", "input", "raw_input",
-        "file", "reload", "vars", "globals", "locals", "dir", "hasattr",
-        "getattr", "setattr", "delattr", "callable", "isinstance", "issubclass",
-        "type", "super", "property", "staticmethod", "classmethod", "abs",
-        "all", "any", "bin", "bool", "bytearray", "bytes", "chr", "ord",
-        "complex", "divmod", "enumerate", "filter", "float", "format",
-        "frozenset", "hex", "int", "iter", "len", "list", "map", "max",
-        "min", "next", "oct", "pow", "print", "range", "repr", "reversed",
-        "round", "set", "slice", "sorted", "str", "sum", "tuple", "zip"
+        "globals", "locals", "vars", "dir",
+        "getattr", "setattr", "delattr",
     }
+    
     
     # Allowed modules (whitelist approach)
     ALLOWED_MODULES = {
         # Data manipulation
         "pandas", "numpy", "scipy", "sklearn", "statsmodels",
+        # Causal discovery
+        "lingam", "pgmpy", 
+        # Causal inference
+         "dowhy", "causallearn",
         # Visualization
         "matplotlib", "seaborn", "plotly", "bokeh",
         # Statistics
@@ -129,11 +128,31 @@ class CodeRunner:
         """Check import security"""
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name not in self.ALLOWED_MODULES:
-                    raise SecurityViolationError(f"Module not allowed: {alias.name}")
+                module_name = alias.name
+                # Check if module or its parent is allowed
+                if not self._is_module_allowed(module_name):
+                    raise SecurityViolationError(f"Module not allowed: {module_name}")
         elif isinstance(node, ast.ImportFrom):
-            if node.module and node.module not in self.ALLOWED_MODULES:
-                raise SecurityViolationError(f"Module not allowed: {node.module}")
+            if node.module:
+                module_name = node.module
+                # Check if module or its parent is allowed
+                if not self._is_module_allowed(module_name):
+                    raise SecurityViolationError(f"Module not allowed: {module_name}")
+    
+    def _is_module_allowed(self, module_name: str) -> bool:
+        """Check if a module (or its parent) is in the allowed list"""
+        # Exact match
+        if module_name in self.ALLOWED_MODULES:
+            return True
+        
+        # Check if parent module is allowed (e.g., "causal_learn.algorithms" -> "causal_learn")
+        parts = module_name.split('.')
+        for i in range(1, len(parts)):
+            parent_module = '.'.join(parts[:i])
+            if parent_module in self.ALLOWED_MODULES:
+                return True
+        
+        return False
     
     @contextmanager
     def _resource_limits(self):

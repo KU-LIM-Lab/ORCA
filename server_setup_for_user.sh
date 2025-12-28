@@ -148,9 +148,36 @@ print('🎉 모든 연결 테스트 통과!')
 "
 
 if [ $? -eq 0 ]; then
-    echo "✅ 서버 초기 설정 완료"
+    echo "✅ 연결 테스트 완료"
 else
-    echo "❌ 서버 초기 설정 실패"
+    echo "❌ 연결 테스트 실패"
+    exit 1
+fi
+
+# 6단계: 메타데이터 생성
+echo "📋 6단계: 메타데이터 생성"
+echo "테이블 관계 및 메타데이터를 생성합니다..."
+
+python3 -c "
+import sys
+sys.path.append('.')
+from utils.data_prep.runner import run
+
+print('🔍 메타데이터 생성 중...')
+try:
+    run('reef_db')
+    print('✅ 메타데이터 생성 완료')
+except Exception as e:
+    print(f'❌ 메타데이터 생성 실패: {e}')
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
+"
+
+if [ $? -eq 0 ]; then
+    echo "✅ 메타데이터 생성 완료"
+else
+    echo "❌ 메타데이터 생성 실패"
     exit 1
 fi
 

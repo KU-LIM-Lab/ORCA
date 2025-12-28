@@ -29,10 +29,12 @@ _tool_context = {
 }
 
 
-def set_tool_context(event_logger=None, artifact_manager=None):
+def set_tool_context(event_logger=None, artifact_manager=None, current_step=None):
     """Set global tool context for event logging and artifact management."""
     _tool_context["event_logger"] = event_logger
     _tool_context["artifact_manager"] = artifact_manager
+    if current_step is not None:
+        _tool_context["current_step"] = current_step
 
 
 def get_schema(db_id: str) -> Dict[str, Any]:
@@ -60,44 +62,65 @@ def get_schema(db_id: str) -> Dict[str, Any]:
         )
     
     try:
-        # Try to get schema from Redis metadata
-        metadata_key = f"{db_id}:metadata"
-        metadata_raw = redis_client.get(metadata_key)
-        
-        if metadata_raw:
-            metadata = json.loads(metadata_raw)
-            schema_info = metadata.get("schema_info", {})
-            table_relations = metadata.get("table_relations", {})
+        table_names_raw = redis_client.smembers(f"{db_id}:metadata:table_names")
+        if table_names_raw:
+            table_names = [t.decode('utf-8') if isinstance(t, bytes) else t for t in table_names_raw]
             
-            result = {
-                "success": True,
-                "tables": schema_info.get("tables", {}),
-                "relationships": table_relations.get("edges", {}),
-                "table_count": len(schema_info.get("tables", {})),
-                "db_id": db_id
-            }
-        else:
-            # Fallback: try to get table_relations directly
+            tables = {}
+            for table_name in table_names:
+                meta_key = f"{db_id}:metadata:{table_name}"
+                meta_raw = redis_client.get(meta_key)
+                if meta_raw:
+                    try:
+                        meta = json.loads(meta_raw.decode('utf-8') if isinstance(meta_raw, bytes) else meta_raw)
+                        if "schema" in meta and "columns" in meta["schema"]:
+                            tables[table_name] = {
+                                "columns": meta["schema"]["columns"],
+                                "foreign_keys": meta["schema"].get("foreign_keys", [])
+                            }
+                    except (json.JSONDecodeError, KeyError) as e:
+                        logger.warning(f"Failed to parse metadata for {table_name}: {e}")
+                        continue
+            
+            # Get table relations (edges) from {db_id}:table_relations
             relations_key = f"{db_id}:table_relations"
             relations_raw = redis_client.get(relations_key)
+            relationships = {}
             
             if relations_raw:
-                relations_info = json.loads(relations_raw)
-                source_schema = relations_info.get("source_schema", {})
-                
+                try:
+                    relations_info = json.loads(relations_raw.decode('utf-8') if isinstance(relations_raw, bytes) else relations_raw)
+                    # Handle both dict and list formats
+                    if isinstance(relations_info, dict):
+                        relationships = relations_info.get("edges", {})
+                    elif isinstance(relations_info, list):
+                        # If it's a list, convert to empty dict (unexpected format)
+                        logger.warning(f"table_relations is a list, expected dict. Using empty relationships.")
+                        relationships = {}
+                except (json.JSONDecodeError, AttributeError) as e:
+                    logger.warning(f"Failed to parse table_relations: {e}")
+                    relationships = {}
+            
+            if tables:
                 result = {
                     "success": True,
-                    "tables": source_schema,
-                    "relationships": relations_info.get("edges", {}),
-                    "table_count": len(source_schema),
+                    "tables": tables,
+                    "relationships": relationships,
+                    "table_count": len(tables),
                     "db_id": db_id
                 }
             else:
                 result = {
                     "success": False,
-                    "error": f"No metadata found for database '{db_id}'. Run metadata generation first.",
+                    "error": f"No table metadata found for database '{db_id}'. Run metadata generation first.",
                     "db_id": db_id
                 }
+        else:
+            result = {
+                "success": False,
+                "error": f"No metadata found for database '{db_id}'. Run metadata generation first.",
+                "db_id": db_id
+            }
         
         # Log tool call end
         duration = time.time() - start_time

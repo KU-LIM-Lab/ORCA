@@ -809,3 +809,19 @@ if __name__ == "__main__":
                     logger.exception("Execution failed")
                     print(f"❌ Error: {e}")
                     # Don't break the loop, allow user to try again
+        
+        # Cleanup after interactive loop exits
+        try:
+            from monitoring.metrics.collector import get_metrics_collector
+            from core.memory import session_memory
+            
+            metrics_collector = get_metrics_collector()
+            if metrics_collector:
+                metrics_collector.stop_monitoring()
+                logger.info("Metrics collection stopped")
+            
+            # Clear session memory for this session
+            session_memory.clear_session(session_id)
+            logger.info(f"Session memory cleared for {session_id}")
+        except Exception as e:
+            logger.warning(f"Error during cleanup: {e}")
