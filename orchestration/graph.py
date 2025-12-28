@@ -42,37 +42,39 @@ class OrchestrationGraph:
 
     
     def _build_graph(self) -> StateGraph:
-        """Build the orchestration graph with HITL support"""
+        """Build the orchestration graph with HITL support via separate gate node"""
         graph = StateGraph(AgentState)
         
         # Add nodes
         graph.add_node("planner", self._planner_node)
         graph.add_node("executor", self._executor_node)
+        graph.add_node("hitl_gate", self._hitl_gate_node)
         
         # Set entry point
         graph.set_entry_point("planner")
         
-        # Add edges
+        # Planner edges
         graph.add_conditional_edges(
-            "executor",
-            self._route_after_execution,
+            "planner",
+            lambda x: x["plan_created"],
             {
-                # terminate graph on success or error
-                "success": END,
-                "error": END,
-                "continue": "executor"
+                False: "planner",   # Loop back if plan not created
+                True: "executor"    # Start execution when plan ready
             }
         )
-
+        
+        # Executor always goes to HITL gate (state persisted before gate)
+        graph.add_edge("executor", "hitl_gate")
+        
+        # HITL gate routes to executor (continue) or END (done/error)
         graph.add_conditional_edges(
-            "planner",  # planner 노드의 결과에 따라
-            lambda x: x["plan_created"], # state의 'next_node' 값을 보고 판단
+            "hitl_gate",
+            self._route_after_hitl,
             {
-                False: "planner",   # 'ask_user'이면 다시 planner로
-                True: "executor"  # 'success'이면 executor로
+                "executor": "executor",  # Loop back for next step
+                "end": END               # Done or error
             }
         )
-
         
         return graph
     
@@ -85,9 +87,10 @@ class OrchestrationGraph:
 
     
     def _executor_node(self, state: AgentState) -> AgentState:
-        """Executor node execution"""
-        from langgraph.types import interrupt
+        """Execute ONE step from the plan.
         
+        State is persisted when this node returns.
+        """
         # Map substep to step_id for logging
         plan = state.get("execution_plan", []) or []
         idx = state.get("current_execute_step", 0)
@@ -104,7 +107,7 @@ class OrchestrationGraph:
         
         step_start_time = time.time()
         
-        # executor.step() returns the complete updated state
+        # Execute single step - returns state with advanced step counter
         updated_state = self.executor.step(state)
         
         print(f"🔍 DEBUG [_executor_node]: Received from executor.step(): current_execute_step={updated_state.get('current_execute_step', 'N/A')}")
@@ -122,58 +125,115 @@ class OrchestrationGraph:
                 metadata={"timestamp": time.time()}
             )
         
-        # Check if any agent requested HITL via state flag (agent-initiated HITL)
-        # This happens when agents set __hitl_requested__ flag via request_hitl()
-        # The executor node triggers the interrupt() which is caught by stream() loop
-        if state.get("__hitl_requested__"):
-            payload = state.get("__hitl_payload__", {})
-            hitl_type = state.get("__hitl_type__", "unknown")
+        # Return state immediately so LangGraph persists it to checkpoint
+        print(f"🔍 DEBUG [_executor_node]: Returning state with current_execute_step={state.get('current_execute_step', 'N/A')}")
+        return state
+    
+    def _hitl_gate_node(self, state: AgentState) -> AgentState:
+        """HITL gate node - handles interrupts and user decisions.
+        
+        This node checks if HITL was requested, triggers interrupt if needed,
+        and handles user decisions (approve, edit, rerun, abort).
+        """
+        from langgraph.types import interrupt
+        
+        # Check if HITL was requested by the step execution
+        if not state.get("__hitl_requested__"):
+            # No HITL needed, just pass through
+            print(f"🔍 DEBUG [HITL Gate]: No HITL requested, passing through")
+            return state
+        
+        # HITL needed - get payload and trigger interrupt
+        payload = state.get("__hitl_payload__", {})
+        hitl_type = state.get("__hitl_type__", "unknown")
+        
+        # Get the substep that just executed (step counter was already advanced)
+        plan = state.get("execution_plan", [])
+        current_idx = state.get("current_execute_step", 1) - 1  # Step already advanced
+        substep = plan[current_idx]["substep"] if 0 <= current_idx < len(plan) else "unknown"
+        
+        print(f"🔍 DEBUG [HITL Gate]: HITL requested for substep '{substep}', checkpoint has current_execute_step={state.get('current_execute_step', 'N/A')}")
+        
+        
+        # Log HITL prompt
+        step_id = self._map_substep_to_step_id(substep)
+        if self.event_logger and step_id:
+            self.event_logger.log_hitl_prompt_shown(
+                step_id=step_id,
+                phase=payload.get("phase", "unknown"),
+                description=payload.get("description"),
+                metadata={"hitl_type": hitl_type}
+            )
+        
+        # Trigger interrupt - this will suspend execution
+        # After resume, the node re-executes from the beginning
+        # So we check if flags were cleared by update_state
+        user_input = interrupt(payload)
+        
+        
+        if user_input and isinstance(user_input, dict):
+            decision = user_input.get("decision", "approve")
+            print(f"🔍 DEBUG [HITL Gate]: User decision: {decision}")
             
-            # Log HITL prompt shown
+            # Log decision
             if self.event_logger and step_id:
-                self.event_logger.log_hitl_prompt_shown(
+                self.event_logger.log_hitl_decision(
                     step_id=step_id,
-                    phase=payload.get("phase", "unknown"),
-                    description=payload.get("description"),
-                    metadata={"hitl_type": hitl_type}
+                    decision=decision,
+                    edits=user_input.get("edits"),
+                    feedback=user_input.get("feedback"),
+                    metadata={}
                 )
             
-            # Clear the flags
-            state.pop("__hitl_requested__", None)
-            state.pop("__hitl_payload__", None)
-            state.pop("__hitl_type__", None)
-                        
-            # Now we're in a LangGraph node, so interrupt() will work properly
-            # This will be caught by the stream() loop as __interrupt__ event
-            user_input = interrupt(payload)
+            # Handle different decisions
+            if decision == "approve":
+                # Step already advanced in executor, just continue
+                print(f"🔍 DEBUG [HITL Gate]: Approved, continuing with current_execute_step={state.get('current_execute_step')}")
+                pass
+                
+            elif decision == "edit":
+                # Apply edits and re-execute current step
+                edits = user_input.get("edits", {})
+                state.update(edits)
+                # Decrement step counter to re-execute the step that was just completed
+                current_step = state.get("current_execute_step", 0)
+                state["current_execute_step"] = max(0, current_step - 1)
+                state["current_state_executed"] = False
+                # Remove from completed substeps so it can be re-executed
+                completed = state.get("completed_substeps", [])
+                if substep in completed:
+                    completed.remove(substep)
+                print(f"🔍 DEBUG [HITL Gate]: Edits applied, re-executing step {substep} (idx={state.get('current_execute_step')})")
+                
+            elif decision == "rerun":
+                # Store feedback and re-execute current step
+                feedback = user_input.get("feedback", "")
+                if feedback:
+                    state["user_feedback"] = feedback
+                # Decrement step counter to re-execute
+                current_step = state.get("current_execute_step", 0)
+                state["current_execute_step"] = max(0, current_step - 1)
+                state["current_state_executed"] = False
+                # Remove from completed substeps
+                completed = state.get("completed_substeps", [])
+                if substep in completed:
+                    completed.remove(substep)
+                print(f"🔍 DEBUG [HITL Gate]: Rerun requested, re-executing step {substep} (idx={state.get('current_execute_step')})")
+                
+            elif decision == "abort":
+                # Set error to stop execution
+                state["error"] = "User aborted execution"
+                state["executor_completed"] = True
+                print(f"🔍 DEBUG [HITL Gate]: Execution aborted by user")
             
-            if user_input and isinstance(user_input, dict):
-                # Log HITL decision
-                if self.event_logger and step_id:
-                    self.event_logger.log_hitl_decision(
-                        step_id=step_id,
-                        decision=user_input.get("decision", "unknown"),
-                        edits=user_input.get("edits"),
-                        feedback=user_input.get("feedback"),
-                        metadata={}
-                    )
-                
-                # Apply user input to state
-                state.update(user_input)
-                # If schema was provided for schema_review, it's already in state
-                if "variable_schema" in user_input and hitl_type == "schema_review":
-                    state["variable_info"] = user_input["variable_schema"]
-                
-                # Log HITL applied
-                if self.event_logger and step_id:
-                    self.event_logger.log_hitl_applied(
-                        step_id=step_id,
-                        applied=True,
-                        metadata={"decision": user_input.get("decision")}
-                    )
+            # Log HITL applied
+            if self.event_logger and step_id:
+                self.event_logger.log_hitl_applied(
+                    step_id=step_id,
+                    applied=True,
+                    metadata={"decision": decision}
+                )
         
-        # state["executor_completed"] = True
-        print(f"🔍 DEBUG [_executor_node]: Returning state with current_execute_step={state.get('current_execute_step', 'N/A')}")
         return state
     
     
@@ -215,13 +275,29 @@ class OrchestrationGraph:
         return None
     
     def _route_after_execution(self, state: AgentState) -> str:
-        """Generate final analysis report"""
+        """Route after execution - DEPRECATED, kept for compatibility"""
         """ llm으로 결과 작성하는 specialist agent로 구성 예정 """
         if state.get("error"):
             return "error"
         if state.get("executor_completed"):
             return "success"
         return "continue"
+    
+    def _route_after_hitl(self, state: AgentState) -> str:
+        """Route after HITL gate node.
+        
+        Returns:
+            "end" - execution completed or error occurred
+            "executor" - continue to next step
+        """
+        if state.get("error"):
+            print(f"🔍 DEBUG [Router]: Error detected, routing to END")
+            return "end"
+        if state.get("executor_completed"):
+            print(f"🔍 DEBUG [Router]: Execution completed, routing to END")
+            return "end"
+        print(f"🔍 DEBUG [Router]: Continuing to executor for next step")
+        return "executor"
     
     def _generate_final_report(self, state: AgentState) -> Dict[str, Any]:
         """Generate final analysis report"""
@@ -335,7 +411,7 @@ class OrchestrationGraph:
             completed = False
             
             for step in self.compiled_graph.stream(current_input, config=config):
-                step_name = list(step.keys())[0]
+                step_name = list[str](step.keys())[0]
                 
                 # Debug: Log which node is being executed
                 if step_name not in ['__interrupt__']:
@@ -401,11 +477,12 @@ class OrchestrationGraph:
                                 "data_profile": "Data profile summary"
                             }
                         elif step_name == "algorithm_configuration":
-                            result_fields = {"execution_plan": "Algorithm execution plan"}
+                            result_fields = {"cd_execution_plan": "Algorithm execution plan"}
                         elif step_name == "run_algorithms_portfolio":
                             result_fields = {
                                 "executed_algorithms": "Executed algorithms",
-                                "algorithm_results": "Algorithm results"
+                                "algorithm_results": "Algorithm results",
+                                "algorithm_graph_visualization_paths": "Graph visualizations"
                             }
                         elif step_name == "graph_scoring":
                             result_fields = {
@@ -420,9 +497,8 @@ class OrchestrationGraph:
                             }
                         elif step_name == "ensemble_synthesis":
                             result_fields = {
-                                "selected_graph": "Final ensemble DAG",
-                                "synthesis_reasoning": "Edge resolution reasoning",
-                                "consensus_pag": "PAG with uncertain edges (if any)"
+                                "graph_visualization_path": "Final graph visualization",
+                                "selected_graph": "Final ensemble DAG"
                             }
                         elif step_name == "parse_question":
                             result_fields = {
@@ -450,12 +526,30 @@ class OrchestrationGraph:
                                         global_scores = value.get("global_scores", {})
                                         pairwise_scores = value.get("pairwise_scores", {})
                                         print(f"   - {label}:")
+                                        
+                                        # Show basic checks details
                                         if basic_checks:
-                                            print(f"     • Basic checks: {len(basic_checks)} checks performed")
+                                            print(f"     • Basic checks ({len(basic_checks)} performed):")
+                                            for key, val in list(basic_checks.items())[:5]:  # Show first 5
+                                                print(f"       - {key}: {val}")
+                                            if len(basic_checks) > 5:
+                                                print(f"       ... and {len(basic_checks) - 5} more")
+                                        
+                                        # Show global scores summary
                                         if global_scores:
-                                            print(f"     • Global scores: {len(global_scores)} scores computed")
+                                            print(f"     • Global scores ({len(global_scores)} scores computed):")
+                                            for key, val in list(global_scores.items())[:3]:  # Show first 3
+                                                if isinstance(val, (int, float)):
+                                                    print(f"       - {key}: {val:.4f}" if isinstance(val, float) else f"       - {key}: {val}")
+                                                else:
+                                                    print(f"       - {key}: {val}")
+                                            if len(global_scores) > 3:
+                                                print(f"       ... and {len(global_scores) - 3} more")
+                                        
+                                        # Show pairwise scores count
                                         if pairwise_scores:
                                             print(f"     • Pairwise scores: {len(pairwise_scores)} pairs analyzed")
+                                        
                                         if not basic_checks and not global_scores and not pairwise_scores:
                                             print(f"     (empty profile)")
                                     # Special handling for columns - show count and sample
@@ -467,10 +561,138 @@ class OrchestrationGraph:
                                             print(f"     Sample (first 10): {sample_cols}, ...")
                                         else:
                                             print(f"   - {label}: {', '.join(value)}")
-                                    elif isinstance(value, (list, dict)) and len(str(value)) > 300:
-                                        print(f"   - {label}: {str(value)[:300]}...")
-                                    else:
-                                        print(f"   - {label}: {value}")
+                                    # Special handling for cd_execution_plan - show algorithm list
+                                    elif field == "cd_execution_plan" and isinstance(value, list):
+                                        print(f"   - {label}: {len(value)} algorithm(s)")
+                                        for i, alg_config in enumerate(value[:10], 1):  # Show first 10
+                                            alg_name = alg_config.get("alg", "Unknown")
+                                            config_str = ", ".join([f"{k}={v}" for k, v in alg_config.items() if k != "alg"])
+                                            if config_str:
+                                                print(f"     {i}. {alg_name} ({config_str})")
+                                            else:
+                                                print(f"     {i}. {alg_name}")
+                                        if len(value) > 10:
+                                            print(f"     ... and {len(value) - 10} more algorithm(s)")
+                                    # Special handling for executed_algorithms - show algorithm list
+                                    elif field == "executed_algorithms" and isinstance(value, list):
+                                        print(f"   - {label}: {len(value)} algorithm(s)")
+                                        if value:
+                                            print(f"     • {', '.join(value)}")
+                                    # Special handling for algorithm_graph_visualization_paths - show visualization paths
+                                    elif field == "algorithm_graph_visualization_paths" and isinstance(value, dict):
+                                        print(f"   - {label}:")
+                                        print(f"     📊 Graph visualizations saved for {len(value)} algorithm(s):")
+                                        for alg_name, paths in value.items():
+                                            if isinstance(paths, dict) and "error" not in paths:
+                                                png_path = paths.get("png", "N/A")
+                                                svg_path = paths.get("svg", "N/A")
+                                                print(f"       • {alg_name}:")
+                                                if png_path != "N/A":
+                                                    print(f"         PNG: {png_path}")
+                                                if svg_path != "N/A":
+                                                    print(f"         SVG: {svg_path}")
+                                            elif isinstance(paths, dict) and "error" in paths:
+                                                print(f"       • {alg_name}: (visualization failed - {paths.get('error', 'Unknown error')})")
+                                            else:
+                                                print(f"       • {alg_name}: (no visualization available)")
+                                        print(f"     💡 You can view these graph visualizations to see the causal structures discovered by each algorithm.")
+                                    # Special handling for ranked_graphs - show detailed scores
+                                    elif field == "ranked_graphs" and isinstance(value, list):
+                                        print(f"   - {label}: {len(value)} graph(s)")
+                                        for i, graph_item in enumerate(value, 1):
+                                            alg_name = graph_item.get("algorithm", "Unknown")
+                                            mc = graph_item.get("markov_consistency")
+                                            ss = graph_item.get("sampling_stability")
+                                            sts = graph_item.get("structural_stability")
+                                            comp_score = graph_item.get("composite_score")
+                                            
+                                            score_parts = []
+                                            if mc is not None:
+                                                score_parts.append(f"markov_consistency={mc:.3f}")
+                                            if ss is not None:
+                                                score_parts.append(f"sampling_stability={ss:.3f}")
+                                            if sts is not None:
+                                                score_parts.append(f"structural_stability={sts:.3f}")
+                                            if comp_score is not None:
+                                                score_parts.append(f"composite_score={comp_score:.3f}")
+                                            
+                                            score_str = ", ".join(score_parts) if score_parts else "N/A"
+                                            print(f"     {i}. {alg_name}: {score_str}")
+                                    # Special handling for scored_graphs - show algorithm names and scores only
+                                    elif field == "scored_graphs" and isinstance(value, list):
+                                        print(f"   - {label}: {len(value)} graph(s)")
+                                        for i, scored_graph in enumerate(value, 1):
+                                            alg_name = scored_graph.get("algorithm", "Unknown")
+                                            
+                                            score_parts = []
+                                            mc = scored_graph.get("markov_consistency")
+                                            ss = scored_graph.get("sampling_stability")
+                                            sts = scored_graph.get("structural_stability")
+                                            
+                                            if mc is not None:
+                                                score_parts.append(f"markov_consistency={mc:.3f}")
+                                            if ss is not None:
+                                                score_parts.append(f"sampling_stability={ss:.3f}")
+                                            if sts is not None:
+                                                score_parts.append(f"structural_stability={sts:.3f}")
+                                            
+                                            score_str = ", ".join(score_parts) if score_parts else "N/A"
+                                            print(f"     {i}. {alg_name}: {score_str}")
+                                    # Special handling for top_candidates - show algorithm names and scores only
+                                    elif field == "top_candidates" and isinstance(value, list):
+                                        print(f"   - {label}: {len(value)} graph(s)")
+                                        for i, candidate in enumerate(value, 1):
+                                            alg_name = candidate.get("algorithm", "Unknown")
+                                            comp_score = candidate.get("composite_score")
+                                            
+                                            score_parts = []
+                                            mc = candidate.get("markov_consistency")
+                                            ss = candidate.get("sampling_stability")
+                                            sts = candidate.get("structural_stability")
+                                            
+                                            if mc is not None:
+                                                score_parts.append(f"markov_consistency={mc:.3f}")
+                                            if ss is not None:
+                                                score_parts.append(f"sampling_stability={ss:.3f}")
+                                            if sts is not None:
+                                                score_parts.append(f"structural_stability={sts:.3f}")
+                                            if comp_score is not None:
+                                                score_parts.append(f"composite_score={comp_score:.3f}")
+                                            
+                                            score_str = ", ".join(score_parts) if score_parts else "N/A"
+                                            print(f"     {i}. {alg_name}: {score_str}")
+                                    # Special handling for graph_visualization_path - show visualization paths
+                                    elif field == "graph_visualization_path" and isinstance(value, dict):
+                                        print(f"   - {label}:")
+                                        png_path = value.get("png", "N/A")
+                                        svg_path = value.get("svg", "N/A")
+                                        if png_path != "N/A":
+                                            print(f"     📊 PNG: {png_path}")
+                                        if svg_path != "N/A":
+                                            print(f"     📊 SVG: {svg_path}")
+                                        if png_path == "N/A" and svg_path == "N/A":
+                                            print(f"     (No visualization available)")
+                                    # Special handling for selected_graph - show nodes and edges
+                                    elif field == "selected_graph" and isinstance(value, dict):
+                                        print(f"   - {label}:")
+                                        try:
+                                            from agents.causal_discovery.tools import get_variables, get_edges
+                                            nodes = get_variables(value)
+                                            edges = get_edges(value)
+                                            
+                                            print(f"     📊 Nodes ({len(nodes)}): {', '.join(nodes)}")
+                                            print(f"     📊 Edges ({len(edges)}):")
+                                            for i, edge in enumerate(edges[:20], 1):  # Show first 20 edges
+                                                from_node = edge.get("from", "?")
+                                                to_node = edge.get("to", "?")
+                                                edge_type = edge.get("type", "->")
+                                                print(f"       {i}. {from_node} --{edge_type}--> {to_node}")
+                                            if len(edges) > 20:
+                                                print(f"       ... and {len(edges) - 20} more edge(s)")
+                                        except Exception as e:
+                                            print(f"     (Could not parse graph structure: {e})")
+                                            print(f"     Graph type: {value.get('metadata', {}).get('graph_type', 'Unknown')}")
+
                                 else:
                                     print(f"   - {label}: (not set)")
                         
@@ -537,7 +759,10 @@ class OrchestrationGraph:
                     user_data = {
                         "decision": decision,
                         "hitl_decision": decision,  # Also store as hitl_decision for executor
-                        "hitl_executed": True
+                        "hitl_executed": True,
+                        "__hitl_requested__": None,
+                        "__hitl_payload__": None,
+                        "__hitl_type__": None
                     }
                     
                     # Step 2: Get additional info based on decision

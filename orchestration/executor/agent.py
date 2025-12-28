@@ -40,7 +40,11 @@ class ExecutorAgent(OrchestratorAgent):
             return None
         
     def execute_plan(self, state: AgentState) -> AgentResult:
-        """Execute the plan end-to-end. HITL is handled inside via interrupt gate or auto-approved when non-interactive."""
+        """Execute the CURRENT step from execution plan (single step per call).
+        
+        This method executes ONE step at a time, allowing LangGraph to properly
+        persist state between steps and handle HITL interrupts correctly.
+        """
         plan = state.get("execution_plan", [])
         if not plan:
             return AgentResult(
@@ -50,149 +54,130 @@ class ExecutorAgent(OrchestratorAgent):
             )
         
         # Initialize execution state
-        self.current_step = state.get("current_execute_step", 0)
         self.execution_log = state.get("execution_log", [])
         self.results = state.get("results", {})
-        max_rerun = self.config.get("max_rerun_per_substep", 1) if self.config else 1
-        interactive = bool(state.get("interactive", False))
         
-        llm = self.create_llm_from_config()
-        if llm is None:
+        # Execute ONLY the current step, not a while loop
+        idx = state.get("current_execute_step", 0)
+        
+        
+        # Check if all steps completed
+        if idx >= len(plan):
+            state["executor_completed"] = True
+            state["execution_log"] = self.execution_log
+            state["results"] = self.results
             return AgentResult(
+                success=True,
+                data=state,
+                metadata={"executor": self.name, "all_completed": True}
+            )
+        
+        step = plan[idx]
+        
+        # Skip step if in skip list
+        skip_list = state.get("skip_steps", []) or []
+        if step.get("substep") in skip_list:
+            state.setdefault("completed_substeps", []).append(step["substep"])
+            state["current_execute_step"] = idx + 1
+            state["current_state_executed"] = False
+            # Update phase status
+            phase = step.get("phase")
+            phase_status_map = {
+                "data_exploration": "data_exploration_status",
+                "causal_discovery": "causal_discovery_status",
+                "causal_analysis": "causal_analysis_status"
+            }
+            if phase in phase_status_map:
+                state[phase_status_map[phase]] = state.get(phase_status_map[phase], "skipped")
+            return AgentResult(success=True, data=state)
+        
+        # Update current context
+        state["current_substep"] = step["substep"]
+        state["current_phase"] = step.get("phase", "")
+        
+        # Execute ONLY if not already executed
+        if not state.get("current_state_executed"):
+            llm = self.create_llm_from_config()
+            if llm is None:
+                return AgentResult(
                     success=False,
                     error=f"Failed to create LLM from config"
                 )
-
-        def _convert_numpy_types(obj):
-            try:
-                import numpy as _np
-            except Exception:
-                _np = None
-            if _np is not None:
-                if isinstance(obj, _np.bool_):
-                    return bool(obj)
-                if isinstance(obj, _np.integer):
-                    return int(obj)
-                if isinstance(obj, _np.floating):
-                    return float(obj)
-                if isinstance(obj, _np.ndarray):
-                    return obj.tolist()
-            if isinstance(obj, dict):
-                return {k: _convert_numpy_types(v) for k, v in obj.items()}
-            if isinstance(obj, (list, tuple)):
-                t = type(obj)
-                return t(_convert_numpy_types(v) for v in obj)
-            return obj
-
-        # Execute steps based on current_execute_step pointer
-
-        while True:
-            idx = state.get("current_execute_step", 0)
-            # ✅ DEBUG: Track step progression
-            print(f"🔍 DEBUG [Executor]: Loop iteration - idx={idx}, total_steps={len(plan)}")
             
-            if idx >= len(plan):
-                state["executor_completed"] = True
-                break
-            step = plan[idx]
+            result = self._execute_step(step, state, llm)
             
-            # ✅ DEBUG: Show current step being processed
-            print(f"🔍 DEBUG [Executor]: Processing step '{step['substep']}' (phase: {step.get('phase', 'N/A')})")
-            print(f"🔍 DEBUG [Executor]: current_state_executed={state.get('current_state_executed', False)}")
-
-            # Skip step if in skip list
-            skip_list = state.get("skip_steps", []) or []
-            if step.get("substep") in skip_list:
-                state.setdefault("completed_substeps", []).append(step["substep"])
-                state["current_execute_step"] = idx + 1
-                state["current_state_executed"] = False
-                # Update phase status
-                phase = step.get("phase")
-                phase_status_map = {
-                    "data_exploration": "data_exploration_status",
-                    "causal_discovery": "causal_discovery_status",
-                    "causal_analysis": "causal_analysis_status"
-                }
-                if phase in phase_status_map:
-                    state[phase_status_map[phase]] = state.get(phase_status_map[phase], "skipped")
-                continue
-
-            # Update current_substep and current_phase for all steps
-            state["current_substep"] = step["substep"]
-            state["current_phase"] = step.get("phase", "")
+            self.execution_log.append({
+                "phase": step["phase"],
+                "substep": step["substep"],
+                "timestamp": datetime.now().isoformat(),
+                "success": result.success,
+                "duration": result.execution_time
+            })
             
-            # Execute substep (only if not already executed)
-            if not state.get("current_state_executed"):
-                print(f"🔍 DEBUG [Executor]: Executing step '{step['substep']}'...")
-                result = self._execute_step(step, state, llm)
-                self.execution_log.append({
-                    "phase": step["phase"],
-                    "substep": step["substep"],
-                    "timestamp": datetime.now().isoformat(),
-                    "success": result.success,
-                    "duration": result.execution_time
-                })
-                if not result.success:
-                    # Return current state with error
-                    state["error"] = f"Step {step['substep']} failed: {result.error}"
-                    state["execution_log"] = self.execution_log
-                    state["results"] = self.results
-                    return AgentResult(
-                        success=False,
-                        error=f"Step {step['substep']} failed: {result.error}",
-                        data=state,
-                        metadata={"execution_log": self.execution_log}
-                    )
-
-                # Merge results (convert numpy types to Python natives to avoid msgpack errors)
-                safe_data = _convert_numpy_types(result.data or {})
-                state.update(safe_data)
-                self.results[step["substep"]] = safe_data
-                state["current_state_executed"] = True
-                print(f"🔍 DEBUG [Executor]: Step '{step['substep']}' executed successfully")
-                
-                completed_substeps = state.get("completed_substeps", [])
-                if step["substep"] not in completed_substeps:
-                    state.setdefault("completed_substeps", []).append(step["substep"])
-                state["current_execute_step"] = idx + 1
-                state["current_state_executed"] = False  # Reset for next step
-                print(f"🔍 DEBUG [Executor]: Step counter advanced: {idx} -> {idx + 1}")
-                print(f"🔍 DEBUG [Executor]: Completed substeps: {state.get('completed_substeps', [])}")
-                
-                # Check if HITL was requested - if so, stop here and return current state
-                # The orchestration graph will handle the interrupt
-                # Step counter has already been advanced above, so resume will continue from next step
-                if state.get("__hitl_requested__"):
-                    print(f"🔍 DEBUG [Executor]: HITL requested for step '{step['substep']}'")
-                    print(f"🔍 DEBUG [Executor]: Returning state with current_execute_step={state.get('current_execute_step')}")
-                    state["execution_log"] = self.execution_log
-                    state["results"] = self.results
-                    return AgentResult(
-                        success=True,
-                        data=state,
-                        metadata={"executor": self.name, "hitl_requested": True}
-                    )
-                
-                print(f"🔍 DEBUG [Executor]: No HITL requested, continuing to next step")
-                # Continue to next iteration (step already advanced above)
-                continue
-
-            # If current_state_executed is True, skip execution and advance to next step
-            print(f"🔍 DEBUG [Executor]: Step '{step['substep']}' already executed, advancing...")
-            completed_substeps = state.get("completed_substeps", [])
-            if step["substep"] not in completed_substeps:
-                state.setdefault("completed_substeps", []).append(step["substep"])
+            if not result.success:
+                state["error"] = f"Step {step['substep']} failed: {result.error}"
+                state["execution_log"] = self.execution_log
+                state["results"] = self.results
+                return AgentResult(
+                    success=False,
+                    error=result.error,
+                    data=state,
+                    metadata={"execution_log": self.execution_log}
+                )
+            
+            # Merge results (convert numpy types to avoid msgpack errors)
+            safe_data = self._convert_numpy_types(result.data or {})
+            state.update(safe_data)
+            self.results[step["substep"]] = safe_data
+            state["current_state_executed"] = True
+            
+            # ✅ Advance step counter BEFORE returning
+            # This ensures it's persisted when the node returns
+            state.setdefault("completed_substeps", []).append(step["substep"])
             state["current_execute_step"] = idx + 1
-            state["current_state_executed"] = False
+            state["current_state_executed"] = False  # Reset for next step
             
-        # All steps completed
+            # Store logs and results
+            state["execution_log"] = self.execution_log
+            state["results"] = self.results
+            
+            # ✅ Return immediately - if HITL requested, interrupt will fire in _executor_node
+            # The state with advanced counter will be persisted when node returns
+            return AgentResult(
+                success=True,
+                data=state,
+                metadata={"executor": self.name, "hitl_requested": state.get("__hitl_requested__")}
+            )
+        
+        # If already executed, just advance
+        state.setdefault("completed_substeps", []).append(step["substep"])
+        state["current_execute_step"] = idx + 1
+        state["current_state_executed"] = False
         state["execution_log"] = self.execution_log
         state["results"] = self.results
-        return AgentResult(
-            success=True,
-            data=state,
-            metadata={"executor": self.name}
-        )
+        return AgentResult(success=True, data=state)
+    
+    def _convert_numpy_types(self, obj):
+        """Convert numpy types to Python natives to avoid msgpack serialization errors"""
+        try:
+            import numpy as _np
+        except Exception:
+            _np = None
+        if _np is not None:
+            if isinstance(obj, _np.bool_):
+                return bool(obj)
+            if isinstance(obj, _np.integer):
+                return int(obj)
+            if isinstance(obj, _np.floating):
+                return float(obj)
+            if isinstance(obj, _np.ndarray):
+                return obj.tolist()
+        if isinstance(obj, dict):
+            return {k: self._convert_numpy_types(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            t = type(obj)
+            return t(self._convert_numpy_types(v) for v in obj)
+        return obj
     
     def _execute_step(self, step: Dict[str, Any], state: AgentState, llm) -> AgentResult:
         """Execute a single step in the plan"""
@@ -355,8 +340,17 @@ class ExecutorAgent(OrchestratorAgent):
             },
             "selected_graph": {
                 "type": "dict",
-                "description": "Causal graph structure with 'nodes' and 'edges'",
-                "example": {"nodes": ["X", "Y"], "edges": [{"from": "X", "to": "Y"}]}
+                "description": "Final causal graph structure. You can modify edges by providing a graph dict with 'graph' key containing 'variables' (list) and 'edges' (list of dicts with 'from', 'to', 'type'). Format: {'graph': {'variables': [...], 'edges': [{'from': 'X', 'to': 'Y', 'type': '->'}]}, 'metadata': {...}}",
+                "example": {
+                    "graph": {
+                        "variables": ["X", "Y", "Z"],
+                        "edges": [
+                            {"from": "X", "to": "Y", "type": "->"},
+                            {"from": "Y", "to": "Z", "type": "->"}
+                        ]
+                    },
+                    "metadata": {"graph_type": "DAG"}
+                }
             },
             "treatment_variable": {
                 "type": "str",
@@ -479,10 +473,7 @@ class ExecutorAgent(OrchestratorAgent):
         
         if result.success:
             updated_state = result.data or state
-            
-            # ✅ DEBUG: Log what we're returning
-            print(f"🔍 DEBUG [Executor.step]: Returning state with current_execute_step={updated_state.get('current_execute_step', 'N/A')}")
-            
+                        
             # Preserve executor action for graph.py to detect HITL needs
             if result.metadata and result.metadata.get("action"):
                 updated_state["__executor_action__"] = result.metadata.get("action")

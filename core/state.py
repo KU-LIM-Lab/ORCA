@@ -53,9 +53,11 @@ class AgentState(TypedDict, total=False):
     edits: Dict[str, Any]  # HITL edits from user 
     feedback: str  # HITL feedback from user
     
-    # === User Interaction ===
-    user_constraints: Dict[str, Any]  # User-provided constraints for causal discovery
-    user_preferences: Dict[str, Any]  # User preferences for analysis
+    # HITL internal flags (used by agents to signal HITL requests)
+    __hitl_requested__: bool
+    __hitl_payload__: Dict[str, Any]
+    __hitl_type__: str
+ 
     hitl_decision: str
     hitl_executed: bool
     
@@ -63,13 +65,11 @@ class AgentState(TypedDict, total=False):
     # === Database Connection Phase Outputs ===
     db_id: str  # Database identifier
     database_connection: Optional[Dict[str, Any]]
-    connection_status: str  # "connected", "failed", "pending"
     
     # === Metadata Creation Phase Outputs (utils.data_prep 기반) ===
     schema_info: Dict[str, Any]  # extract_schema() result
     table_metadata: Dict[str, Any]  # generate_metadata() result
     table_relations: Dict[str, Any]  # update_table_relations() result
-    metadata_creation_status: str  # "completed", "failed", "pending"
 
     # === Planning & execution Phase Outputs ===
     error: str
@@ -77,6 +77,7 @@ class AgentState(TypedDict, total=False):
     execution_plan: List[Dict[str, Any]]
     # Runtime orchestration controls
     skip_steps: List[str]
+    execution_paused: bool  # Whether execution is paused (for resume)
 
     allow_start_without_ground_truth: bool
     analysis_mode: str
@@ -85,11 +86,8 @@ class AgentState(TypedDict, total=False):
     estimated_duration: float
     current_state_executed: bool
 
-    recovery_strategy: str
     planner_completed: bool
     executor_completed: bool
-    error_handler_completed: bool
-    finalizer_completed: bool
 
     current_execute_step: int
 
@@ -112,7 +110,7 @@ class AgentState(TypedDict, total=False):
     table_analysis: Annotated[dict, None]
     related_tables: Annotated[dict, None]
 
-    table_exploration_completed: bool
+    # table_exploration_completed: bool  # DEPRECATED - only in agents/data_explorer/agent.py, not in orchestration
     
     # Aggregated related tables and analysis hints
     all_related_tables: Dict[str, Any]
@@ -135,6 +133,7 @@ class AgentState(TypedDict, total=False):
     variable_info: Dict[str, Any]
     variable_schema: Dict[str, Any]  # Comprehensive schema with types and cardinality
     text2sql_generation_completed: bool
+    sql_error_mode: Optional[bool]  # Whether to include SQL errors in report
     
     # Data Exploration Phase Status
     data_exploration_status: str  # "completed", "failed", "pending"
@@ -144,6 +143,8 @@ class AgentState(TypedDict, total=False):
     column_stats: Dict[str, Any]
     feature_map: Dict[str, Any]
     warnings: List[str]
+    dropped_null_columns: List[str]  # Columns dropped due to high null ratio
+    encoded_columns: List[str]  # Columns that were one-hot encoded
     data_preprocessing_completed: bool
     
     # Data preprocessor configuration options
@@ -154,6 +155,8 @@ class AgentState(TypedDict, total=False):
     skip_one_hot_encoding: Optional[bool]  # Skip one-hot encoding for causal discovery
     persist_to_redis: Optional[bool]  # Whether to persist dataframes to Redis
     fetch_only: Optional[bool]  # Whether to only fetch data without full preprocessing
+    preprocessing_substep: Optional[str]  # Current preprocessing substep (e.g., "full_pipeline", "fetch", "clean_nulls")
+    force_refresh: Optional[bool]  # Force refresh of preprocessing results
     
     # === Causal Discovery Phase Outputs ===
     # 1. Assumption-method compatibility matrix
@@ -170,13 +173,18 @@ class AgentState(TypedDict, total=False):
     algorithm_tiers: Dict[str, Any]
     tiering_reasoning: str
     algorithm_tiering_completed: bool
+    cd_execution_plan: List[Dict[str, Any]]
     algorithm_configuration_completed: bool  # New: algorithm configuration completion flag
     
     # 3. Algorithm execution
     algorithm_results: Dict[str, Any]  # Algorithm execution results
     candidate_graphs: List[Dict[str, Any]]  # Generated candidate graphs
     algorithm_results_key: str
+    executed_algorithms: List[str]  # List of algorithm names that were executed
+    algorithm_graph_visualization_paths: Dict[str, Dict[str, str]]  # Visualization paths for each algorithm graph
     run_algorithms_portfolio_completed: bool
+    scored_graphs: List[Dict[str, Any]]
+    graph_scoring_completed: bool
     
     # 4. Intermediate scores
     intermediate_scores: Dict[str, Dict[str, float]]  # Intermediate scores
@@ -188,7 +196,7 @@ class AgentState(TypedDict, total=False):
     scorecard: Dict[str, Any]
     ranked_graphs: List[Dict[str, Any]]  # Ranked graphs from scorecard evaluation
     top_candidates: List[Dict[str, Any]]
-    scorecard_evaluation_completed: bool
+    graph_evaluation_completed: bool  # Graph evaluation completion flag
     user_params: Dict[str, Any]  # User parameters (ranking_mode, pruning_thresholds, etc.)
     consensus_pag: Dict[str, Any]
     synthesis_reasoning: str
@@ -197,6 +205,7 @@ class AgentState(TypedDict, total=False):
     # 5. Final graph decision
     selected_graph: Dict[str, Any]  
     graph_selection_reasoning: str  # Graph selection reasoning
+    graph_visualization_path: Dict[str, Any]  # Paths to saved graph visualizations
     
     # Causal Discovery Phase Status
     causal_discovery_status: str  # "completed", "failed", "pending"
@@ -230,6 +239,7 @@ class AgentState(TypedDict, total=False):
     # === Causal Analysis (pipeline variant) ===
     parsed_query: Dict[str, Any]
     table_schema_str: str
+    expression_dict: Dict[str, str]  # Expression dictionary for query parsing
     strategy: Any
     final_answer: str
     parse_question_completed: bool
@@ -250,6 +260,7 @@ class AgentState(TypedDict, total=False):
     # Orchestration execution artifacts
     execution_log: List[Dict[str, Any]]
     results: Dict[str, Any]
+    __executor_action__: Optional[str]  # Internal executor action flag
 
 class DataExplorerState(TypedDict, total=False):
     """State specific to Data Explorer Agent"""
@@ -304,15 +315,12 @@ def create_initial_state(query: str, db_id: str = "reef_db", session_id: str = N
         interactive=False,  # Default to non-interactive mode
         user_edits={},
         user_feedback=None,
-        user_constraints={},
-        user_preferences={},
+
         db_id=db_id,
         database_connection=None,
-        connection_status="pending",
         schema_info={},
         table_metadata={},
         table_relations={},
-        metadata_creation_status="pending",
         candidate_tables=[],
         selected_tables=[],
         sql_query="",
@@ -392,8 +400,8 @@ def get_agent_specific_state(state: AgentState, agent_type: str) -> Dict[str, An
 def get_phase_status(state: AgentState, phase: PipelinePhase) -> str:
     """Get the status of a specific phase"""
     phase_status_map = {
-        PipelinePhase.DB_CONNECTION: state.get("connection_status", "pending"),
-        PipelinePhase.METADATA_CREATION: state.get("metadata_creation_status", "pending"),
+        PipelinePhase.DB_CONNECTION: "completed" if state.get("database_connection") else "pending",
+        PipelinePhase.METADATA_CREATION: "completed" if state.get("schema_info") else "pending",
         PipelinePhase.DATA_EXPLORATION: state.get("data_exploration_status", "pending"),
         PipelinePhase.CAUSAL_DISCOVERY: state.get("causal_discovery_status", "pending"),
         PipelinePhase.CAUSAL_INFERENCE: state.get("causal_analysis_status", "pending"),

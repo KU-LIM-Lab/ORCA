@@ -550,7 +550,8 @@ class CausalDiscoveryAgent(SpecialistAgent):
             
             execution_plan = self._generate_execution_plan(data_profile, variable_schema)
             
-            state["execution_plan"] = execution_plan
+            # Use cd_execution_plan instead of execution_plan to avoid overwriting orchestration plan
+            state["cd_execution_plan"] = execution_plan
             state["algorithm_configuration_completed"] = True
                         
             logger.info(f"Algorithm configuration completed. Execution plan: {len(execution_plan)} algorithms")
@@ -970,7 +971,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
             pass
         
         try:
-            execution_plan = state.get("execution_plan", [])
+            execution_plan = state.get("cd_execution_plan", [])
             df = self._load_dataframe_from_state(state)
             data_profile = state.get("data_profile", {})
             variable_schema = state.get("variable_schema", {})
@@ -1076,6 +1077,40 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 except Exception as e:
                     logger.warning(f"Failed to store results in Redis: {e}")
             
+            # Visualize and save graphs for each algorithm
+            algorithm_graph_paths = {}
+            try:
+                from .tools import GraphVisualizer
+                from datetime import datetime
+                
+                session_id = state.get("session_id", "default")
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                base_output_dir = f"outputs/images/algorithm_graphs/{session_id}_{timestamp}"
+                
+                for alg_name, result in algorithm_results.items():
+                    if "error" in result:
+                        continue
+                    
+                    try:
+                        visualization_result = GraphVisualizer.save_graph(
+                            result,
+                            output_dir=f"{base_output_dir}/{alg_name}",
+                            formats=["png", "svg"]
+                        )
+                        if "error" not in visualization_result:
+                            saved_paths = visualization_result.get("saved_paths", {})
+                            algorithm_graph_paths[alg_name] = saved_paths
+                            logger.info(f"Graph visualization saved for {alg_name}: {saved_paths}")
+                    except Exception as e:
+                        logger.warning(f"Failed to visualize graph for {alg_name}: {e}")
+                        algorithm_graph_paths[alg_name] = {"error": str(e)}
+                
+                if algorithm_graph_paths:
+                    state["algorithm_graph_visualization_paths"] = algorithm_graph_paths
+                    logger.info(f"Saved visualizations for {len(algorithm_graph_paths)} algorithms")
+            except Exception as e:
+                logger.warning(f"Failed to visualize algorithm graphs: {e}")
+            
             # Update state
             state["algorithm_results"] = algorithm_results
             state["executed_algorithms"] = list(algorithm_results.keys())
@@ -1110,7 +1145,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
         try:
             algorithm_results = self._load_algorithm_results_from_state(state)
             df = self._load_dataframe_from_state(state)
-            execution_plan = state.get("execution_plan", [])
+            execution_plan = state.get("cd_execution_plan", [])
             
             if not algorithm_results:
                 raise ValueError("No algorithm results available")
@@ -1145,20 +1180,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
             state["graph_scoring_completed"] = True
             
             logger.info(f"Graph scoring completed. Scored {len(scored_graphs)} graphs")
-            
-            # Request HITL for graph scoring review if interactive mode
-            if state.get("interactive", False):
-                state = self.request_hitl(
-                    state,
-                    payload={
-                        "step": "graph_scoring",
-                        "phase": "causal_discovery",
-                        "description": "Please review the graph scoring results",
-                        "decisions": ["approve", "edit", "rerun", "abort"]
-                    },
-                    hitl_type="graph_scoring_review"
-                )
-            
+                        
             return state
             
         except Exception as e:
@@ -1564,7 +1586,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
             
             # 4. Construct single DAG with tie-breaking
             top_algorithm = top_candidates[0]["algorithm"]
-            execution_plan = state.get("execution_plan", [])
+            execution_plan = state.get("cd_execution_plan", [])
             algorithm_results = self._load_algorithm_results_from_state(state)
             dag_result = self.use_tool("ensemble_tool", "construct_dag", 
                                       pag_result, data_profile, top_algorithm,
