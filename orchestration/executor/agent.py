@@ -51,8 +51,8 @@ class ExecutorAgent(OrchestratorAgent):
         
         # Initialize execution state
         self.current_step = state.get("current_execute_step", 0)
-        self.execution_log = []
-        self.results = {}
+        self.execution_log = state.get("execution_log", [])
+        self.results = state.get("results", {})
         max_rerun = self.config.get("max_rerun_per_substep", 1) if self.config else 1
         interactive = bool(state.get("interactive", False))
         
@@ -82,7 +82,7 @@ class ExecutorAgent(OrchestratorAgent):
             if isinstance(obj, (list, tuple)):
                 t = type(obj)
                 return t(_convert_numpy_types(v) for v in obj)
-                return obj
+            return obj
 
         # Execute steps based on current_execute_step pointer
 
@@ -125,9 +125,14 @@ class ExecutorAgent(OrchestratorAgent):
                     "duration": result.execution_time
                 })
                 if not result.success:
+                    # Return current state with error
+                    state["error"] = f"Step {step['substep']} failed: {result.error}"
+                    state["execution_log"] = self.execution_log
+                    state["results"] = self.results
                     return AgentResult(
                         success=False,
                         error=f"Step {step['substep']} failed: {result.error}",
+                        data=state,
                         metadata={"execution_log": self.execution_log}
                     )
 
@@ -136,20 +141,38 @@ class ExecutorAgent(OrchestratorAgent):
                 state.update(safe_data)
                 self.results[step["substep"]] = safe_data
                 state["current_state_executed"] = True
+                
+                # Check if HITL was requested - if so, stop here and return current state
+                # The orchestration graph will handle the interrupt
+                if state.get("__hitl_requested__"):
+                    # Advance to next step BEFORE returning so resume continues from next step
+                    completed_substeps = state.get("completed_substeps", [])
+                    if step["substep"] not in completed_substeps:
+                        state.setdefault("completed_substeps", []).append(step["substep"])
+                    state["current_execute_step"] = idx + 1
+                    state["current_state_executed"] = False
+                    
+                    state["execution_log"] = self.execution_log
+                    state["results"] = self.results
+                    return AgentResult(
+                        success=True,
+                        data=state,
+                        metadata={"executor": self.name, "hitl_requested": True}
+                    )
 
-            # Advance to next step immediately
-            state.setdefault("completed_substeps", []).append(step["substep"])
+            # Advance to next step (only if HITL was not requested)
+            completed_substeps = state.get("completed_substeps", [])
+            if step["substep"] not in completed_substeps:
+                state.setdefault("completed_substeps", []).append(step["substep"])
             state["current_execute_step"] = idx + 1
             state["current_state_executed"] = False
             
+        # All steps completed
+        state["execution_log"] = self.execution_log
+        state["results"] = self.results
         return AgentResult(
             success=True,
-            data={
-                "execution_completed": True,
-                "total_steps": len(plan),
-                "execution_log": self.execution_log,
-                "results": self.results
-            },
+            data=state,
             metadata={"executor": self.name}
         )
     
@@ -163,8 +186,6 @@ class ExecutorAgent(OrchestratorAgent):
         self.current_step += 1
         
         try:
-
-
             # Dispatch to specialist agents (minimal integration for causal_discovery)
             start_time = time.time()
             if agent_name == "causal_discovery":
@@ -432,21 +453,29 @@ class ExecutorAgent(OrchestratorAgent):
         }
     
     def step(self, state: AgentState) -> AgentState:
-        """Execute executor step"""
+        """Execute executor step - returns the complete updated state"""
         if state.get("execution_paused"):
             result = self.resume_execution(state)
         else:
             result = self.execute_plan(state)
         
-        # Update state with execution results
+        # execute_plan now returns complete state in result.data
+        # So we can just return it directly after handling errors
         if result.success:
-            state.update(result.data or {})
+            # result.data already contains the full updated state
+            updated_state = result.data or state
+            
             # Preserve executor action for graph.py to detect HITL needs
             if result.metadata and result.metadata.get("action"):
-                state["__executor_action__"] = result.metadata.get("action")
+                updated_state["__executor_action__"] = result.metadata.get("action")
+            
+            # Remove DataFrame keys to avoid serialization issues
             for key in ("df_preprocessed", "df_raw", "df", "gt_df"):
-                state.pop(key, None)
+                updated_state.pop(key, None)
+            
+            return updated_state
         else:
+            # On failure, update state with error info
             state["execution_status"] = ExecutionStatus.FAILED
             state["error"] = result.error or "Execution failed"
             state["error_log"] = state.get("error_log", [])
@@ -455,5 +484,4 @@ class ExecutorAgent(OrchestratorAgent):
                 "error": result.error,
                 "metadata": result.metadata
             })
-        
-        return state
+            return state

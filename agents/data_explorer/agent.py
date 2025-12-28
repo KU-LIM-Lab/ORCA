@@ -371,7 +371,6 @@ class DataExplorerAgent(SpecialistAgent):
         """Execute text2sql generation step"""
         print("\n📝 Generating SQL query from natural language...")
         
-        # 커스텀 도구 사용
         result = self.use_tool("table_retrieval", state)
         
         if result.get("success"):

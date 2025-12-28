@@ -104,8 +104,10 @@ class OrchestrationGraph:
         
         step_start_time = time.time()
         
-        result = self.executor.step(state)
-        state.update(result)
+        # executor.step() returns the complete updated state
+        updated_state = self.executor.step(state)
+        
+        state = updated_state
         
         # Log step exit if event logger available
         if self.event_logger and step_id:
@@ -421,7 +423,8 @@ class OrchestrationGraph:
                                                                 
                                 if value is not None: 
                                     if field == "selected_tables" and isinstance(value, list):
-                                        print(f"   - {label}: {', '.join(value)}")
+                                        if value:
+                                            print(f"   ✓ {', '.join(value)}")
                                     elif field == "data_profile" and isinstance(value, dict):
                                         basic_checks = value.get("basic_checks", {})
                                         global_scores = value.get("global_scores", {})
@@ -608,14 +611,11 @@ class OrchestrationGraph:
                     elif decision == "rerun" and "feedback" in user_data:
                         print(f"   Feedback: {user_data['feedback']}")
                 
-                    # Update state with user decision - this allows executor to resume and process HITL
-                    # DON'T get_state() first - that returns stale checkpoint before executor's updates
-                    # Just update with user_data directly, which merges into current checkpoint
+
                     self.compiled_graph.update_state(config, user_data)
                     
                     found_interrupt = True
-                    # Stream terminates after interrupt, break to exit for loop
-                    # Resume from checkpoint in next while loop iteration
+
                     break
                 else:
                     # 일반 노드 실행 완료

@@ -117,11 +117,6 @@ class PlannerAgent(OrchestratorAgent):
             state["plan_created"] = False
 
             state["analysis_mode"] = "full_pipeline"
-            # decision = interrupt({
-            #     "question": "Select analysis mode",
-            #     "options": ["full_pipeline", "data_exploration"],
-            #     "edit_hint": "Set analysis_mode to 'full_pipeline' or 'data_exploration'"
-            # })
 
         else:
             if state.get("allow_start_without_ground_truth") is None:
