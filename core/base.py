@@ -284,9 +284,7 @@ class OrchestratorAgent(BaseAgent):
                 "action": "select_tables",
                 "description": "Select relevant tables for analysis",
                 "required_state_keys": ["schema_info", "table_metadata"],
-                "timeout": 120,
-                "hitl_required": True,
-                "hitl_executed": False
+                "timeout": 120
             },
             {
                 "phase": PipelinePhase.DATA_EXPLORATION.value,
@@ -295,9 +293,7 @@ class OrchestratorAgent(BaseAgent):
                 "action": "retrieve_data",
                 "description": "Retrieve data via text2sql",
                 "required_state_keys": ["selected_tables"],
-                "timeout": 180,
-                "hitl_required": True,
-                "hitl_executed": False
+                "timeout": 180
             },
             {
                 "phase": PipelinePhase.DATA_EXPLORATION.value,
@@ -306,9 +302,7 @@ class OrchestratorAgent(BaseAgent):
                 "action": "data_preprocessing",
                 "description": "Fetch data (via SQL) and preprocess into df_preprocessed",
                 "required_state_keys": ["sql_query"],
-                "timeout": 300,
-                "hitl_required": True,
-                "hitl_executed": False
+                "timeout": 300
             },
             
             # Causal Discovery Phase
@@ -319,9 +313,7 @@ class OrchestratorAgent(BaseAgent):
                 "action": "profile_data",
                 "description": "Profile data characteristics and generate qualitative summary",
                 "required_state_keys": ["df_preprocessed"],
-                "timeout": 300,
-                "hitl_required": True,
-                "hitl_executed": False
+                "timeout": 300
             },
             {
                 "phase": PipelinePhase.CAUSAL_DISCOVERY.value,
@@ -330,9 +322,7 @@ class OrchestratorAgent(BaseAgent):
                 "action": "configure_algorithms",
                 "description": "Configure algorithms based on data profile compatibility",
                 "required_state_keys": ["data_profiling_completed", "data_profile"],
-                "timeout": 60,
-                "hitl_required": True,
-                "hitl_executed": False
+                "timeout": 60
             },
             {
                 "phase": PipelinePhase.CAUSAL_DISCOVERY.value,
@@ -341,9 +331,7 @@ class OrchestratorAgent(BaseAgent):
                 "action": "run_algorithm_portfolio",
                 "description": "Run algorithms from execution plan in parallel",
                 "required_state_keys": ["algorithm_configuration_completed", "execution_plan"],
-                "timeout": 600,
-                "hitl_required": True,
-                "hitl_executed": False
+                "timeout": 600
             },
             {
                 "phase": PipelinePhase.CAUSAL_DISCOVERY.value,
@@ -352,9 +340,7 @@ class OrchestratorAgent(BaseAgent):
                 "action": "score_graphs",
                 "description": "Calculate scores (markov_consistency, sampling_stability, structural_stability) for all graphs",
                 "required_state_keys": ["run_algorithms_portfolio_completed", "algorithm_results"],
-                "timeout": 180,
-                "hitl_required": True,
-                "hitl_executed": False
+                "timeout": 180
             },
             {
                 "phase": PipelinePhase.CAUSAL_DISCOVERY.value,
@@ -363,9 +349,7 @@ class OrchestratorAgent(BaseAgent):
                 "action": "evaluate_graphs",
                 "description": "Evaluate and rank graphs using composite scorecard",
                 "required_state_keys": ["graph_scoring_completed", "scored_graphs"],
-                "timeout": 120,
-                "hitl_required": True,
-                "hitl_executed": False
+                "timeout": 120
             },
             {
                 "phase": PipelinePhase.CAUSAL_DISCOVERY.value,
@@ -374,9 +358,7 @@ class OrchestratorAgent(BaseAgent):
                 "action": "synthesize_ensemble",
                 "description": "Synthesize ensemble with PAG-like and DAG outputs",
                 "required_state_keys": ["graph_evaluation_completed", "ranked_graphs"],
-                "timeout": 180,
-                "hitl_required": True,
-                "hitl_executed": False
+                "timeout": 180
             },
             
             # Causal Inference Phase
@@ -387,9 +369,7 @@ class OrchestratorAgent(BaseAgent):
                 "action": "parse_question",
                 "description": "Parse natural language question to identify causal variables",
                 "required_state_keys": ["initial_query", "selected_graph", "df_preprocessed"],
-                "timeout": 120,
-                "hitl_required": True,
-                "hitl_executed": False
+                "timeout": 120
             },
             {
                 "phase": PipelinePhase.CAUSAL_INFERENCE.value,
@@ -398,9 +378,7 @@ class OrchestratorAgent(BaseAgent):
                 "action": "select_config",
                 "description": "Select inference configuration",
                 "required_state_keys": ["parsed_query", "selected_graph", "df_preprocessed"],
-                "timeout": 120,
-                "hitl_required": True,
-                "hitl_executed": False
+                "timeout": 120
             },
             {
                 "phase": PipelinePhase.CAUSAL_INFERENCE.value,
@@ -409,8 +387,7 @@ class OrchestratorAgent(BaseAgent):
                 "action": "estimate_effects",
                 "description": "Estimate causal effects",
                 "required_state_keys": ["treatment_variable", "outcome_variable", "selected_graph"],
-                "timeout": 300,
-                "hitl_required": False
+                "timeout": 300
             },
             {
                 "phase": PipelinePhase.CAUSAL_INFERENCE.value,
@@ -419,9 +396,7 @@ class OrchestratorAgent(BaseAgent):
                 "action": "interpret_results",
                 "description": "Interpret and validate results",
                 "required_state_keys": ["causal_estimates"],
-                "timeout": 180,
-                "hitl_required": False,
-                "hitl_executed": False
+                "timeout": 180
             },
             
             # Report Generation
@@ -432,9 +407,7 @@ class OrchestratorAgent(BaseAgent):
                 "action": "generate_report",
                 "description": "Generate final analysis report",
                 "required_state_keys": [],
-                "timeout": 240,
-                "hitl_required": True,
-                "hitl_executed": False
+                "timeout": 240
             }
         ]
 

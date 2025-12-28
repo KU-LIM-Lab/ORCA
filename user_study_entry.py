@@ -338,13 +338,20 @@ def run_orca_condition(
     sys.exit(0)
 
 
-def run_baseline_condition(participant_id: str, db_id: str = "reef_db"):
+def run_baseline_condition(
+    participant_id: str, 
+    db_id: str = "reef_db",
+    task_id: str = "task1",
+    run_context: Optional[Any] = None
+):
     """
     Run baseline condition: alternative baseline system.
     
     Args:
         participant_id: Unique participant identifier
         db_id: Database identifier to use
+        task_id: Task identifier
+        run_context: RunContext instance for experiment tracking
     """
     from baseline.baseline_agent import run_baseline_interactive
     
@@ -365,7 +372,8 @@ def run_baseline_condition(participant_id: str, db_id: str = "reef_db"):
         run_baseline_interactive(
             participant_id=participant_id,
             session_id=session_id,
-            db_id=db_id
+            db_id=db_id,
+            run_context=run_context
         )
         print(f"\n✅ Session completed for participant {participant_id}")
         logger.info(f"Baseline condition completed for participant {participant_id}")
@@ -433,7 +441,12 @@ if __name__ == "__main__":
                     run_context=run_ctx
                 )
             elif args.condition == "baseline":
-                run_baseline_condition(args.participant_id, args.db_id)
+                run_baseline_condition(
+                    args.participant_id,
+                    args.db_id,
+                    task_id=args.task_id,
+                    run_context=run_ctx
+                )
                 
     except KeyboardInterrupt:
         print("\n\n⚠️  Session interrupted by user (Ctrl+C)")

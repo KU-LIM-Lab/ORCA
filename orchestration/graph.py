@@ -118,9 +118,9 @@ class OrchestrationGraph:
                 metadata={"timestamp": time.time()}
             )
         
-        # Check if any agent requested HITL via state flag
-        # This happens when agents like DataPreprocessorAgent are called from within
-        # regular Python methods (not LangGraph nodes), so they can't call interrupt() directly
+        # Check if any agent requested HITL via state flag (agent-initiated HITL)
+        # This happens when agents set __hitl_requested__ flag via request_hitl()
+        # The executor node triggers the interrupt() which is caught by stream() loop
         if state.get("__hitl_requested__"):
             payload = state.get("__hitl_payload__", {})
             hitl_type = state.get("__hitl_type__", "unknown")

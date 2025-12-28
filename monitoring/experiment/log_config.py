@@ -76,6 +76,30 @@ def configure_experiment_logging(
             logger_obj.setLevel(logging.WARNING)
             # Prevent propagation to root logger for terminal output
             logger_obj.propagate = True
+        
+        # Keep agent logs visible (INFO level) in terminal
+        # Create a separate handler for agents that shows INFO level
+        agent_loggers = [
+            "agents.data_explorer",
+            "agents.causal_discovery",
+            "agents.causal_analysis",
+            "agents.report_generation",
+            "orchestration.planner",
+            "orchestration.executor",
+            "core.base",
+        ]
+        
+        # Add INFO-level handler for agent loggers
+        agent_terminal_handler = logging.StreamHandler(sys.stdout)
+        agent_terminal_handler.setLevel(logging.INFO)
+        agent_terminal_formatter = logging.Formatter("%(levelname)s [%(name)s]: %(message)s")
+        
+        for logger_name in agent_loggers:
+            logger_obj = logging.getLogger(logger_name)
+            logger_obj.setLevel(logging.INFO)
+            # Add handler directly to agent logger (don't propagate to root)
+            logger_obj.addHandler(agent_terminal_handler)
+            logger_obj.propagate = False  # Prevent duplicate messages
     else:
         # Show INFO level in terminal
         terminal_handler = logging.StreamHandler(sys.stdout)

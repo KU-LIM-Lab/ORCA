@@ -242,28 +242,6 @@ class DataPreprocessorAgent(SpecialistAgent):
                     f"High cardinality variables detected: {', '.join(schema['high_cardinality_vars'][:5])}"
                 )
 
-            # Trigger HITL if needed
-            # Always request HITL in interactive mode to allow users to review and edit (e.g., target_columns)
-            hitl_required = (
-                state.get("hitl_required", False) or
-                state.get("interactive", False) or  # Always show HITL in interactive mode
-                schema.get("mixed_data_types") or
-                len(schema.get("high_cardinality_vars", [])) > 0
-            )
-
-            if hitl_required and state.get("interactive", False):
-                payload = {
-                    "step": "data_preprocessing",
-                    "phase": "data_exploration",
-                    "description": "Data schema detected. Review the variable types and characteristics.",
-                    "decisions": ["approve", "edit", "rerun", "abort"]
-                }
-                if isinstance(payload, (pd.Series, pd.Index)):
-                    return payload.tolist()
-                # payload = _to_jsonable(payload)
-                state = self.request_hitl(state, payload=payload, hitl_type="schema_review")
-                return state
-
             return state
 
         except Exception as e:

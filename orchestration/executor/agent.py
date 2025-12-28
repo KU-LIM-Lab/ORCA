@@ -82,17 +82,10 @@ class ExecutorAgent(OrchestratorAgent):
             if isinstance(obj, (list, tuple)):
                 t = type(obj)
                 return t(_convert_numpy_types(v) for v in obj)
-            return obj
-
-        def clear_hitl_flags(s: AgentState):
-            for k in ["hitl_executed", "hitl_decision", "decision", "edits", "feedback"]:
-                s.pop(k, None)
+                return obj
 
         # Execute steps based on current_execute_step pointer
-        # This loop handles step execution and HITL gates:
-        # 1. Execute step (if not already executed)
-        # 2. If HITL required, trigger interrupt and return (execution pauses)
-        # 3. On resume, check HITL decision and process accordingly
+
         while True:
             idx = state.get("current_execute_step", 0)
             if idx >= len(plan):
@@ -121,7 +114,7 @@ class ExecutorAgent(OrchestratorAgent):
             state["current_substep"] = step["substep"]
             state["current_phase"] = step.get("phase", "")
             
-            # Execute substep
+            # Execute substep (only if not already executed)
             if not state.get("current_state_executed"):
                 result = self._execute_step(step, state, llm)
                 self.execution_log.append({
@@ -144,126 +137,10 @@ class ExecutorAgent(OrchestratorAgent):
                 self.results[step["substep"]] = safe_data
                 state["current_state_executed"] = True
 
-                # If no HITL required or non-interactive mode, advance to next step
-                if not step.get("hitl_required", False) or not interactive:
-                    state.setdefault("completed_substeps", []).append(step["substep"])
-                    state["current_execute_step"] = idx + 1
-                    state["current_state_executed"] = False
-                    continue
-
-            # HITL not required - advance to next step
-            if not step.get("hitl_required", False):
-                state.setdefault("completed_substeps", []).append(step["substep"])
-                state["current_execute_step"] = idx + 1
-                state["current_state_executed"] = False
-                continue
-
-            # HITL gate: Process user decision or trigger interrupt
-            if state.get("hitl_executed", False):
-                decision = state.get("hitl_decision", "approve")
-                edits = state.get("edits", {})
-                feedback = state.get("feedback", "")
-                
-                if decision == "abort":
-                    return AgentResult(
-                        success=False,
-                        error="Aborted by user",
-                        metadata={"substep": step["substep"], "execution_log": self.execution_log}
-                    )
-
-                if decision == "edit":
-                    self._apply_edits(state, edits)
-                    print(f"\n✏️  Edits applied. Re-running {step['substep']} with new parameters...")
-                    
-                    current_substep = step["substep"]
-                    current_phase = step.get("phase", "")
-
-                    if current_phase == "data_exploration" and current_substep == "data_preprocessing":
-                        state["completed_substeps"] = []
-                        logger.info(f"Edit in data_preprocessing: cleared all completed substeps for fresh execution")
-                                        
-                    # 재실행 준비
-                    state["current_state_executed"] = False
-                    clear_hitl_flags(state)
-
-                    return AgentResult(
-                        success=True,
-                        data={**state},
-                        metadata={"action": "edit_and_rerun", "substep": step["substep"]},
-                    )
-
-                if decision == "rerun":
-                    rerun_ok = False
-                    for _ in range(max_rerun):
-                        re = self._rerun_step(step, state, feedback, llm)
-                        self.execution_log.append({
-                            "phase": step["phase"],
-                            "substep": f"{step['substep']}_rerun",
-                            "timestamp": datetime.now().isoformat(),
-                            "success": re.success,
-                            "duration": re.execution_time
-                        })
-                        if re.success:
-                            state.update(re.data or {})
-                            self.results[step["substep"]] = re.data or {}
-                            rerun_ok = True
-                            break
-                        
-                    if not rerun_ok:
-                        return AgentResult(
-                            success=False,
-                            error=f"Rerun failed at {step['substep']}",
-                            metadata={"execution_log": self.execution_log}
-                        )
-                        
-                    state["current_state_executed"] = True
-                    # Don't clear hitl flags - we want to re-prompt for approval
-                    # Set hitl_executed = False to trigger another HITL check
-                    state["hitl_executed"] = False
-
-                    return AgentResult(
-                        success=True,
-                        data={**state},
-                        metadata={"action": "rerun_done_need_reapproval", "substep": step["substep"]},
-                    )
-                
-                # For approve, advance to next step and clear HITL flags  
-                if decision == "approve":
-                    next_idx = idx + 1
-                    next_step_name = plan[next_idx]["substep"] if next_idx < len(plan) else "END"
-                    print(f"\n✅ Step approved: {step['substep']} (advancing from step {idx} to {next_idx}: {next_step_name})")
-                    state.setdefault("completed_substeps", []).append(step["substep"])
-                    state["current_execute_step"] = next_idx
-                    state["current_state_executed"] = False
-                    clear_hitl_flags(state)
-                    
-                    # Must return to persist state changes
-                    # The graph will re-invoke executor, which will pick up the incremented step
-                    return AgentResult(
-                        success=True,
-                        data={**state},
-                        metadata={"action": "approved_advance_to_next", "substep": step["substep"], "next_step_idx": next_idx, "next_step_name": next_step_name},
-                    )
-            else:
-                # HITL required but not executed yet - agent should have triggered interrupt
-                # If we reach here, it means the agent didn't call request_hitl()
-                # Return to allow graph.py to handle the interrupt
-                # The state should have __hitl_requested__ flag set by the agent
-                if state.get("__hitl_requested__"):
-                    # Agent requested HITL, return to let graph.py handle interrupt
-                    return AgentResult(
-                        success=True,
-                        data={**state},
-                        metadata={"action": "waiting_for_hitl", "substep": step["substep"]},
-                    )
-                else:
-                    # HITL required but no interrupt triggered - this shouldn't happen
-                    # Advance anyway to prevent infinite loop
-                    logger.warning(f"HITL required for {step['substep']} but no interrupt triggered. Advancing anyway.")
-                    state.setdefault("completed_substeps", []).append(step["substep"])
-                    state["current_execute_step"] = idx + 1
-                    state["current_state_executed"] = False
-                    continue
+            # Advance to next step immediately
+            state.setdefault("completed_substeps", []).append(step["substep"])
+            state["current_execute_step"] = idx + 1
+            state["current_state_executed"] = False
             
         return AgentResult(
             success=True,
@@ -379,39 +256,6 @@ class ExecutorAgent(OrchestratorAgent):
                 error=f"Agent {agent_name} not implemented in current architecture",
                 metadata={"substep": substep, "agent": agent_name}
             )
-
-            # # Execute the agent with timeout
-            # start_time = time.time()
-            
-            # if asyncio.iscoroutinefunction(agent.execute_async):
-            #     result = asyncio.run(self._execute_with_timeout(
-            #         agent.execute_async(state), timeout
-            #     ))
-            # else:
-            #     result = self._execute_with_timeout_sync(
-            #         lambda: agent.execute(state), timeout
-            #     )
-            
-            # execution_time = time.time() - start_time
-            
-            # # Record metrics
-            # if self.metrics_collector:
-            #     self.metrics_collector.record_execution_time(
-            #         f"{self.name}.{substep}", execution_time,
-            #         {"agent": agent_name, "action": action}
-            #     )
-            
-            # return AgentResult(
-            #     success=result.success,
-            #     data=result.data,
-            #     error=result.error,
-            #     execution_time=execution_time,
-            #     metadata={
-            #         "substep": substep,
-            #         "agent": agent_name,
-            #         "action": action
-            #     }
-            # )
             
         except asyncio.TimeoutError:
             return AgentResult(
@@ -597,6 +441,9 @@ class ExecutorAgent(OrchestratorAgent):
         # Update state with execution results
         if result.success:
             state.update(result.data or {})
+            # Preserve executor action for graph.py to detect HITL needs
+            if result.metadata and result.metadata.get("action"):
+                state["__executor_action__"] = result.metadata.get("action")
             for key in ("df_preprocessed", "df_raw", "df", "gt_df"):
                 state.pop(key, None)
         else:

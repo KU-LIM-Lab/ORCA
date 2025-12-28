@@ -329,18 +329,21 @@ class CausalDiscoveryAgent(SpecialistAgent):
             if variable_schema:
                 state["variable_schema"] = variable_schema
             
+            logger.info("Data profiling completed")
+            
             # Request HITL for data profile review if interactive mode
             if state.get("interactive", False):
-                payload = {
-                    "step": "data_profiling",
-                    "phase": "causal_discovery",
-                    "description": "Data profiling completed. Review the data characteristics before algorithm configuration.",
-                    "decisions": ["approve", "edit", "rerun", "abort"]
-                }
-                state = self.request_hitl(state, payload=payload, hitl_type="data_profiling_review")
-                return state
+                state = self.request_hitl(
+                    state,
+                    payload={
+                        "step": "data_profiling",
+                        "phase": "causal_discovery",
+                        "description": "Please review the data profiling results",
+                        "decisions": ["approve", "edit", "rerun", "abort"]
+                    },
+                    hitl_type="data_profile_review"
+                )
             
-            logger.info("Data profiling completed")
             return state
             
         except Exception as e:
@@ -547,19 +550,22 @@ class CausalDiscoveryAgent(SpecialistAgent):
             
             state["execution_plan"] = execution_plan
             state["algorithm_configuration_completed"] = True
-            
-            # Request HITL for execution plan review if interactive mode
-            if state.get("interactive", False):
-                payload = {
-                    "step": "algorithm_configuration",
-                    "phase": "causal_discovery",
-                    "description": "Algorithm execution plan configured. Review the selected algorithms and configurations.",
-                    "decisions": ["approve", "edit", "rerun", "abort"]
-                }
-                state = self.request_hitl(state, payload=payload, hitl_type="execution_plan_review")
-                return state
-            
+                        
             logger.info(f"Algorithm configuration completed. Execution plan: {len(execution_plan)} algorithms")
+            
+            # Request HITL for algorithm configuration review if interactive mode
+            if state.get("interactive", False):
+                state = self.request_hitl(
+                    state,
+                    payload={
+                        "step": "algorithm_configuration",
+                        "phase": "causal_discovery",
+                        "description": "Please review the algorithm execution plan",
+                        "decisions": ["approve", "edit", "rerun", "abort"]
+                    },
+                    hitl_type="algorithm_config_review"
+                )
+            
             return state
             
         except Exception as e:
@@ -814,18 +820,21 @@ class CausalDiscoveryAgent(SpecialistAgent):
             state["executed_algorithms"] = list(algorithm_results.keys())
             state["run_algorithms_portfolio_completed"] = True
             
+            logger.info("Algorithm portfolio execution completed")
+            
             # Request HITL for algorithm results review if interactive mode
             if state.get("interactive", False):
-                payload = {
-                    "step": "run_algorithms_portfolio",
-                    "phase": "causal_discovery",
-                    "description": "Algorithms executed. Review the results before graph scoring.",
-                    "decisions": ["approve", "edit", "rerun", "abort"]
-                }
-                state = self.request_hitl(state, payload=payload, hitl_type="algorithm_results_review")
-                return state
+                state = self.request_hitl(
+                    state,
+                    payload={
+                        "step": "run_algorithms_portfolio",
+                        "phase": "causal_discovery",
+                        "description": "Please review the algorithm execution results",
+                        "decisions": ["approve", "edit", "rerun", "abort"]
+                    },
+                    hitl_type="algorithm_results_review"
+                )
             
-            logger.info("Algorithm portfolio execution completed")
             return state
             
         except Exception as e:
@@ -874,18 +883,21 @@ class CausalDiscoveryAgent(SpecialistAgent):
             state["scored_graphs"] = scored_graphs
             state["graph_scoring_completed"] = True
             
+            logger.info(f"Graph scoring completed. Scored {len(scored_graphs)} graphs")
+            
             # Request HITL for graph scoring review if interactive mode
             if state.get("interactive", False):
-                payload = {
-                    "step": "graph_scoring",
-                    "phase": "causal_discovery",
-                    "description": "Graph scoring completed. Review the scores before graph evaluation.",
-                    "decisions": ["approve", "edit", "rerun", "abort"]
-                }
-                state = self.request_hitl(state, payload=payload, hitl_type="graph_scoring_review")
-                return state
+                state = self.request_hitl(
+                    state,
+                    payload={
+                        "step": "graph_scoring",
+                        "phase": "causal_discovery",
+                        "description": "Please review the graph scoring results",
+                        "decisions": ["approve", "edit", "rerun", "abort"]
+                    },
+                    hitl_type="graph_scoring_review"
+                )
             
-            logger.info(f"Graph scoring completed. Scored {len(scored_graphs)} graphs")
             return state
             
         except Exception as e:
@@ -945,18 +957,21 @@ class CausalDiscoveryAgent(SpecialistAgent):
             state["top_candidates"] = top_candidates
             state["graph_evaluation_completed"] = True
             
+            logger.info(f"Graph evaluation completed. Top candidate: {top_candidates[0]['algorithm'] if top_candidates else 'None'}")
+            
             # Request HITL for graph evaluation review if interactive mode
             if state.get("interactive", False):
-                payload = {
-                    "step": "graph_evaluation",
-                    "phase": "causal_discovery",
-                    "description": "Graph evaluation completed. Review the ranked graphs and top candidates.",
-                    "decisions": ["approve", "edit", "rerun", "abort"]
-                }
-                state = self.request_hitl(state, payload=payload, hitl_type="graph_evaluation_review")
-                return state
+                state = self.request_hitl(
+                    state,
+                    payload={
+                        "step": "graph_evaluation",
+                        "phase": "causal_discovery",
+                        "description": "Please review the graph evaluation and ranking results",
+                        "decisions": ["approve", "edit", "rerun", "abort"]
+                    },
+                    hitl_type="graph_evaluation_review"
+                )
             
-            logger.info(f"Graph evaluation completed. Top candidate: {top_candidates[0]['algorithm'] if top_candidates else 'None'}")
             return state
             
         except Exception as e:
@@ -1327,17 +1342,6 @@ class CausalDiscoveryAgent(SpecialistAgent):
             except Exception as e:
                 logger.warning(f"Failed to visualize DAG: {e}")
             
-            # Request HITL for final graph review if interactive mode
-            if state.get("interactive", False):
-                payload = {
-                    "step": "ensemble_synthesis",
-                    "phase": "causal_discovery",
-                    "description": "Final causal graph synthesized. Review the selected graph before proceeding to causal analysis.",
-                    "decisions": ["approve", "edit", "rerun", "abort"]
-                }
-                state = self.request_hitl(state, payload=payload, hitl_type="final_graph_review")
-                return state
-            
             # Log final selected graph with details and reasoning
             n_edges = len(get_edges(dag_result))
             n_nodes = len(get_variables(dag_result))
@@ -1355,14 +1359,14 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 }
             
             # 실험 돌릴 때만 주석처리
-            # logger.info( 
-            #     f"Final selected graph:\n"
-            #     f"  Algorithm: {top_algorithm}\n"
-            #     f"  Graph Type: {graph_type}\n"
-            #     f"  Nodes: {n_nodes}, Edges: {n_edges}\n"
-            #     f"  Scores: {top_candidate_scores}\n"
-            #     f"  Reasoning: {reasoning}"
-            # )
+            logger.info( 
+                f"Final selected graph:\n"
+                f"  Algorithm: {top_algorithm}\n"
+                f"  Graph Type: {graph_type}\n"
+                f"  Nodes: {n_nodes}, Edges: {n_edges}\n"
+                f"  Scores: {top_candidate_scores}\n"
+                f"  Reasoning: {reasoning}"
+            )
             
             logger.info(f"Ensemble synthesis completed. Top algorithm: {top_algorithm}")
             
@@ -1400,6 +1404,19 @@ class CausalDiscoveryAgent(SpecialistAgent):
             except Exception as e:
                 import logging as log
                 log.getLogger(__name__).warning(f"Failed to save graph artifacts: {e}")
+            
+            # Request HITL for ensemble synthesis review if interactive mode
+            if state.get("interactive", False):
+                state = self.request_hitl(
+                    state,
+                    payload={
+                        "step": "ensemble_synthesis",
+                        "phase": "causal_discovery",
+                        "description": "Please review the final synthesized causal graph",
+                        "decisions": ["approve", "edit", "rerun", "abort"]
+                    },
+                    hitl_type="ensemble_synthesis_review"
+                )
             
             return state
             

@@ -354,15 +354,17 @@ class DataExplorerAgent(SpecialistAgent):
             
             # Request HITL for table selection review if interactive mode
             if state.get("interactive", False):
-                payload = {
-                    "step": "table_selection",
-                    "phase": "data_exploration",
-                    "description": "Tables selected. Review the selected tables before proceeding.",
-                    "decisions": ["approve", "edit", "rerun", "abort"]
-                }
-                state = self.request_hitl(state, payload=payload, hitl_type="table_selection_review")
-                return state
-        
+                state = self.request_hitl(
+                    state,
+                    payload={
+                        "step": "table_selection",
+                        "phase": "data_exploration",
+                        "description": "Please review the selected tables for analysis",
+                        "decisions": ["approve", "edit", "rerun", "abort"]
+                    },
+                    hitl_type="table_selection_review"
+                )
+            
         return state
     
     def _execute_text2sql_generation(self, state: AgentState) -> AgentState:
@@ -385,14 +387,16 @@ class DataExplorerAgent(SpecialistAgent):
             
             # Request HITL for SQL query review if interactive mode
             if state.get("interactive", False):
-                payload = {
-                    "step": "table_retrieval",
-                    "phase": "data_exploration",
-                    "description": "SQL query generated. Review the query before execution.",
-                    "decisions": ["approve", "edit", "rerun", "abort"]
-                }
-                state = self.request_hitl(state, payload=payload, hitl_type="sql_review")
-                return state
+                state = self.request_hitl(
+                    state,
+                    payload={
+                        "step": "table_retrieval",
+                        "phase": "data_exploration",
+                        "description": "Please review the generated SQL query",
+                        "decisions": ["approve", "edit", "rerun", "abort"]
+                    },
+                    hitl_type="sql_query_review"
+                )
                    
         return state
     

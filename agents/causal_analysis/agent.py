@@ -222,16 +222,19 @@ class CausalAnalysisAgent(SpecialistAgent):
             state["table_schema_str"] = result.get("table_schema_str")
             state["parse_question_completed"] = True
             
-            # Request HITL for parse question review if interactive mode
+            # Request HITL for parsed query review if interactive mode
             if state.get("interactive", False):
-                payload = {
-                    "step": "parse_question",
-                    "phase": "causal_analysis",
-                    "description": "Question parsed. Review the identified variables before configuration.",
-                    "decisions": ["approve", "edit", "rerun", "abort"]
-                }
-                state = self.request_hitl(state, payload=payload, hitl_type="parse_question_review")
-                return state
+                state = self.request_hitl(
+                    state,
+                    payload={
+                        "step": "parse_question",
+                        "phase": "causal_inference",
+                        "description": "Please review the identified causal variables",
+                        "decisions": ["approve", "edit", "rerun", "abort"]
+                    },
+                    hitl_type="parsed_query_review"
+                )
+            
         else:
             state["error"] = result.get("error", "Parse question failed")
         
@@ -251,14 +254,17 @@ class CausalAnalysisAgent(SpecialistAgent):
             
             # Request HITL for strategy review if interactive mode
             if state.get("interactive", False):
-                payload = {
-                    "step": "select_configuration",
-                    "phase": "causal_analysis",
-                    "description": "Causal analysis strategy configured. Review the treatment, outcome, confounders, and estimation method.",
-                    "decisions": ["approve", "edit", "rerun", "abort"]
-                }
-                state = self.request_hitl(state, payload=payload, hitl_type="strategy_review")
-                return state
+                state = self.request_hitl(
+                    state,
+                    payload={
+                        "step": "select_configuration",
+                        "phase": "causal_inference",
+                        "description": "Please review the selected causal analysis strategy",
+                        "decisions": ["approve", "edit", "rerun", "abort"]
+                    },
+                    hitl_type="strategy_review"
+                )
+            
         else:
             state["error"] = result.get("error", "Config selection failed")
         
