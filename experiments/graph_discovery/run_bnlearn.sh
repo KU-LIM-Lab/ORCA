@@ -1,0 +1,1 @@
+python -m experiments.graph_discovery.run_experiment --config experiments/graph_discovery/graph_discovery_experiments.yaml --experiment full_bnlearn

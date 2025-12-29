@@ -4,6 +4,7 @@ import pandas as pd
 import json, re
 from typing import Dict
 from utils.database import Database 
+from utils.redis_df import save_df_parquet
 from utils.llm import call_llm
 from prompts.causal_analysis_prompts import fix_sql_prompt 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -31,7 +32,10 @@ def build_fetch_data_node(llm: BaseChatModel):
             raise ValueError("Missing 'db_id' in state")
 
 
-        graph_nodes = state["causal_graph"]["nodes"]
+        causal_graph = state.get("selected_graph")
+        if not causal_graph:
+            raise ValueError("The causal graph generated from causal discovery is required for data fetching")
+        graph_nodes = causal_graph["nodes"]
         expression_dict = state["expression_dict"]
         expected_columns_base = [v.split(".")[-1] for v in graph_nodes]        
         
@@ -79,6 +83,17 @@ def build_fetch_data_node(llm: BaseChatModel):
             else:
                 raise RuntimeError(f"SQL retry also failed: {last_error}")
 
-        state["df_raw"] = df
+        # Persist DataFrame to Redis and store only key in state to avoid serialization issues
+        try:
+            db_id = state.get("db_id", "default")
+            session_id = state.get("session_id", "default_session")
+            key = f"{db_id}:causal_analysis_df:{session_id}"
+            save_df_parquet(key, df)
+            state["df_redis_key"] = key
+            state["df_shape"] = tuple(df.shape)
+            state["columns"] = list(df.columns)
+        except Exception:
+            # Fallback: do not store raw df in state
+            pass
         return state
     return node

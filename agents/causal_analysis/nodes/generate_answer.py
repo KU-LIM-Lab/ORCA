@@ -5,7 +5,7 @@ from langchain_core.runnables import RunnableLambda
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from utils.llm import call_llm
-from ORCA.prompts.causal_analysis_prompts import generate_answer_prompt, generate_answer_parser
+from prompts.causal_analysis_prompts import generate_answer_prompt, generate_answer_parser
 
 
 def build_generate_answer_node(llm: BaseChatModel) -> RunnableLambda:
@@ -15,10 +15,10 @@ def build_generate_answer_node(llm: BaseChatModel) -> RunnableLambda:
 
     def invoke(state: Dict) -> Dict:
         strategy = state["strategy"]
-        parsed_query = state["parsed_query"]
-        estimate = state["causal_estimate"]
-        refutation_result = state["refutation_result"]
-        label_maps = state["label_maps"]
+        parsed_query = state.get("parsed_query") or {}
+        estimate = state.get("causal_estimate")
+        refutation_result = state.get("refutation_result")
+        label_maps = state.get("label_maps")
 
         if not strategy or not estimate:
             raise ValueError("Missing strategy or causal_estimate")
@@ -48,6 +48,8 @@ def build_generate_answer_node(llm: BaseChatModel) -> RunnableLambda:
 
         state["final_answer"] = result
         state["final_answer"] = result.explanation if hasattr(result, "explanation") else str(result)
+        for key in ("df_preprocessed", "df_raw", "df", "gt_df"):
+            state.pop(key, None)
         return state
 
     return RunnableLambda(invoke)

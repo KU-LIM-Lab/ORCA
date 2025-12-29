@@ -5,57 +5,49 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 
-### 1. Causal Question Parsing Prompt
-class ParsedCausalQuery(BaseModel):
-    treatment: str
-    treatment_expression: str
-    outcome: str
-    outcome_expression: str
-    confounders: List[str]
-    confounder_expressions: List[str]
-    mediators: List[str] = []
-    instrumental_variables: List[str] = []
-    
-parse_query_parser = PydanticOutputParser(pydantic_object=ParsedCausalQuery)
+### 1.1. Treatment/Outcome Identification Prompt
+class TreatmentOutcomeIdentification(BaseModel):
+    treatment: str = Field(..., description="The treatment variable name (variable being manipulated)")
+    outcome: str = Field(..., description="The outcome variable name (variable being affected)")
+    reasoning: str = Field(..., description="Brief explanation of why these variables were selected")
 
-parse_query_prompt = ChatPromptTemplate.from_messages([
+identify_treatment_outcome_parser = PydanticOutputParser[TreatmentOutcomeIdentification](pydantic_object=TreatmentOutcomeIdentification)
+
+identify_treatment_outcome_prompt = ChatPromptTemplate.from_messages([
     ("system", """
-You are a expert data analyst for causal inference.
+You are an expert in causal inference. Your task is to identify the treatment and outcome variables from a user's causal question and available data.
 
-Given a natural language question, table descriptions and an expression_dict, extract:
+Given:
+- A natural language causal question
+- A sample of the preprocessed DataFrame
+- Table schema information
 
-- treatment: variable being manipulated
-- outcome: variable being affected
-- treatment_expression / outcome_expression: SQL expression to compute the variable (may include CASE WHEN, math functions, etc.)
-- confounders: control variables for backdoor adjustment
-- confounder_expressions: SQL expressions for each confounder (same order)
-- mediators: optional variables on the causal path
-- instrumental_variables: optional IVs
+Identify:
+- **Treatment (T)**: The variable that is being manipulated or intervened upon (the "cause")
+- **Outcome (Y)**: The variable that is being measured or affected (the "effect")
 
-# Rules:
-- Use only columns or derivable expressions from the schema.
-- Do NOT use identifiers like *_id or primary keys as variables.
-- If a variable (e.g., age) needs to be derived, define an alias (e.g., "age") and include its SQL expression in confounder_expressions.
-- Expressions must match SQL syntax (e.g., CASE WHEN ..., DATE_PART(...), etc.)
-- Refer to the provided expression_dict to reuse known SQL expressions instead of writing from scratch.
-- Do not use table aliases (e.g., cu, r). Use full column names.
+Rules:
+- Treatment should be a variable that can be manipulated or assigned (e.g., "received_treatment", "discount_applied", "campaign_exposed")
+- Outcome should be a variable that represents the result or effect (e.g., "purchase_amount", "conversion_rate", "customer_satisfaction")
+- Use variable names that exist in the DataFrame columns
+- Provide clear reasoning for your selection
 
-Return in JSON format.
 {format_instructions}
 """),
     ("human", """
-Question:
+User Question:
 {question}
 
-Table Descriptions:
+DataFrame Sample:
+{df_sample}
+
+Table Schema:
 {tables}
 
-If helpful, here is a dictionary mapping variable names to SQL expressions:
-{expression_dict}
+Available Columns:
+{columns}
 """)
-]).partial(format_instructions=parse_query_parser.get_format_instructions())
-
-
+]).partial(format_instructions=identify_treatment_outcome_parser.get_format_instructions())
 
 ### 2. SQL Generation Prompt
 sql_generation_prompt = ChatPromptTemplate.from_messages([
@@ -460,7 +452,7 @@ You are a causal inference expert using the DoWhy library.
 
 Your job is to choose the appropriate causal inference strategy, estimation method, and optional refutation methods given:
 - A user's causal question
-- Extracted variables (treatment, outcome, confounders)
+- Extracted variables (treatment, outcome, confounders, mediators, instrumental variables, colliders)
     - data type information as `{treatment_type}` and `{outcome_type}`
 - Basic data preview
 
@@ -517,6 +509,7 @@ Parsed Variables:
 - Confounders: {confounders}
 - Mediators: {mediators}
 - Instrumental Variables: {instrumental_variables}
+- Colliders: {colliders}
 
 Data Sample:
 {df_sample}

@@ -57,8 +57,7 @@ def call_llm(
     elif isinstance(prompt, str):
         return llm.invoke(prompt).content.strip()
 
-    else:
-        raise TypeError("Prompt must be a string or a BasePromptTemplate.")
+    raise TypeError("Prompt must be a string or a BasePromptTemplate.")
     
 
 # Async versions of the LLM functions
@@ -95,8 +94,7 @@ async def call_llm_async(
         result = await llm.ainvoke(prompt)
         return result.content.strip()
 
-    else:
-        raise TypeError("Prompt must be a string or a BasePromptTemplate.")
+    raise TypeError("Prompt must be a string or a BasePromptTemplate.")
 
 
 def get_llm(model: str = "gpt-4o-mini", temperature: float = 0.3, provider: str = "openai") -> BaseChatModel:

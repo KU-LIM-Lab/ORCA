@@ -1,8 +1,9 @@
-const client = require('./db');
+const getClient = require("./db");
 
 (async () => {
+  const client = getClient();
   await client.connect();
-  console.log('Syncing sku.created_at with product.created_at...');
+  console.log("Syncing sku.created_at with product.created_at...");
 
   await client.query(`
     UPDATE sku
@@ -14,6 +15,6 @@ const client = require('./db');
     WHERE sku.product_id = p.product_id
   `);
 
-  console.log('✅ sku.created_at 동기화 완료!');
+  console.log("✅ sku.created_at 동기화 완료!");
   await client.end();
 })();

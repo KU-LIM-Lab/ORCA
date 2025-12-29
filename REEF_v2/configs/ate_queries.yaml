@@ -1,0 +1,573 @@
+# ATE 측정을 위한 쿼리 설정
+# 각 쿼리는 treatment와 outcome에 대한 ATE를 계산합니다.
+
+queries:
+  # 1) categories_popularity_score -> brand_strength_score
+  - question: "What is the causal effect of category_popularity_score on brand_strength_score?"
+    treatment: "category_popularity_score"
+    outcome: "brand_strength_score"
+    confounders: []
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        c.category_popularity_score AS category_popularity_score,
+        b.brand_strength_score      AS brand_strength_score
+      FROM brands b
+      JOIN categories c ON b.category_id = c.category_id
+      WHERE c.category_popularity_score IS NOT NULL
+        AND b.brand_strength_score IS NOT NULL
+
+  # 2) user.age -> avg_browsing_time  (graph: age -> avg_browsing_time)
+  - question: "What is the causal effect of age on avg_browsing_time?"
+    treatment: "age"
+    outcome: "avg_browsing_time"
+    confounders: []
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        u.age AS age,
+        u.avg_browsing_time AS avg_browsing_time
+      FROM users u
+      WHERE u.age IS NOT NULL
+        AND u.avg_browsing_time IS NOT NULL
+
+  # 3) user.gender -> avg_browsing_time  (graph: gender -> avg_browsing_time)
+  - question: "What is the causal effect of gender on avg_browsing_time?"
+    treatment: "gender"
+    outcome: "avg_browsing_time"
+    confounders: []
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        u.gender AS gender,
+        u.avg_browsing_time AS avg_browsing_time
+      FROM users u
+      WHERE u.gender IS NOT NULL
+        AND u.avg_browsing_time IS NOT NULL
+
+  # 4) avg_browsing_time -> is_active (graph)
+  - question: "What is the causal effect of avg_browsing_time on is_active?"
+    treatment: "avg_browsing_time"
+    outcome: "is_active"
+    confounders: []
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        u.avg_browsing_time AS avg_browsing_time,
+        u.is_active         AS is_active
+      FROM users u
+      WHERE u.avg_browsing_time IS NOT NULL
+        AND u.is_active IS NOT NULL
+
+  # 5) user.created_at -> is_active (graph)
+  - question: "What is the causal effect of signup_days_ago on is_active?"
+    treatment: "signup_days_ago"
+    outcome: "is_active"
+    confounders: []
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - u.created_at)) / 86400.0 AS signup_days_ago,
+        u.is_active AS is_active
+      FROM users u
+      WHERE u.created_at IS NOT NULL
+        AND u.is_active IS NOT NULL
+
+  # 6) user.is_active -> cart.quantity (graph + user.age, user.gender -> cart.quantity 도 존재)
+  - question: "What is the causal effect of is_active on cart_quantity?"
+    treatment: "is_active"
+    outcome: "cart_quantity"
+    confounders: ["age", "gender"]  # graph에서 age, gender가 cart.quantity의 부모
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        u.is_active AS is_active,
+        u.age       AS age,
+        u.gender    AS gender,
+        c.quantity  AS cart_quantity
+      FROM cart c
+      JOIN users u ON c.user_id = u.user_id
+      WHERE u.is_active 
+        AND c.quantity 
+
+  # 7) sku.price -> order_items.unit_price (graph)
+  - question: "What is the causal effect of sku_price on unit_price?"
+    treatment: "sku_price"
+    outcome: "unit_price"
+    confounders: []
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        s.price      AS sku_price,
+        oi.unit_price AS unit_price
+      FROM order_items oi
+      JOIN sku s ON oi.sku_id = s.sku_id
+      WHERE s.price IS NOT NULL
+        AND oi.unit_price IS NOT NULL
+
+  # 8) order_items.quantity -> order_items.total_price (graph)
+  - question: "What is the causal effect of quantity on total_price?"
+    treatment: "quantity"
+    outcome: "total_price"
+    confounders: ["unit_price"]   # 현실적으로는 unit_price가 같이 total_price에 들어가므로 조정 추천
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        oi.quantity   AS quantity,
+        oi.unit_price AS unit_price,
+        oi.total_price AS total_price
+      FROM order_items oi
+      WHERE oi.quantity IS NOT NULL
+        AND oi.total_price IS NOT NULL
+        AND oi.unit_price IS NOT NULL
+
+  # 9) order_items.unit_price -> order_items.total_price (graph)
+  - question: "What is the causal effect of unit_price on total_price?"
+    treatment: "unit_price"
+    outcome: "total_price"
+    confounders: ["quantity"]
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        oi.unit_price  AS unit_price,
+        oi.quantity    AS quantity,
+        oi.total_price AS total_price
+      FROM order_items oi
+      WHERE oi.unit_price IS NOT NULL
+        AND oi.total_price IS NOT NULL
+        AND oi.quantity IS NOT NULL
+
+  # 10) order_items.total_price -> orders.subtotal_amount (graph)
+  - question: "What is the causal effect of order_item_total_price on subtotal_amount?"
+    treatment: "order_item_total_price"
+    outcome: "subtotal_amount"
+    confounders: []
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        oi.total_price AS order_item_total_price,
+        o.subtotal_amount AS subtotal_amount
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.order_id
+      WHERE oi.total_price IS NOT NULL
+        AND o.subtotal_amount IS NOT NULL
+
+  # 11) orders.subtotal_amount -> orders.total_amount (graph)
+  - question: "What is the causal effect of subtotal_amount on total_amount?"
+    treatment: "subtotal_amount"
+    outcome: "total_amount"
+    confounders: []
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        o.subtotal_amount AS subtotal_amount,
+        o.total_amount    AS total_amount
+      FROM orders o
+      WHERE o.subtotal_amount IS NOT NULL
+        AND o.total_amount IS NOT NULL
+
+  # 12) orders.discount_amount -> orders.total_amount (graph)
+  - question: "What is the causal effect of discount_amount on total_amount?"
+    treatment: "discount_amount"
+    outcome: "total_amount"
+    confounders: ["subtotal_amount"]  # subtotal도 total에 직접 들어감
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        o.discount_amount AS discount_amount,
+        o.subtotal_amount AS subtotal_amount,
+        o.total_amount AS total_amount
+      FROM orders o
+      WHERE o.discount_amount IS NOT NULL
+        AND o.total_amount IS NOT NULL
+        AND o.subtotal_amount IS NOT NULL
+
+  # 13) user.point_balance -> orders.point_used (graph)
+  - question: "What is the causal effect of point_balance on point_used?"
+    treatment: "point_balance"
+    outcome: "point_used"
+    confounders: []
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        u.point_balance AS point_balance,
+        o.point_used    AS point_used
+      FROM orders o
+      JOIN users u ON o.user_id = u.user_id
+      WHERE u.point_balance IS NOT NULL
+        AND o.point_used IS NOT NULL
+
+  # 14) orders.point_used -> orders.total_amount (graph)
+  - question: "What is the causal effect of point_used on total_amount?"
+    treatment: "point_used"
+    outcome: "total_amount"
+    confounders: ["subtotal_amount", "discount_amount"]
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        o.point_used AS point_used,
+        o.subtotal_amount AS subtotal_amount,
+        o.discount_amount AS discount_amount,
+        o.total_amount AS total_amount
+      FROM orders o
+      WHERE o.point_used IS NOT NULL
+        AND o.total_amount IS NOT NULL
+        AND o.subtotal_amount IS NOT NULL
+        AND o.discount_amount IS NOT NULL
+
+  # 15) orders.created_at -> payment.payment_date (graph)
+  - question: "What is the causal effect of order_created_at on payment_delay_days?"
+    treatment: "order_created_at_epoch"
+    outcome: "payment_delay_days"
+    confounders: []
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        EXTRACT(EPOCH FROM o.created_at) AS order_created_at_epoch,
+        EXTRACT(EPOCH FROM (p.payment_date - o.created_at)) / 86400.0 AS payment_delay_days
+      FROM orders o
+      JOIN payment p ON p.order_id = o.order_id
+      WHERE o.created_at IS NOT NULL
+        AND p.payment_date IS NOT NULL
+
+  # 16) payment.payment_date -> payment.payment_status (graph)
+  - question: "What is the causal effect of payment_delay_days on payment_completed?"
+    treatment: "payment_delay_days"
+    outcome: "payment_completed"
+    confounders: ["order_total_amount"]  # 필요시(설계에 따라) 넣을 수 있음
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        EXTRACT(EPOCH FROM (p.payment_date - o.created_at)) / 86400.0 AS payment_delay_days,
+        CASE WHEN p.payment_status = 'COMPLETED' THEN 1 ELSE 0 END AS payment_completed,
+        o.total_amount AS order_total_amount
+      FROM payment p
+      JOIN orders o ON p.order_id = o.order_id
+      WHERE p.payment_date IS NOT NULL
+        AND p.payment_status IS NOT NULL
+        AND o.created_at IS NOT NULL
+        AND o.total_amount IS NOT NULL
+
+  # 17) payment.payment_date -> shipping.shipped_at (graph)
+  - question: "What is the causal effect of payment_date on shipped_delay_days?"
+    treatment: "payment_date_epoch"
+    outcome: "shipped_delay_days"   # shipped_at - payment_date (실질 outcome)
+    confounders: []
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        EXTRACT(EPOCH FROM (s.shipped_at - p.payment_date)) / 86400.0 AS shipped_delay_days,
+        EXTRACT(EPOCH FROM p.payment_date) AS payment_date_epoch
+      FROM shipping s
+      JOIN payment p ON s.order_id = p.order_id
+      WHERE s.shipped_at IS NOT NULL
+        AND p.payment_date IS NOT NULL
+
+  # 18) shipping.shipped_at -> shipping.delivered_at (graph)
+  - question: "What is the causal effect of shipped_at on delivery_time_days?"
+    treatment: "shipped_at_epoch"
+    outcome: "delivery_time_days"
+    confounders: []
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        EXTRACT(EPOCH FROM s.shipped_at) AS shipped_at_epoch,
+        EXTRACT(EPOCH FROM (s.delivered_at - s.shipped_at)) / 86400.0 AS delivery_time_days
+      FROM shipping s
+      WHERE s.shipped_at IS NOT NULL
+        AND s.delivered_at IS NOT NULL
+
+  # 19) shipping.delivered_at -> review.created_at (graph)
+  - question: "What is the causal effect of delivery_time_days on review_lag_days?"
+    treatment: "delivery_time_days"
+    outcome: "review_lag_days"
+    confounders: []
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        EXTRACT(EPOCH FROM (s.delivered_at - s.shipped_at)) / 86400.0 AS delivery_time_days,
+        EXTRACT(EPOCH FROM (r.created_at - s.delivered_at)) / 86400.0 AS review_lag_days
+      FROM shipping s
+      JOIN review r ON r.order_id = s.order_id
+      WHERE s.shipped_at IS NOT NULL
+        AND s.delivered_at IS NOT NULL
+        AND r.created_at IS NOT NULL
+
+  # 20) review.created_at -> review.score (graph)
+  - question: "What is the causal effect of review_created_at_days_ago on review_score?"
+    treatment: "review_days_ago"
+    outcome: "review_score"
+    confounders: ["payment_delay_days"]  # graph에 payment.payment_date -> review.score 존재
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - r.created_at)) / 86400.0 AS review_days_ago,
+        r.score AS review_score,
+        EXTRACT(EPOCH FROM (p.payment_date - o.created_at)) / 86400.0 AS payment_delay_days
+      FROM review r
+      JOIN orders o ON r.order_id = o.order_id
+      LEFT JOIN payment p ON p.order_id = o.order_id
+      WHERE r.created_at IS NOT NULL
+        AND r.score IS NOT NULL
+        AND o.created_at IS NOT NULL
+        AND p.payment_date IS NOT NULL
+
+  # 21) promotion.start_at -> coupon.start_date (graph)
+  - question: "What is the causal effect of promo_start_at on coupon_start_date?"
+    treatment: "promo_start_epoch"
+    outcome: "coupon_start_epoch"
+    confounders: []
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        EXTRACT(EPOCH FROM pr.start_at) AS promo_start_epoch,
+        EXTRACT(EPOCH FROM c.start_date) AS coupon_start_epoch
+      FROM promotion pr
+      JOIN coupon c ON c.promo_id = pr.promo_id
+      WHERE pr.start_at IS NOT NULL
+        AND c.start_date IS NOT NULL
+
+  # 22) promotion.end_at -> coupon.is_active (graph)
+  - question: "What is the causal effect of promo_end_days_ago on coupon_is_active?"
+    treatment: "promo_end_days_ago"
+    outcome: "coupon_is_active"
+    confounders: []
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - pr.end_at)) / 86400.0 AS promo_end_days_ago,
+        CASE WHEN c.is_active THEN 1 ELSE 0 END AS coupon_is_active
+      FROM promotion pr
+      JOIN coupon c ON c.promo_id = pr.promo_id
+      WHERE pr.end_at IS NOT NULL
+        AND c.is_active IS NOT NULL
+
+  # 23) is_active_score -> cart_quantity, conf: age, gender
+  - question: "What is the causal effect of is_active_score on cart_quantity?"
+    treatment: "is_active_score"
+    outcome: "cart_quantity"
+    confounders: ["age", "gender"]
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        u.is_active_score AS is_active_score,
+        u.age AS age,
+        u.gender AS gender,
+        c.quantity AS cart_quantity
+      FROM cart c
+      JOIN users u ON c.user_id = u.user_id
+      WHERE u.is_active_score 
+        AND u.age 
+        AND u.gender 
+        AND c.quantity 
+
+  # 24) signup_days_ago -> cart_quantity, conf: is_active, age, gender
+  - question: "What is the causal effect of signup_days_ago on cart_quantity?"
+    treatment: "signup_days_ago"
+    outcome: "cart_quantity"
+    confounders: ["is_active", "age", "gender"]
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - u.created_at)) / 86400.0 AS signup_days_ago,
+        u.is_active AS is_active,
+        u.age AS age,
+        u.gender AS gender,
+        c.quantity AS cart_quantity
+      FROM cart c
+      JOIN users u ON c.user_id = u.user_id
+      WHERE u.created_at 
+        AND u.is_active 
+        AND u.age 
+        AND u.gender 
+        AND c.quantity 
+
+  # 25) discount_strength -> discount_amount, conf: subtotal_amount
+  - question: "What is the causal effect of discount_strength on discount_amount?"
+    treatment: "discount_strength"
+    outcome: "discount_amount"
+    confounders: ["subtotal_amount"]
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        c.discount_strength AS discount_strength,
+        o.subtotal_amount AS subtotal_amount,
+        o.discount_amount AS discount_amount
+      FROM orders o
+      JOIN coupon c ON o.coupon_used = c.coupon_id
+      WHERE c.discount_strength IS NOT NULL
+        AND o.subtotal_amount IS NOT NULL
+        AND o.discount_amount IS NOT NULL
+
+  # 26) coupon_used -> total_amount, conf: subtotal_amount, point_used
+  - question: "What is the causal effect of coupon_used on total_amount?"
+    treatment: "used_coupon"
+    outcome: "total_amount"
+    confounders: ["subtotal_amount", "point_used"]
+    mediators: ["discount_amount"]
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        CASE WHEN o.coupon_used IS NOT NULL THEN 1 ELSE 0 END AS used_coupon,
+        o.subtotal_amount AS subtotal_amount,
+        o.point_used AS point_used,
+        o.discount_amount AS discount_amount,
+        o.total_amount AS total_amount
+      FROM orders o
+      WHERE o.subtotal_amount IS NOT NULL
+        AND o.point_used IS NOT NULL
+        AND o.discount_amount IS NOT NULL
+        AND o.total_amount IS NOT NULL
+
+  # 27) discount_amount -> payment_completed, conf: order_total_amount
+  - question: "What is the causal effect of discount_amount on payment_completed?"
+    treatment: "discount_amount"
+    outcome: "payment_completed"
+    confounders: ["order_total_amount"]
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        o.discount_amount AS discount_amount,
+        o.total_amount AS order_total_amount,
+        CASE WHEN p.payment_status = 'COMPLETED' THEN 1 ELSE 0 END AS payment_completed
+      FROM orders o
+      JOIN payment p ON p.order_id = o.order_id
+      WHERE o.discount_amount IS NOT NULL
+        AND o.total_amount IS NOT NULL
+        AND p.payment_status IS NOT NULL
+
+  # 28) total_amount -> payment_status_failed, conf: age
+  - question: "What is the causal effect of total_amount on payment_failed?"
+    treatment: "total_amount"
+    outcome: "payment_failed"
+    confounders: ["user_age"]
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        o.total_amount AS total_amount,
+        u.age AS user_age,
+        CASE WHEN p.payment_status = 'FAILED' THEN 1 ELSE 0 END AS payment_failed
+      FROM orders o
+      JOIN users u ON o.user_id = u.user_id
+      JOIN payment p ON p.order_id = o.order_id
+      WHERE o.total_amount IS NOT NULL
+        AND u.age IS NOT NULL
+        AND p.payment_status IS NOT NULL
+
+  # 29) point_used -> payment_completed, conf: subtotal_amount, discount_amount
+  - question: "What is the causal effect of point_used on payment_completed?"
+    treatment: "point_used"
+    outcome: "payment_completed"
+    confounders: ["subtotal_amount", "discount_amount"]
+    mediators: []
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        o.point_used AS point_used,
+        o.subtotal_amount AS subtotal_amount,
+        o.discount_amount AS discount_amount,
+        CASE WHEN p.payment_status = 'COMPLETED' THEN 1 ELSE 0 END AS payment_completed
+      FROM orders o
+      JOIN payment p ON p.order_id = o.order_id
+      WHERE o.point_used IS NOT NULL
+        AND o.subtotal_amount IS NOT NULL
+        AND o.discount_amount IS NOT NULL
+        AND p.payment_status IS NOT NULL
+
+  # 30) payment_delay_days -> delivery_time_days, conf: order_total_amount
+  - question: "What is the causal effect of payment_delay_days on delivery_time_days?"
+    treatment: "payment_delay_days"
+    outcome: "delivery_time_days"
+    confounders: ["order_total_amount"]
+    mediators: ["shipped_delay_days"]
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        EXTRACT(EPOCH FROM (p.payment_date - o.created_at)) / 86400.0 AS payment_delay_days,
+        o.total_amount AS order_total_amount,
+        EXTRACT(EPOCH FROM (s.shipped_at - p.payment_date)) / 86400.0 AS shipped_delay_days,
+        EXTRACT(EPOCH FROM (s.delivered_at - s.shipped_at)) / 86400.0 AS delivery_time_days
+      FROM orders o
+      JOIN payment p ON p.order_id = o.order_id
+      JOIN shipping s ON s.order_id = o.order_id
+      WHERE o.created_at IS NOT NULL
+        AND p.payment_date IS NOT NULL
+        AND o.total_amount IS NOT NULL
+        AND s.shipped_at IS NOT NULL
+        AND s.delivered_at IS NOT NULL
+
+  # 31) delivery_time_days -> review_score, conf: payment_delay_days
+  - question: "What is the causal effect of delivery_time_days on review_score?"
+    treatment: "delivery_time_days"
+    outcome: "review_score"
+    confounders: ["payment_delay_days"]
+    mediators: ["review_lag_days"]
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        EXTRACT(EPOCH FROM (s.delivered_at - s.shipped_at)) / 86400.0 AS delivery_time_days,
+        EXTRACT(EPOCH FROM (p.payment_date - o.created_at)) / 86400.0 AS payment_delay_days,
+        EXTRACT(EPOCH FROM (r.created_at - s.delivered_at)) / 86400.0 AS review_lag_days,
+        r.score AS review_score
+      FROM orders o
+      JOIN payment p ON p.order_id = o.order_id
+      JOIN shipping s ON s.order_id = o.order_id
+      JOIN review r ON r.order_id = o.order_id
+      WHERE o.created_at IS NOT NULL
+        AND p.payment_date IS NOT NULL
+        AND s.shipped_at IS NOT NULL
+        AND s.delivered_at IS NOT NULL
+        AND r.created_at IS NOT NULL
+        AND r.score IS NOT NULL
+
+  # 32) sku_price -> order_total, conf: quantity
+  - question: "What is the causal effect of sku_price on order_total?"
+    treatment: "sku_price"
+    outcome: "order_total"
+    confounders: ["quantity"]
+    mediators: ["unit_price", "total_price", "subtotal_amount"]
+    instrumental_variables: []
+    sql_query: |
+      SELECT
+        s.price AS sku_price,
+        oi.quantity AS quantity,
+        oi.unit_price AS unit_price,
+        oi.total_price AS total_price,
+        o.subtotal_amount AS subtotal_amount,
+        o.total_amount AS order_total
+      FROM order_items oi
+      JOIN sku s ON oi.sku_id = s.sku_id
+      JOIN orders o ON oi.order_id = o.order_id
+      WHERE s.price IS NOT NULL
+        AND oi.quantity IS NOT NULL
+        AND oi.unit_price IS NOT NULL
+        AND oi.total_price IS NOT NULL
+        AND o.subtotal_amount IS NOT NULL
+        AND o.total_amount IS NOT NULL

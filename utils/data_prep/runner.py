@@ -2,7 +2,7 @@ from .related_tables import update_table_relations
 from .metadata import update_metadata
 from utils.database import Database
 
-def run(db_id: str = "daa"):
+def run(db_id: str = "reef_db"):
     print("Starting data prep pipeline...")
 
     print("--- generating(updating) table relations...")
@@ -19,7 +19,10 @@ if __name__ == "__main__":
     database = Database()
     databases = database.list_databases() 
 
-    for db_id in databases:
-        if db_id != "bird" and db_id != "finance":
-            print(f"============Running data prep for database: {db_id}=============")
-            run(db_id)
+    print(f"============Running data prep for database: reef_db=============")
+    run("reef_db")
+
+    # for db_id in databases:
+    #     if db_id != "bird" and db_id != "finance":
+    #         print(f"============Running data prep for database: {db_id}=============")
+    #         run(db_id)
