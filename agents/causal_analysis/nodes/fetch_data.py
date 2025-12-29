@@ -35,11 +35,15 @@ def build_fetch_data_node(llm: BaseChatModel):
         causal_graph = state.get("selected_graph")
         if not causal_graph:
             raise ValueError("The causal graph generated from causal discovery is required for data fetching")
-        graph_nodes = causal_graph["nodes"]
-        expression_dict = state["expression_dict"]
-        expected_columns_base = [v.split(".")[-1] for v in graph_nodes]        
         
-        expected_columns_base = [var.split('.')[-1] for var in graph_nodes]
+        # Handle both unified schema and legacy format
+        if "graph" in causal_graph:
+            graph_nodes = causal_graph["graph"].get("variables", [])
+        else:
+            graph_nodes = causal_graph.get("variables", []) or causal_graph.get("nodes", [])
+        
+        expression_dict = state["expression_dict"]
+        expected_columns_base = [v.split(".")[-1] for v in graph_nodes]
              
         def run_and_validate_query(sql, db_id, expected_columns_base):
             rows, columns = database.run_query(sql=sql, db_id=db_id)

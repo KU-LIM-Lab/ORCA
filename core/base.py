@@ -397,18 +397,10 @@ class OrchestratorAgent(BaseAgent):
                 "description": "Interpret and validate results",
                 "required_state_keys": ["causal_estimates"],
                 "timeout": 180
-            },
-            
-            # Report Generation
-            {
-                "phase": PipelinePhase.REPORT_GENERATION.value,
-                "substep": "generate_report",
-                "agent": "report_generator",
-                "action": "generate_report",
-                "description": "Generate final analysis report",
-                "required_state_keys": [],
-                "timeout": 240
             }
+            
+            # Note: Report Generation has been removed from the main pipeline
+            # Pipeline now completes after interpretation (generate_answer)
         ]
 
     def determine_entry_point(self, state: AgentState) -> PipelinePhase:
@@ -433,8 +425,9 @@ class OrchestratorAgent(BaseAgent):
         if not state.get("causal_analysis_status") == "completed":
             return PipelinePhase.CAUSAL_INFERENCE
         
-        # Default to report generation
-        return PipelinePhase.REPORT_GENERATION
+        # Pipeline completes at causal inference - no report generation phase
+        # If all previous phases complete, we're done
+        return PipelinePhase.CAUSAL_INFERENCE
 
 class SpecialistAgent(BaseAgent):
     """Specialist agent (Data Explorer, Causal Discovery, Causal Inference)"""

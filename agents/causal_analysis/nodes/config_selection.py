@@ -41,6 +41,13 @@ def build_config_selection_node(llm: BaseChatModel) -> RunnableLambda:
         return None
 
     def invoke(state: Dict) -> Dict:
+        # Check if this is a HITL reexecution with edited strategy
+        if state.get("__hitl_reexecution__") and state.get("strategy"):
+            print("🔍 Using edited strategy configuration...")
+            state.pop("df_preprocessed", None)
+            state.pop("__hitl_reexecution__", None)
+            return state
+        
         df = _load_dataframe_from_state(state)
         parsed_vars = state.get("parsed_query") or {}
         question = state.get("initial_query")
@@ -93,12 +100,20 @@ def build_config_selection_node(llm: BaseChatModel) -> RunnableLambda:
             "outcome_type": outcome_type
         }
 
-        result = call_llm(
-            prompt=causal_strategy_prompt,
-            parser=strategy_output_parser,
-            variables=prompt_input,
-            llm=llm
-        )
+        # LLM 호출 전에 메모리 정리
+        import gc
+        
+        print("🔍 Calling LLM for strategy selection...")
+        try:
+            result = call_llm(
+                prompt=causal_strategy_prompt,
+                parser=strategy_output_parser,
+                variables=prompt_input,
+                llm=llm
+            )
+        except Exception as e:
+            print(f"⚠️ LLM call failed: {e}")
+            raise
 
         state["strategy"] = Strategy(
             task=result.causal_task,
@@ -106,7 +121,9 @@ def build_config_selection_node(llm: BaseChatModel) -> RunnableLambda:
             estimator=result.estimation_method,
             refuter=result.refutation_methods[0] if result.refutation_methods else None
         )
+        # 메모리 정리
         state.pop("df_preprocessed", None)
+        gc.collect()
         return state
 
     return RunnableLambda(invoke)

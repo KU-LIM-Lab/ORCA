@@ -187,19 +187,19 @@ class OrchestrationGraph:
                 # Just log for debugging
                 edits = user_input.get("edits", {})
                 new_step_idx = state.get("current_execute_step", "N/A")
-                print(f"🔍 DEBUG [HITL Gate]: Edits applied, re-executing step {substep} (idx={new_step_idx})")
-                print(f"   - current_state_executed: {state.get('current_state_executed', 'N/A')}")
-                print(f"   - completed_substeps: {state.get('completed_substeps', [])}")
+                print(f"[HITL Gate]: Edits applied, re-executing step {substep} (idx={new_step_idx})")
+                # print(f"   - current_state_executed: {state.get('current_state_executed', 'N/A')}")
+                # print(f"   - completed_substeps: {state.get('completed_substeps', [])}")
                 
             elif decision == "rerun":
                 # User feedback already applied via update_state()
                 new_step_idx = state.get("current_execute_step", "N/A")
-                print(f"🔍 DEBUG [HITL Gate]: Rerun requested, re-executing step {substep} (idx={new_step_idx})")
-                print(f"   - current_state_executed: {state.get('current_state_executed', 'N/A')}")
-                print(f"   - completed_substeps: {state.get('completed_substeps', [])}")
+                print(f"[HITL Gate]: Rerun requested, re-executing step {substep} (idx={new_step_idx})")
+                # print(f"   - current_state_executed: {state.get('current_state_executed', 'N/A')}")
+                # print(f"   - completed_substeps: {state.get('completed_substeps', [])}")
                 
             elif decision == "abort":
-                print(f"🔍 DEBUG [HITL Gate]: Execution aborted by user")
+                print(f"[HITL Gate]: Execution aborted by user")
             
             # Log HITL applied
             if self.event_logger and step_id:
@@ -233,12 +233,12 @@ class OrchestrationGraph:
             "ensemble_synthesis",
         ]
         
-        # Step 3: Causal Inference
+        # Step 3: Causal Inference (final step: interpretation)
         step3_substeps = [
             "parse_question",
             "select_configuration",
-            "dowhy_analysis",
-            "generate_answer",
+            "effect_estimation",  # dowhy_analysis
+            "interpretation",  # Final step - calls generate_answer internally
         ]
         
         if substep in step1_substeps:
@@ -247,6 +247,7 @@ class OrchestrationGraph:
             return "2"
         elif substep in step3_substeps:
             return "3"
+        # Note: report_generation removed from pipeline
         return None
     
     def _route_after_execution(self, state: AgentState) -> str:
@@ -540,12 +541,12 @@ class OrchestrationGraph:
             "executor" - continue to next step
         """
         if state.get("error"):
-            print(f"🔍 DEBUG [Router]: Error detected, routing to END")
+            print(f"[Router]: Error detected, routing to END")
             return "end"
         if state.get("executor_completed"):
-            print(f"🔍 DEBUG [Router]: Execution completed, routing to END")
+            print(f"[Router]: Execution completed, routing to END")
             return "end"
-        print(f"🔍 DEBUG [Router]: Continuing to executor for next step")
+        print(f"[Router]: Continuing to executor for next step")
         return "executor"
     
     def _generate_final_report(self, state: AgentState) -> Dict[str, Any]:
@@ -674,9 +675,9 @@ class OrchestrationGraph:
                     try:
                         checkpoint_state = self.compiled_graph.get_state(config).values
                         current_step_idx = checkpoint_state.get("current_execute_step", "N/A")
-                        print(f"🔍 DEBUG [Graph]: Checkpoint state has current_execute_step={current_step_idx}")
+                        # print(f"[Graph]: Checkpoint state has current_execute_step={current_step_idx}")
                     except Exception as e:
-                        print(f"🔍 DEBUG [Graph]: Could not read checkpoint: {e}")
+                        print(f"[Graph]: Could not read checkpoint: {e}")
                     
                     interrupt_count += 1
                     step_name_from_payload = payload.get('step', 'unknown')
@@ -766,7 +767,7 @@ class OrchestrationGraph:
                         if step_name == "table_selection":
                             relevant_fields = ["selected_tables"]
                         elif step_name == "table_retrieval":
-                            relevant_fields = ["sql_query", "final_sql"]
+                            relevant_fields = []  # Removed sql_query edit, rerun only
                         elif step_name == "data_preprocessing":
                             relevant_fields = ["target_columns", "clean_nulls_ratio", "one_hot_threshold", "high_cardinality_threshold"]
                         elif step_name == "data_profiling":
@@ -780,7 +781,7 @@ class OrchestrationGraph:
                         elif step_name == "graph_evaluation":
                             relevant_fields = []  # Approval/rerun only
                         elif step_name == "ensemble_synthesis":
-                            relevant_fields = ["selected_graph"]
+                            relevant_fields = []  # Removed selected_graph edit
                         elif step_name == "parse_question":
                             relevant_fields = ["treatment_variable", "outcome_variable", "confounders", "mediators", "instrumental_variables"]
                         elif step_name == "select_configuration":
@@ -980,7 +981,7 @@ class OrchestrationGraph:
                         # Get feedback
                         feedback = input("\n💬 Enter feedback (optional): ").strip()
                         if feedback:
-                            user_data["feedback"] = feedback
+                            user_data["user_feedback"] = feedback
                     
                     # For approve and abort, no additional input needed
                     print(f"\n✅ Decision: {decision}")
@@ -1000,6 +1001,8 @@ class OrchestrationGraph:
                         edits = user_data.get("edits", {})
                         # Add all edits to user_data (they may already be there)
                         user_data.update(edits)
+                        # Set HITL reexecution flag
+                        user_data["__hitl_reexecution__"] = True
                         # Decrement step counter and reset execution flag
                         user_data["current_execute_step"] = max(0, current_step_idx - 1)
                         user_data["current_state_executed"] = False
@@ -1012,6 +1015,8 @@ class OrchestrationGraph:
                     elif decision == "rerun":
                         # Prepare for re-execution with optional feedback
                         # Feedback already in user_data if provided
+                        # Set HITL reexecution flag
+                        user_data["__hitl_reexecution__"] = True
                         # Decrement step counter and reset execution flag
                         user_data["current_execute_step"] = max(0, current_step_idx - 1)
                         user_data["current_state_executed"] = False
@@ -1026,20 +1031,20 @@ class OrchestrationGraph:
                         user_data["error"] = "User aborted execution"
                         user_data["executor_completed"] = True
                 
-                    # ✅ DEBUG: Show state update
-                    print(f"🔍 DEBUG [Graph]: Updating state with user decision: {decision}")
+                    # Show state update
+                    print(f"[Graph]: Updating state with user decision: {decision}")
                     self.compiled_graph.update_state(config, user_data)
                     
-                    # ✅ DEBUG: Verify checkpoint state after update
+                    # Verify checkpoint state after update
                     updated_checkpoint = self.compiled_graph.get_state(config).values
-                    print(f"🔍 DEBUG [HITL Gate]: After update_state:")
-                    print(f"   - current_execute_step: {updated_checkpoint.get('current_execute_step', 'N/A')}")
-                    print(f"   - current_state_executed: {updated_checkpoint.get('current_state_executed', 'N/A')}")
-                    print(f"   - completed_substeps: {updated_checkpoint.get('completed_substeps', [])}")
+                    # print(f"[HITL Gate]: After update_state:")
+                    # print(f"   - current_execute_step: {updated_checkpoint.get('current_execute_step', 'N/A')}")
+                    # print(f"   - current_state_executed: {updated_checkpoint.get('current_state_executed', 'N/A')}")
+                    # print(f"   - completed_substeps: {updated_checkpoint.get('completed_substeps', [])}")
                     
                     # Check if user aborted - if so, terminate immediately
                     if decision == "abort":
-                        print(f"🔍 [Graph]: Abort detected, terminating session")
+                        print(f"Abort detected, terminating session")
                         completed = True
                         final_state = updated_checkpoint
                         break

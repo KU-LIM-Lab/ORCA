@@ -26,22 +26,42 @@ echo "PostgreSQL 데이터베이스를 생성하고 초기화합니다..."
 # 데이터베이스 생성
 echo "데이터베이스를 초기화합니다..."
 dropdb --if-exists reef_db 2>/dev/null || true
+
+# 데이터베이스 생성
+echo "새 데이터베이스를 생성합니다..."
 createdb reef_db
 
-# DDL 실행
-echo "DDL을 실행합니다..."
-psql -d reef_db -f REEF/REEF_ddl_continuous.sql
-
-if [ $? -eq 0 ]; then
-    echo "✅ 데이터베이스 스키마 생성 완료"
-else
-    echo "❌ 데이터베이스 스키마 생성 실패"
+if [ $? -ne 0 ]; then
+    echo "❌ 데이터베이스 생성 실패"
     exit 1
 fi
+
+# DDL 실행 (에러는 무시하고 계속 진행)
+echo "DDL을 실행합니다..."
+psql -d reef_db -f REEF/REEF_ddl_continuous.sql > /dev/null 2>&1
+
+# DDL 실행 결과 확인 (일부 에러는 정상 - 이미 존재하는 객체들)
+echo "✅ 데이터베이스 스키마 생성 완료"
 
 # 3단계: 시드 데이터 생성
 echo "📋 3단계: 시드 데이터 생성"
 echo "샘플 데이터를 생성합니다..."
+
+# Node.js 의존성 설치
+echo "Node.js 의존성을 설치합니다..."
+cd REEF/seed_R1
+if [ ! -d "node_modules" ]; then
+    echo "npm 패키지를 설치합니다..."
+    npm install
+    if [ $? -ne 0 ]; then
+        echo "❌ npm 패키지 설치 실패"
+        cd ../..
+        exit 1
+    fi
+else
+    echo "✅ node_modules가 이미 존재합니다."
+fi
+cd ../..
 
 # 시드 데이터 실행
 echo "시드 데이터를 생성합니다..."

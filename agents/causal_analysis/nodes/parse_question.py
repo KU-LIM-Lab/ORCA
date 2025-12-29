@@ -270,6 +270,14 @@ def build_parse_question_node(llm: BaseChatModel) -> Callable:
         parsed["treatment"] = treatment
         parsed["outcome"] = outcome
         
+        # Check if this is a HITL reexecution with edited values
+        if state.get("__hitl_reexecution__"):
+            # User has edited the values, skip graph-based role identification
+            state["parsed_query"] = parsed
+            state.pop("df_preprocessed", None)
+            state.pop("__hitl_reexecution__", None)
+            return state
+        
         # Step 5: build causal graph
         graph = _build_graph_from_state(state)
         if graph:

@@ -16,8 +16,8 @@ class PlannerAgent(OrchestratorAgent):
         self.standard_pipeline = [
             "data_exploration",
             "causal_discovery", 
-            "causal_analysis",
-            "report_generation"
+            "causal_analysis"
+            # Note: report_generation removed - pipeline completes after causal_analysis
         ]
         
         # Step configurations
@@ -41,15 +41,9 @@ class PlannerAgent(OrchestratorAgent):
                 "action": "estimate_causal_effects",
                 "description": "인과 효과 추정", 
                 "timeout": 900,
-                "required_outputs": ["causal_estimates", "confidence_intervals"]
-            },
-            "report_generation": {
-                "agent": "orchestrator",
-                "action": "generate_final_report",
-                "description": "최종 결과 리포트 생성",
-                "timeout": 300,
-                "required_outputs": ["final_report"]
+                "required_outputs": ["causal_estimates", "confidence_intervals", "final_answer"]
             }
+            # Note: report_generation step removed from pipeline
         }
     
     def create_execution_plan(self, goal: str, context: AgentState) -> List[Dict[str, Any]]:

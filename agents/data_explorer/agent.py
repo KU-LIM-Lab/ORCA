@@ -198,6 +198,10 @@ class DataExplorerAgent(SpecialistAgent):
                 "analysis_mode": state.get("analysis_mode", "full_pipeline"),
             }
             
+            # Pass user feedback as llm_review if provided (for rerun)
+            if state.get("user_feedback"):
+                text2sql_state["llm_review"] = state.get("user_feedback")
+            
             # Execute SQL generation
             result = text2sql_agent.execute(text2sql_state)
             
@@ -337,7 +341,18 @@ class DataExplorerAgent(SpecialistAgent):
         """Execute table recommendation step"""
         print("\n🔍 Analyzing query and selecting relevant tables...")
         
-        # 커스텀 도구 사용
+        # Check if this is a HITL reexecution with edited tables
+        if state.get("__hitl_reexecution__") and state.get("selected_tables"):
+            print(f"   ✓ Using edited tables: {', '.join(state['selected_tables'])}")
+            state["table_recommendation_completed"] = True
+            
+            # Clear HITL reexecution flag
+            state.pop("__hitl_reexecution__", None)
+            
+            # Don't request HITL again after edit - user already made their decision
+            return state
+        
+        # Normal execution: 커스텀 도구 사용
         result = self.use_tool("table_selection", state)
         
         if result.get("success"):
@@ -352,26 +367,37 @@ class DataExplorerAgent(SpecialistAgent):
             if tables:
                 print(f"   ✓ Selected tables: {', '.join(tables)}")
             
-            # Request HITL for table selection review if interactive mode
-            if state.get("interactive", False):
-                state = self.request_hitl(
-                    state,
-                    payload={
-                        "step": "table_selection",
-                        "phase": "data_exploration",
-                        "description": "Please review the selected tables for analysis",
-                        "decisions": ["approve", "edit", "rerun", "abort"]
-                    },
-                    hitl_type="table_selection_review"
-                )
+        # Request HITL for table selection review if interactive mode
+        if state.get("interactive", False):
+            # Clean up state before checkpoint
+            self._cleanup_state_for_checkpoint(state)
             
+            state = self.request_hitl(
+                state,
+                payload={
+                    "step": "table_selection",
+                    "phase": "data_exploration",
+                    "description": "Please review the selected tables for analysis",
+                    "decisions": ["approve", "edit", "rerun", "abort"]
+                },
+                hitl_type="table_selection_review"
+            )
+        
         return state
     
     def _execute_text2sql_generation(self, state: AgentState) -> AgentState:
         """Execute text2sql generation step"""
         print("\n📝 Generating SQL query from natural language...")
         
+        # Apply user feedback if provided (for rerun)
+        if state.get("user_feedback"):
+            print(f"   📝 Applying user feedback to SQL generation...")
+        
         result = self.use_tool("table_retrieval", state)
+        
+        # Clear feedback and HITL flags
+        state.pop("user_feedback", None)
+        state.pop("__hitl_reexecution__", None)
         
         if result.get("success"):
             # 상태 업데이트
@@ -386,6 +412,9 @@ class DataExplorerAgent(SpecialistAgent):
             
             # Request HITL for SQL query review if interactive mode
             if state.get("interactive", False):
+                # Clean up state before checkpoint
+                self._cleanup_state_for_checkpoint(state)
+                
                 state = self.request_hitl(
                     state,
                     payload={
@@ -396,7 +425,7 @@ class DataExplorerAgent(SpecialistAgent):
                     },
                     hitl_type="sql_query_review"
                 )
-                   
+        
         return state
     
     def _execute_table_exploration(self, state: AgentState) -> AgentState:
@@ -524,3 +553,26 @@ class DataExplorerAgent(SpecialistAgent):
             "schema_analysis",
             "sql_query_generation"
         ]
+    
+    def _cleanup_state_for_checkpoint(self, state: AgentState) -> None:
+        """Clean up large objects from state before HITL checkpoint to speed up serialization
+        
+        DOES NOT REMOVE (needed downstream):
+        - df_raw: Used by report_generation
+        - schema_analysis: Used by report_generation
+        """
+        import gc
+        
+        # Remove DataFrame if stored in Redis
+        if state.get("df_redis_key") and state.get("df_preprocessed") is not None:
+            state.pop("df_preprocessed", None)
+        
+        # NOTE: Do NOT remove df_raw - used by report_generation
+        # NOTE: Do NOT remove schema_analysis - used by report_generation
+        
+        # Remove other DataFrames
+        state.pop("df", None)
+        state.pop("gt_df", None)
+        
+        gc.collect()
+
