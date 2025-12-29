@@ -1,20 +1,42 @@
 # ORCA 서버 초기 설정 스크립트
 # 새로운 서버에 ORCA 시스템을 처음 설정하는 용도
 
+# source "$(conda info --base)/etc/profile.d/conda.sh"
+# conda activate userstudy
+
+# PYTHON_BIN="$(command -v python)"
+# echo "Using python: $PYTHON_BIN"
+
+# echo "requirements를 다운로드 합니다 ..."
+# pip install --upgrade pip setuptools wheel
+# pip install PyYAML
+# pip install 
+# pip install psycopg2-binary 
+# pip install numpy    
+# pip install langchain-ollama==0.3.3 
+# pip install langchain-openai==0.3.21  
+# pip install langchain==0.3.27  
+# pip install pydantic 
+# pip install redis 
+# pip install python-dotenv==1.1.1
+# pip install redisvl
+# pip install -r requirements.txt
+
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate userstudy
 
-PYTHON_BIN="$(command -v python)"
-echo "Using python: $PYTHON_BIN"
+set -e  # 에러 나면 즉시 중단 (원인 추적 쉬움)
 
-$PYTHON_BIN -c "
-import yaml
-print('✅ PyYAML ok:', yaml.__version__)
-"
+echo "Using python: $(which python)"
+echo "Using pip: $(which pip)"
 
-echo "requirements를 다운로드 합니다 ..."
-pip install --upgrade pip setuptools wheel
-pip install -r requirements.txt
+python -m pip install --upgrade pip setuptools wheel
+
+# requirements가 pip용으로 정상이라는 전제
+python -m pip install -r requirements.txt
+
+# (선택) 자주 깨지는 것들만 따로 보정
+python -m pip install PyYAML psycopg2-binary
 
 echo "📋 Node.js 환경 설정"
 
@@ -173,9 +195,6 @@ except Exception as e:
 print('🎉 모든 연결 테스트 통과!')
 "
 
-echo "ORCA 작동을 위한 metadata 생성"
-python -m utils.data_prep.runner
-
 if [ $? -eq 0 ]; then
     echo "✅ 연결 테스트 완료"
 else
@@ -183,25 +202,8 @@ else
     exit 1
 fi
 
-# 6단계: 메타데이터 생성
-echo "📋 6단계: 메타데이터 생성"
-echo "테이블 관계 및 메타데이터를 생성합니다..."
-
-$PYTHON_BIN -c "
-import sys
-sys.path.append('.')
-from utils.data_prep.runner import run
-
-print('🔍 메타데이터 생성 중...')
-try:
-    run('reef_db')
-    print('✅ 메타데이터 생성 완료')
-except Exception as e:
-    print(f'❌ 메타데이터 생성 실패: {e}')
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
-"
+echo "ORCA 작동을 위한 metadata 생성"
+python -m utils.data_prep.runner
 
 if [ $? -eq 0 ]; then
     echo "✅ 메타데이터 생성 완료"
