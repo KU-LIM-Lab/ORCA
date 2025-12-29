@@ -524,9 +524,40 @@ class BaselineAgent:
                     print(f"\n🤖 Assistant: {msg.content}")
                 return True
 
-            # execute tools
+            # execute tools - ensure all tool calls are executed and results appended
+            executed_tool_call_ids = set()
             for tc in tool_calls:
                 self._execute_tool_call(tc, step_id=step_id)
+                executed_tool_call_ids.add(tc.id)
+            
+            # Verify all tool calls have responses before continuing
+            # Find the assistant message we just added
+            last_assistant_idx = None
+            for i in range(len(self.messages) - 1, -1, -1):
+                if self.messages[i].get("role") == "assistant" and self.messages[i].get("tool_calls"):
+                    last_assistant_idx = i
+                    break
+            
+            if last_assistant_idx is not None:
+                assistant_msg = self.messages[last_assistant_idx]
+                tool_calls_from_msg = assistant_msg.get("tool_calls", [])
+                tool_call_ids_from_msg = {tc.get("id") for tc in tool_calls_from_msg if isinstance(tc, dict)}
+                
+                # Check if all tool calls have responses
+                tool_responses = {}
+                for i in range(last_assistant_idx + 1, len(self.messages)):
+                    msg = self.messages[i]
+                    if msg.get("role") == "tool":
+                        tool_call_id = msg.get("tool_call_id")
+                        if tool_call_id:
+                            tool_responses[tool_call_id] = True
+                
+                missing_responses = tool_call_ids_from_msg - set(tool_responses.keys())
+                if missing_responses:
+                    logger.warning(
+                        f"Some tool calls are missing responses: {missing_responses}. "
+                        f"Executed: {executed_tool_call_ids}, Expected: {tool_call_ids_from_msg}"
+                    )
             
             # After executing all tools, continue to next round to get assistant response
             # This ensures all tool results are followed by an assistant message
@@ -687,42 +718,34 @@ class BaselineAgent:
                 break
         
         if not assistant_msg:
-            logger.error(
-                "Cannot append tool result: no assistant message with tool_calls found"
-            )
-            return
-        
-        # Check if last message is assistant or tool (both are valid when adding tool results)
-        last_msg = self.messages[-1]
-        if last_msg.get("role") not in ["assistant", "tool"]:
-            logger.error(
-                f"Cannot append tool result: last message is {last_msg.get('role')}, "
-                f"expected 'assistant' or 'tool'"
-            )
-            return
-        
-        # Verify tool_call_id exists in the assistant's tool_calls
-        tool_calls = assistant_msg.get("tool_calls", [])
-        tool_call_ids = {tc.get("id") for tc in tool_calls if isinstance(tc, dict)}
-        
-        if tool_call_id not in tool_call_ids:
             logger.warning(
-                f"Tool call ID {tool_call_id} not found in assistant's tool_calls. "
-                f"Available IDs: {tool_call_ids}"
+                f"Cannot append tool result: no assistant message with tool_calls found. "
+                f"Appending anyway to prevent data loss."
             )
-            # Still append, but log warning
+            # Still append to prevent data loss, but log warning
         
-        # Check if this tool_call_id already has a response
-        for msg in self.messages:
+        # Check if this tool_call_id already has a response - remove it first
+        for i in range(len(self.messages) - 1, -1, -1):
+            msg = self.messages[i]
             if msg.get("role") == "tool" and msg.get("tool_call_id") == tool_call_id:
                 logger.warning(
-                    f"Tool call ID {tool_call_id} already has a response. Overwriting..."
+                    f"Tool call ID {tool_call_id} already has a response. Removing old response..."
                 )
-                # Remove the old response
-                self.messages.remove(msg)
+                self.messages.pop(i)
                 break
         
-        # Append tool result
+        # Verify tool_call_id exists in the assistant's tool_calls (if assistant_msg found)
+        if assistant_msg:
+            tool_calls = assistant_msg.get("tool_calls", [])
+            tool_call_ids = {tc.get("id") for tc in tool_calls if isinstance(tc, dict)}
+            
+            if tool_call_id not in tool_call_ids:
+                logger.warning(
+                    f"Tool call ID {tool_call_id} not found in assistant's tool_calls. "
+                    f"Available IDs: {tool_call_ids}. Appending anyway."
+                )
+        
+        # Append tool result - always append to ensure all tool calls have responses
         self.messages.append(
             {
                 "role": "tool",
@@ -733,24 +756,34 @@ class BaselineAgent:
         )
     
     def _cleanup_tool_messages(self) -> None:
-        """Remove tool messages that don't have preceding assistant with tool_calls."""
+        """
+        Remove tool messages that don't have preceding assistant with tool_calls.
+        Only removes orphaned tool messages, not ones that are part of a valid sequence.
+        """
         if not self.messages:
             return
         
         cleaned = []
+        # Track all valid tool_call_ids from assistant messages
+        valid_tool_call_ids = set()
+        
         for i, msg in enumerate(self.messages):
-            if msg.get("role") == "tool":
-                # Check if previous message is assistant with matching tool_call_id
-                if cleaned and cleaned[-1].get("role") == "assistant":
-                    prev = cleaned[-1]
-                    tool_calls = prev.get("tool_calls", [])
-                    tool_call_ids = {tc.get("id") for tc in tool_calls if isinstance(tc, dict)}
-                    if msg.get("tool_call_id") in tool_call_ids:
-                        cleaned.append(msg)
-                    else:
-                        logger.warning(f"Removing tool message with no matching tool_call_id at index {i}")
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                # Collect all tool_call_ids from this assistant message
+                tool_calls = msg.get("tool_calls", [])
+                for tc in tool_calls:
+                    if isinstance(tc, dict):
+                        valid_tool_call_ids.add(tc.get("id"))
+                    elif hasattr(tc, "id"):
+                        valid_tool_call_ids.add(tc.id)
+                cleaned.append(msg)
+            elif msg.get("role") == "tool":
+                tool_call_id = msg.get("tool_call_id")
+                # Only keep tool messages with valid tool_call_ids
+                if tool_call_id in valid_tool_call_ids:
+                    cleaned.append(msg)
                 else:
-                    logger.warning(f"Removing tool message with no preceding assistant at index {i}")
+                    logger.warning(f"Removing orphaned tool message with tool_call_id={tool_call_id} at index {i}")
             else:
                 cleaned.append(msg)
         

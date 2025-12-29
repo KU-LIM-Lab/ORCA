@@ -6,8 +6,10 @@ from core.state import AgentState, ExecutionStatus, create_initial_state
 from orchestration.planner.agent import PlannerAgent
 from orchestration.executor.agent import ExecutorAgent
 from monitoring.metrics.collector import MetricsCollector
+from utils.database import Database
 import json
 import time
+import pandas as pd
 
 class OrchestrationGraph:
     """Main orchestration graph that coordinates planner and executor"""
@@ -136,8 +138,6 @@ class OrchestrationGraph:
         
         # Check if HITL was requested by the step execution
         if not state.get("__hitl_requested__"):
-            # No HITL needed, just pass through
-            print(f"🔍 DEBUG [HITL Gate]: No HITL requested, passing through")
             return state
         
         # HITL needed - get payload and trigger interrupt
@@ -180,43 +180,25 @@ class OrchestrationGraph:
             
             # Handle different decisions
             if decision == "approve":
-                # Step already advanced in executor, just continue
-                print(f"🔍 DEBUG [HITL Gate]: Approved, continuing with current_execute_step={state.get('current_execute_step')}")
                 pass
                 
             elif decision == "edit":
-                # Apply edits and re-execute current step
+                # User input contains edits from update_state() - they're already in the checkpoint
+                # Just log for debugging
                 edits = user_input.get("edits", {})
-                state.update(edits)
-                # Decrement step counter to re-execute the step that was just completed
-                current_step = state.get("current_execute_step", 0)
-                state["current_execute_step"] = max(0, current_step - 1)
-                state["current_state_executed"] = False
-                # Remove from completed substeps so it can be re-executed
-                completed = state.get("completed_substeps", [])
-                if substep in completed:
-                    completed.remove(substep)
-                print(f"🔍 DEBUG [HITL Gate]: Edits applied, re-executing step {substep} (idx={state.get('current_execute_step')})")
+                new_step_idx = state.get("current_execute_step", "N/A")
+                print(f"🔍 DEBUG [HITL Gate]: Edits applied, re-executing step {substep} (idx={new_step_idx})")
+                print(f"   - current_state_executed: {state.get('current_state_executed', 'N/A')}")
+                print(f"   - completed_substeps: {state.get('completed_substeps', [])}")
                 
             elif decision == "rerun":
-                # Store feedback and re-execute current step
-                feedback = user_input.get("feedback", "")
-                if feedback:
-                    state["user_feedback"] = feedback
-                # Decrement step counter to re-execute
-                current_step = state.get("current_execute_step", 0)
-                state["current_execute_step"] = max(0, current_step - 1)
-                state["current_state_executed"] = False
-                # Remove from completed substeps
-                completed = state.get("completed_substeps", [])
-                if substep in completed:
-                    completed.remove(substep)
-                print(f"🔍 DEBUG [HITL Gate]: Rerun requested, re-executing step {substep} (idx={state.get('current_execute_step')})")
+                # User feedback already applied via update_state()
+                new_step_idx = state.get("current_execute_step", "N/A")
+                print(f"🔍 DEBUG [HITL Gate]: Rerun requested, re-executing step {substep} (idx={new_step_idx})")
+                print(f"   - current_state_executed: {state.get('current_state_executed', 'N/A')}")
+                print(f"   - completed_substeps: {state.get('completed_substeps', [])}")
                 
             elif decision == "abort":
-                # Set error to stop execution
-                state["error"] = "User aborted execution"
-                state["executor_completed"] = True
                 print(f"🔍 DEBUG [HITL Gate]: Execution aborted by user")
             
             # Log HITL applied
@@ -515,6 +497,34 @@ class OrchestrationGraph:
                         print(f"     - Refuter: {refuter}")
                     else:
                         print(f"     - Refuter: None")
+                # Special handling for SQL queries - show query and sample data
+                elif field in ["final_sql", "sql_query"] and isinstance(value, str):
+                    print(f"   - {label}:")
+                    print(f"     {value}")
+                    # Try to execute SQL and show sample data
+                    try:
+                        db_id = current_state.get("db_id")
+                        if db_id:
+                            database = Database()
+                            # Add LIMIT to avoid loading too much data
+                            sample_sql = value
+                            if "LIMIT" not in value.upper():
+                                # Add LIMIT 10 if not present
+                                sample_sql = f"{value.rstrip(';')} LIMIT 10"
+                            
+                            rows, columns = database.run_query(sql=sample_sql, db_id=db_id)
+                            if rows and columns:
+                                df = pd.DataFrame(rows, columns=columns)
+                                print(f"\n   📊 Data sample ({len(df)} rows, {len(df.columns)} columns):")
+                                # Show first 5 rows
+                                print(df.head(5).to_string(index=False))
+                                if len(rows) >= 10:
+                                    print(f"     ... (showing first 5 of {len(rows)} rows)")
+                                
+                            else:
+                                print(f"     ⚠️  Query returned no rows")
+                    except Exception as e:
+                        print(f"     ⚠️  Could not execute query to show sample data: {str(e)}")
                 elif isinstance(value, (list, dict)) and len(str(value)) > 300:
                     print(f"   - {label}: {str(value)[:300]}...")
                 else:
@@ -652,12 +662,7 @@ class OrchestrationGraph:
             for step in self.compiled_graph.stream(current_input, config=config):
                 step_name = list[str](step.keys())[0]
                 
-                # Debug: Log which node is being executed
-                if step_name not in ['__interrupt__']:
-                    print(f"🔍 Debug: Executing node: {step_name}")
-                
                 if step_name == '__interrupt__':
-                    print(f"🔍 Debug: Interrupted by: {step_name}")
                     state_data = step[step_name]
                     interrupt_obj = state_data[0] if isinstance(state_data, tuple) else state_data
                     payload = interrupt_obj.value if hasattr(interrupt_obj, 'value') else (interrupt_obj if isinstance(interrupt_obj, dict) else {})
@@ -666,7 +671,6 @@ class OrchestrationGraph:
                     if not isinstance(payload, dict):
                         payload = {}
                     
-                    # ✅ DEBUG: Check checkpoint state after interrupt
                     try:
                         checkpoint_state = self.compiled_graph.get_state(config).values
                         current_step_idx = checkpoint_state.get("current_execute_step", "N/A")
@@ -796,8 +800,8 @@ class OrchestrationGraph:
                                     example = field_info['example']
                                     if isinstance(example, list):
                                         print(f"     Examples:")
-                                        for i, ex in enumerate(example, 1):
-                                            print(f"       {i}. {ex}")
+                                        for ex in example:
+                                            print(f"       {ex}")
                                     else:
                                         print(f"     Example: {example}")
                         else:
@@ -985,13 +989,60 @@ class OrchestrationGraph:
                     elif decision == "rerun" and "feedback" in user_data:
                         print(f"   Feedback: {user_data['feedback']}")
                 
+                    # Add state modifications to user_data based on decision
+                    # Get current checkpoint state to calculate new values
+                    checkpoint_state = self.compiled_graph.get_state(config).values
+                    current_step_idx = checkpoint_state.get("current_execute_step", 0)
+                    completed_substeps = checkpoint_state.get("completed_substeps", [])
+                    
+                    if decision == "edit":
+                        # Apply edits and prepare for re-execution
+                        edits = user_data.get("edits", {})
+                        # Add all edits to user_data (they may already be there)
+                        user_data.update(edits)
+                        # Decrement step counter and reset execution flag
+                        user_data["current_execute_step"] = max(0, current_step_idx - 1)
+                        user_data["current_state_executed"] = False
+                        # Remove substep from completed list
+                        if step_name_from_payload in completed_substeps:
+                            completed_copy = list(completed_substeps)
+                            completed_copy.remove(step_name_from_payload)
+                            user_data["completed_substeps"] = completed_copy
+                            
+                    elif decision == "rerun":
+                        # Prepare for re-execution with optional feedback
+                        # Feedback already in user_data if provided
+                        # Decrement step counter and reset execution flag
+                        user_data["current_execute_step"] = max(0, current_step_idx - 1)
+                        user_data["current_state_executed"] = False
+                        # Remove substep from completed list
+                        if step_name_from_payload in completed_substeps:
+                            completed_copy = list(completed_substeps)
+                            completed_copy.remove(step_name_from_payload)
+                            user_data["completed_substeps"] = completed_copy
+                            
+                    elif decision == "abort":
+                        # Set error and completion flags
+                        user_data["error"] = "User aborted execution"
+                        user_data["executor_completed"] = True
+                
                     # ✅ DEBUG: Show state update
                     print(f"🔍 DEBUG [Graph]: Updating state with user decision: {decision}")
                     self.compiled_graph.update_state(config, user_data)
                     
                     # ✅ DEBUG: Verify checkpoint state after update
                     updated_checkpoint = self.compiled_graph.get_state(config).values
-                    print(f"🔍 DEBUG [Graph]: After update, checkpoint has current_execute_step={updated_checkpoint.get('current_execute_step', 'N/A')}")
+                    print(f"🔍 DEBUG [HITL Gate]: After update_state:")
+                    print(f"   - current_execute_step: {updated_checkpoint.get('current_execute_step', 'N/A')}")
+                    print(f"   - current_state_executed: {updated_checkpoint.get('current_state_executed', 'N/A')}")
+                    print(f"   - completed_substeps: {updated_checkpoint.get('completed_substeps', [])}")
+                    
+                    # Check if user aborted - if so, terminate immediately
+                    if decision == "abort":
+                        print(f"🔍 [Graph]: Abort detected, terminating session")
+                        completed = True
+                        final_state = updated_checkpoint
+                        break
                     
                     found_interrupt = True
 

@@ -18,9 +18,9 @@ def coerce_df_to_numeric(
     verbose: bool = True,
     # NEW:
     drop_text_cols: bool = True,
-    text_unique_ratio_thresh: float = 0.5,   # high-cardinality text
+    text_unique_ratio_thresh: float = 0.95,   # high-cardinality text
     text_avg_len_thresh: int = 30,           # long strings
-    text_avg_tokens_thresh: float = 3.0,     # "sentence-like"
+    text_avg_tokens_thresh: float = 10,     # "sentence-like"
     treat_id_like_as_text: bool = True,      # uuid-ish / long ids
 ) -> pd.DataFrame:
     TEXTY_NAME_PAT = re.compile(r"(desc|description|memo|note|comment|content|text|message)", re.I)

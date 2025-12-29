@@ -131,7 +131,7 @@ class ExecutorAgent(OrchestratorAgent):
             self.results[step["substep"]] = safe_data
             state["current_state_executed"] = True
             
-            # ✅ Advance step counter BEFORE returning
+            # Advance step counter BEFORE returning
             # This ensures it's persisted when the node returns
             state.setdefault("completed_substeps", []).append(step["substep"])
             state["current_execute_step"] = idx + 1
@@ -141,7 +141,7 @@ class ExecutorAgent(OrchestratorAgent):
             state["execution_log"] = self.execution_log
             state["results"] = self.results
             
-            # ✅ Return immediately - if HITL requested, interrupt will fire in _executor_node
+            # Return immediately - if HITL requested, interrupt will fire in _executor_node
             # The state with advanced counter will be persisted when node returns
             return AgentResult(
                 success=True,
