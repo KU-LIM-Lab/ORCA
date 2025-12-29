@@ -9,15 +9,29 @@ def print_final_output_recommender(final_output: dict) -> str:
     lines.append(final_output.get("objective_summary", "No summary found. Something went wrong!"))
     lines.append("")
 
-    # 2. Recommended Tables (Important Columns)
+    # 2. Recommended Tables
     lines.append("📌 [2] Recommended Tables")
     tables = final_output.get("recommended_tables", [])
     if tables:
         for i, t in enumerate(tables, 1):
-            table_name = t.table  
-            cols = t.important_columns
-            col_text = ", ".join(cols)
-            lines.append(f"{i}. '{table_name}' — {col_text}")
+            if isinstance(t, str):
+                # If t is just a string (table name only)
+                lines.append(f"{i}. '{t}'")
+            elif isinstance(t, dict):
+                # If t is a dictionary
+                table_name = t.get("table", t.get("table_name", ""))
+                cols = t.get("important_columns", [])
+                if cols:
+                    col_text = ", ".join(cols)
+                    lines.append(f"{i}. '{table_name}' — {col_text}")
+                else:
+                    lines.append(f"{i}. '{table_name}'")
+            else:
+                # If t is an object with attributes
+                table_name = t.table  
+                cols = t.important_columns
+                col_text = ", ".join(cols)
+                lines.append(f"{i}. '{table_name}' — {col_text}")
     else:
         lines.append("No tables recommended.")
     lines.append("")
@@ -106,7 +120,7 @@ def print_final_output_sql(final_output: dict) -> str:
     columns = final_output.get("columns")
 
     if isinstance(result, list):
-        display_rows = result[:10] if len(result) > 10 else result
+        display_rows = result[:5] if len(result) > 5 else result
         
         if columns:
             col_widths = [len(col) for col in columns]
@@ -125,7 +139,7 @@ def print_final_output_sql(final_output: dict) -> str:
             for row in display_rows:
                 lines.append(" | ".join(str(cell) for cell in row))
         if len(result) > 10:
-            lines.append(f"\nToo many rows returned ({len(result)} rows). Showing top 10.")
+            lines.append(f"\nToo many rows returned ({len(result)} rows). Showing first 5 rows.")
     else:
         lines.append(str(result))
     lines.append("")

@@ -4,10 +4,12 @@ from typing import Dict, List
 from langchain_core.runnables import RunnableLambda
 
 import pandas as pd
+import numpy as np
 from dowhy import CausalModel
 from tabpfn import TabPFNClassifier
 
 import statsmodels.api as sm
+from utils.redis_df import load_df_parquet
 
 def clean_var_names(vars: List[str]) -> List[str]:
     return [v.split(".")[-1] if isinstance(v, str) and "." in v else v for v in vars]
@@ -20,7 +22,11 @@ def build_dowhy_analysis_node() -> RunnableLambda:
     def invoke(state: Dict) -> Dict:
         strategy = state["strategy"]
         parsed_info = state["parsed_query"]
-        df: pd.DataFrame = state["df_preprocessed"]
+        df = state.get("df_preprocessed")
+        if df is None:
+            redis_key = state.get("df_redis_key")
+            if redis_key:
+                df = load_df_parquet(redis_key)
         
         if df is None or df.shape[0] < 10:
             raise ValueError(f"Insufficient data for analysis: {df.shape[0]} rows found, at least 10 required.")
@@ -37,7 +43,9 @@ def build_dowhy_analysis_node() -> RunnableLambda:
 
 
         # Create CausalModel
-        causal_graph = state["causal_graph"]
+        causal_graph = state.get("selected_graph") or state.get("causal_graph")
+        if not causal_graph:
+            raise ValueError("The causal graph generated is required for DoWhy analysis")
         dot_graph = causal_graph.get("dot_graph")
         
         # Identification
@@ -119,20 +127,28 @@ def build_dowhy_analysis_node() -> RunnableLambda:
             state["refutation_result"] = refute_result.summary()
 
         # Save to state
-        state["causal_model"] = model
-        state["causal_estimand"] = identified_estimand
-        state["causal_estimate"] = estimate
+        state["causal_model"] = str(model)
+        state["causal_estimand"] = str(identified_estimand)
+        state["causal_estimate"] = {
+            "value": float(getattr(estimate, "value", None)) if getattr(estimate, "value", None) is not None else None,
+            "method": getattr(estimate, "method_name", None),
+        }
         
         # Save useful scalar values separately
         try:
-            ci = estimate.get_confidence_intervals()
-            ci = ci.tolist() if hasattr(ci, "tolist") else ci
+            ci_raw = estimate.get_confidence_intervals()
+            ci_arr = np.asarray(ci_raw, dtype=float)
+            
+            if ci_arr.ndim == 2 and ci_arr.shape[0] == 1:
+                ci_arr = ci_arr[0]
+                
+            ci = ci_arr.tolist()
         except Exception:
             ci = None
-
         state["causal_effect_ate"] = float(getattr(estimate, "value", None)) if getattr(estimate, "value", None) is not None else None
         state["causal_effect_ci"] = ci
 
+        state.pop("df_preprocessed", None)
         return state
 
     return RunnableLambda(invoke)
