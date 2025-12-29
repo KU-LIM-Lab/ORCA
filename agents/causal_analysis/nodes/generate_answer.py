@@ -14,6 +14,10 @@ def build_generate_answer_node(llm: BaseChatModel) -> RunnableLambda:
     """
 
     def invoke(state: Dict) -> Dict:
+        import time
+        start_time = time.time()
+        
+        print(f"🔍 [generate_answer] Starting...")
         strategy = state["strategy"]
         parsed_query = state.get("parsed_query") or {}
         estimate = state.get("causal_estimate")
@@ -39,17 +43,27 @@ def build_generate_answer_node(llm: BaseChatModel) -> RunnableLambda:
             "causal_effect_ci": state["causal_effect_ci"],
         }
 
+        prep_time = time.time() - start_time
+        print(f"🔍 [generate_answer] Input preparation took {prep_time:.2f}s")
+        print(f"🔍 [generate_answer] Calling LLM...")
+        
+        llm_start_time = time.time()
         result = call_llm(
             prompt=generate_answer_prompt,
             parser=generate_answer_parser,
             variables=llm_input,
             llm=llm
         )
+        llm_time = time.time() - llm_start_time
+        print(f"🔍 [generate_answer] LLM call took {llm_time:.2f}s")
 
         state["final_answer"] = result
         state["final_answer"] = result.explanation if hasattr(result, "explanation") else str(result)
         for key in ("df_preprocessed", "df_raw", "df", "gt_df"):
             state.pop(key, None)
+        
+        total_time = time.time() - start_time
+        print(f"🔍 [generate_answer] Total time: {total_time:.2f}s")
         return state
 
     return RunnableLambda(invoke)

@@ -285,6 +285,53 @@ class CausalDiscoveryAgent(SpecialistAgent):
             state["causal_discovery_status"] = "failed"
             return state
     
+    def _cleanup_state_for_checkpoint(self, state: AgentState) -> None:
+        """Clean up large objects from state before HITL checkpoint to speed up serialization
+        
+        Removes:
+        - DataFrames if stored in Redis (df_redis_key exists)
+        - Algorithm results if stored in Redis (algorithm_results_key exists)
+        - Large graph collections (scored_graphs, ranked_graphs - keep only top_candidates)
+        - Intermediate computation results
+        
+        DOES NOT REMOVE (needed downstream):
+        - df_raw: Used by report_generation
+        - consensus_pag: Used by report_generation for discovery narrative
+        - schema_analysis: Used by report_generation
+        """
+        import gc
+        
+        # Remove DataFrame if stored in Redis
+        if state.get("df_redis_key") and state.get("df_preprocessed") is not None:
+            logger.info("Removing df_preprocessed from state (available in Redis)")
+            state.pop("df_preprocessed", None)
+        
+        # Remove algorithm_results if stored in Redis
+        if state.get("algorithm_results_key") and state.get("algorithm_results"):
+            logger.info("Removing algorithm_results from state (available in Redis)")
+            state.pop("algorithm_results", None)
+        
+        # Remove large graph collections (keep only top_candidates which is small)
+        if state.get("scored_graphs") and state.get("top_candidates"):
+            logger.info("Removing scored_graphs from state (top_candidates preserved)")
+            state.pop("scored_graphs", None)
+        
+        if state.get("ranked_graphs") and state.get("top_candidates"):
+            logger.info("Removing ranked_graphs from state (top_candidates preserved)")
+            state.pop("ranked_graphs", None)
+        
+        # NOTE: Do NOT remove consensus_pag - used by report_generation
+        # NOTE: Do NOT remove df_raw - used by report_generation
+        
+        # Remove other DataFrames
+        state.pop("df", None)
+        state.pop("gt_df", None)
+        
+        # Remove intermediate scores
+        state.pop("intermediate_scores", None)
+        
+        gc.collect()
+    
     def _data_profiling(self, state: AgentState) -> AgentState:
         """Stage 1: Data profiling with three-stage approach (basic checks + global tests + pairwise profiles)"""
         logger.info("Performing data profiling...")
@@ -333,6 +380,9 @@ class CausalDiscoveryAgent(SpecialistAgent):
             
             # Request HITL for data profile review if interactive mode
             if state.get("interactive", False):
+                # Clean up state before checkpoint
+                self._cleanup_state_for_checkpoint(state)
+                
                 state = self.request_hitl(
                     state,
                     payload={
@@ -558,6 +608,9 @@ class CausalDiscoveryAgent(SpecialistAgent):
             
             # Request HITL for algorithm configuration review if interactive mode
             if state.get("interactive", False):
+                # Clean up state before checkpoint
+                self._cleanup_state_for_checkpoint(state)
+                
                 state = self.request_hitl(
                     state,
                     payload={
@@ -1120,6 +1173,9 @@ class CausalDiscoveryAgent(SpecialistAgent):
             
             # Request HITL for algorithm results review if interactive mode
             if state.get("interactive", False):
+                # Clean up state before checkpoint
+                self._cleanup_state_for_checkpoint(state)
+                
                 state = self.request_hitl(
                     state,
                     payload={
@@ -1180,6 +1236,13 @@ class CausalDiscoveryAgent(SpecialistAgent):
             state["graph_scoring_completed"] = True
             
             logger.info(f"Graph scoring completed. Scored {len(scored_graphs)} graphs")
+            
+            import gc
+            # algorithm_results는 이미 scored_graphs로 변환되었으므로 메모리에서 제거 가능
+            if state.get("algorithm_results_key"):
+                # Redis에 저장된 경우 메모리에서 제거
+                state.pop("algorithm_results", None)
+            gc.collect()
                         
             return state
             
@@ -1240,10 +1303,17 @@ class CausalDiscoveryAgent(SpecialistAgent):
             state["top_candidates"] = top_candidates
             state["graph_evaluation_completed"] = True
             
+            import gc
+            state.pop("intermediate_scores", None)
+            gc.collect()
+            
             logger.info(f"Graph evaluation completed. Top candidate: {top_candidates[0]['algorithm'] if top_candidates else 'None'}")
             
             # Request HITL for graph evaluation review if interactive mode
             if state.get("interactive", False):
+                # Clean up state before checkpoint
+                self._cleanup_state_for_checkpoint(state)
+                
                 state = self.request_hitl(
                     state,
                     payload={
@@ -1690,6 +1760,9 @@ class CausalDiscoveryAgent(SpecialistAgent):
             
             # Request HITL for ensemble synthesis review if interactive mode
             if state.get("interactive", False):
+                # Clean up state before checkpoint
+                self._cleanup_state_for_checkpoint(state)
+                
                 state = self.request_hitl(
                     state,
                     payload={
@@ -1772,7 +1845,6 @@ PAG Construction:
 DAG Construction:
 - Graph Type: {get_graph_type(dag_result)}
 - Edge Count: {len(get_edges(dag_result))}
-- Tie-breaking Method: {dag_result.get('metadata', {}).get('construction_method', 'Unknown')}
 
 Selection Rationale:
 The ensemble synthesis combines the top {len(top_candidates)} candidates using consensus skeleton building and direction resolution. 

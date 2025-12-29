@@ -104,7 +104,7 @@ CREATE TABLE public.categories (
     description text,
 
     -- optional: 계층 정보 (쓰고 싶으면 유지, 필요 없으면 지워도 됨)
-    category_level integer,
+    -- category_level integer,
 
     -- ★ seeding 코드와 맞추기: N(0,1)에서 뽑는 연속값
     category_popularity_score double precision,

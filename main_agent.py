@@ -20,7 +20,7 @@ from agents.data_explorer.table_explorer import generate_description_graph
 from agents.data_explorer.table_recommender import generate_table_recommendation_graph
 from agents.data_explorer.text2sql_generator import generate_text2sql_graph 
 from agents.causal_analysis import generate_causal_analysis_graph
-from experiments.causal_analysis.causal_pre_information import DEFAULT_EXPRESSION_DICT
+from experiments_v0.causal_analysis.causal_pre_information import DEFAULT_EXPRESSION_DICT
 
 
 # setup env

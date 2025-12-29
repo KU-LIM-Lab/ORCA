@@ -1303,6 +1303,7 @@ class PCTool:
         if variable_schema:
             params["variable_schema"] = variable_schema
         try:
+            import warnings
             from causallearn.search.ConstraintBased.PC import pc
             from causallearn.utils.cit import fisherz, kci, gsq
             data = df.values.astype(float)
@@ -1330,7 +1331,10 @@ class PCTool:
                 test_map = {"fisherz": fisherz, "kci": kci, "gsq": gsq}
                 test_func = test_map.get(indep_test, fisherz)
             
-            cg = pc(data, alpha=alpha, indep_test=test_func, max_k=max_k, verbose=False)
+            # Suppress RuntimeWarnings from KCI test (numerical instability in causallearn)
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=RuntimeWarning, module="causallearn")
+                cg = pc(data, alpha=alpha, indep_test=test_func, max_k=max_k, verbose=False)
             graph = cg.G.graph
             if hasattr(graph, 'items'):
                 # Dictionary format
@@ -1714,6 +1718,7 @@ class FCITool:
         if variable_schema:
             params["variable_schema"] = variable_schema
         try:
+            import warnings
             from causallearn.search.ConstraintBased.FCI import fci
             from causallearn.utils.cit import fisherz, kci, gsq
             data = df.values.astype(float)
@@ -1739,9 +1744,12 @@ class FCITool:
                 test_map = {"fisherz": fisherz, "kci": kci, "gsq": gsq}
                 test_func = test_map.get(indep_test, fisherz)
             
-            # Causal-Learn FCI API: fci(data, indep_test, alpha, max_k)
-            # Returns tuple: (G: GeneralGraph, edge_list: List[Edge])
-            pag = fci(data, test_func, alpha, max_k=max_k)
+            # Suppress RuntimeWarnings from KCI test (numerical instability in causallearn)
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=RuntimeWarning, module="causallearn")
+                # Causal-Learn FCI API: fci(data, indep_test, alpha, max_k)
+                # Returns tuple: (G: GeneralGraph, edge_list: List[Edge])
+                pag = fci(data, test_func, alpha, max_k=max_k)
             G, edge_list = pag
             
             # Extract node names from GeneralGraph
@@ -1889,16 +1897,20 @@ class PruningTool:
                     else:
                         ci_test_func = LRTTest(data_np, variable_schema)
                 else:
+                    import warnings
                     from causallearn.utils.cit import FisherZ, KCI, Chisq_or_Gsq
-                    if ci_test_method == "fisherz":
-                        ci_test_func = FisherZ(data_np)
-                    elif ci_test_method == "kci":
-                        ci_test_func = KCI(data_np)
-                    elif ci_test_method == "gsq":
-                        ci_test_func = Chisq_or_Gsq(data_np, "gsq")
-                    else:
-                        logger.warning(f"Unknown CI test {ci_test_method}, using fisherz")
-                        ci_test_func = FisherZ(data_np)
+                    # Suppress RuntimeWarnings from KCI test (numerical instability in causallearn)
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings("ignore", category=RuntimeWarning, module="causallearn")
+                        if ci_test_method == "fisherz":
+                            ci_test_func = FisherZ(data_np)
+                        elif ci_test_method == "kci":
+                            ci_test_func = KCI(data_np)
+                        elif ci_test_method == "gsq":
+                            ci_test_func = Chisq_or_Gsq(data_np, "gsq")
+                        else:
+                            logger.warning(f"Unknown CI test {ci_test_method}, using fisherz")
+                            ci_test_func = FisherZ(data_np)
             except ImportError:
                 logger.warning(f"CI test {ci_test_method} not available, using fisherz")
                 from causallearn.utils.cit import FisherZ
@@ -2946,7 +2958,8 @@ class GraphVisualizer:
             node_colors = ['#4A90E2' for _ in G.nodes()]
             node_sizes = [2000 for _ in G.nodes()]
             
-            nx.draw_networkx_nodes(G, pos, node_color=node_colors, 
+            nx.draw_networkx_nodes(G, pos, 
+                                   node_color=node_colors, 
                                  node_size=node_sizes, alpha=0.9, ax=ax)
             
             # Draw edges
@@ -2962,16 +2975,18 @@ class GraphVisualizer:
             
             nx.draw_networkx_edges(G, pos, edge_color=edge_colors, 
                                  width=edge_widths, alpha=0.6, arrows=True, 
-                                 arrowsize=20, arrowstyle='->', ax=ax)
-            
+                                 arrowsize=20, arrowstyle='-|>', ax=ax)
+            nx.draw_networkx_edges(G, pos, edge_color=edge_colors, width=edge_widths,
+                                   alpha=0.65, arrows=True, arrowstyle='-|>', arrowsize=28, 
+                                   node_size=node_sizes, min_source_margin=10, min_target_margin=18, ax=ax)
+
             # Draw labels
             nx.draw_networkx_labels(G, pos, font_size=10, font_weight='bold', ax=ax)
             
             # Set title
             metadata = dag_dict.get("metadata", {})
             graph_type = metadata.get("graph_type", "DAG")
-            construction_method = metadata.get("construction_method", "unknown")
-            title = f"Causal {graph_type} - {construction_method}"
+            title = f"final {graph_type}"
             ax.set_title(title, fontsize=14, fontweight='bold', pad=20)
             
             ax.axis('off')

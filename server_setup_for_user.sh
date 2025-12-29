@@ -1,33 +1,81 @@
-#!/bin/bash
-
 # ORCA 서버 초기 설정 스크립트
 # 새로운 서버에 ORCA 시스템을 처음 설정하는 용도
 
-# echo "conda 환경을 생성합니다..."
-
-# ENV_NAME="ORCA_userstudy"
-# PY_VER="3.11"
-
-# # conda가 없으면 종료
-# command -v conda >/dev/null 2>&1 || { echo "❌ conda가 없습니다. Miniconda/Anaconda 설치 후 다시 실행해주세요."; exit 1; }
-
-# # conda 환경 생성(없으면)
-# if ! conda env list | awk '{print $1}' | grep -qx "$ENV_NAME"; then
-#   conda create -n "$ENV_NAME" python="$PY_VER" -y
-# fi
-
-# # activate (shell에 따라 다름)
 # source "$(conda info --base)/etc/profile.d/conda.sh"
-# conda activate "$ENV_NAME"
+# conda activate userstudy
 
-pip install --upgrade pip setuptools wheel
+# PYTHON_BIN="$(command -v python)"
+# echo "Using python: $PYTHON_BIN"
 
-echo "requirements를 다운로드 합니다 ..."
-pip install -r requirements.txt
+# echo "requirements를 다운로드 합니다 ..."
+# pip install --upgrade pip setuptools wheel
+# pip install PyYAML
+# pip install 
+# pip install psycopg2-binary 
+# pip install numpy    
+# pip install langchain-ollama==0.3.3 
+# pip install langchain-openai==0.3.21  
+# pip install langchain==0.3.27  
+# pip install pydantic 
+# pip install redis 
+# pip install python-dotenv==1.1.1
+# pip install redisvl
+# pip install -r requirements.txt
 
-echo "data seeding을 위한 package가 존재하는지 확인합니다 .."
-command -v node >/dev/null 2>&1 || { echo "❌ node가 없습니다. Node.js 설치 후 다시 실행해주세요."; exit 1; }
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate userstudy
+
+set -e  # 에러 나면 즉시 중단 (원인 추적 쉬움)
+
+echo "Using python: $(which python)"
+echo "Using pip: $(which pip)"
+
+python -m pip install --upgrade pip setuptools wheel
+
+# requirements가 pip용으로 정상이라는 전제
+python -m pip install -r requirements.txt
+
+# (선택) 자주 깨지는 것들만 따로 보정
+python -m pip install PyYAML psycopg2-binary
+
+echo "📋 Node.js 환경 설정"
+
+# nvm 설치 확인
+if ! command -v nvm >/dev/null 2>&1; then
+  echo "📦 nvm이 없습니다. 설치합니다..."
+  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+
+  # shell 반영
+  export NVM_DIR="$HOME/.nvm"
+  [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+else
+  echo "✅ nvm이 이미 설치되어 있습니다."
+fi
+
+# LTS Node 설치
+nvm install --lts
+nvm use --lts
+
 node -v
+npm -v
+
+SEED_DIR="REEF/seed_R1"
+
+cd "$SEED_DIR" || exit 1
+
+if [ ! -f "package.json" ]; then
+  echo "📦 package.json이 없어 생성합니다..."
+  npm init -y
+  npm install @faker-js/faker pg dotenv uuid
+elif [ -f "package-lock.json" ]; then
+  echo "📦 package-lock.json 발견 → npm ci 실행"
+  npm ci
+else
+  echo "📦 package.json 존재 → npm install 실행"
+  npm install
+fi
+
+cd - >/dev/null
 
 echo "🚀 ORCA 서버 초기 설정을 시작합니다..."
 
@@ -119,7 +167,7 @@ fi
 echo "📋 5단계: 연결 테스트"
 echo "생성된 서버에 연결을 테스트합니다..."
 
-python3 -c "
+$PYTHON_BIN -c "
 import sys
 sys.path.append('.')
 from utils.settings import POSTGRES_CONFIG, REDIS_CONFIG
@@ -154,25 +202,8 @@ else
     exit 1
 fi
 
-# 6단계: 메타데이터 생성
-echo "📋 6단계: 메타데이터 생성"
-echo "테이블 관계 및 메타데이터를 생성합니다..."
-
-python3 -c "
-import sys
-sys.path.append('.')
-from utils.data_prep.runner import run
-
-print('🔍 메타데이터 생성 중...')
-try:
-    run('reef_db')
-    print('✅ 메타데이터 생성 완료')
-except Exception as e:
-    print(f'❌ 메타데이터 생성 실패: {e}')
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
-"
+echo "ORCA 작동을 위한 metadata 생성"
+python -m utils.data_prep.runner
 
 if [ $? -eq 0 ]; then
     echo "✅ 메타데이터 생성 완료"

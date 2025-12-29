@@ -14,6 +14,57 @@ from utils.redis_df import load_df_parquet
 def clean_var_names(vars: List[str]) -> List[str]:
     return [v.split(".")[-1] if isinstance(v, str) and "." in v else v for v in vars]
 
+def _convert_to_dot_graph(causal_graph: Dict) -> str:
+    """
+    Convert causal discovery graph format to DOT format for DoWhy.
+    
+    Expected input format:
+    {
+        "graph": {
+            "edges": [{"from": "A", "to": "B", "type": "->", ...}, ...],
+            "variables": ["A", "B", "C", ...]
+        },
+        "metadata": {...}
+    }
+    
+    Returns DOT format string like:
+    "digraph { A -> B; B -> C; }"
+    """
+    # Handle both unified schema and legacy format
+    if "graph" in causal_graph:
+        edges = causal_graph["graph"].get("edges", [])
+        variables = causal_graph["graph"].get("variables", [])
+    else:
+        edges = causal_graph.get("edges", [])
+        variables = causal_graph.get("variables", []) or causal_graph.get("nodes", [])
+    
+    # Check if we have dot_graph key (pre-existing DOT format)
+    if "dot_graph" in causal_graph:
+        return causal_graph["dot_graph"]
+    
+    if not edges:
+        return None
+    
+    # Build DOT format string
+    dot_lines = ["digraph {"]
+    
+    for edge in edges:
+        from_node = str(edge.get("from", "")).replace(".", "_")
+        to_node = str(edge.get("to", "")).replace(".", "_")
+        edge_type = edge.get("type", "->")
+        
+        # Only include directed edges (->)
+        if edge_type == "->":
+            dot_lines.append(f"    {from_node} -> {to_node};")
+        # For undirected edges (--), add both directions (or skip)
+        # For now, we'll convert them to directed edges
+        elif edge_type in ["--", "o-o"]:
+            dot_lines.append(f"    {from_node} -> {to_node};")
+    
+    dot_lines.append("}")
+    
+    return "\n".join(dot_lines)
+
 def build_dowhy_analysis_node() -> RunnableLambda:
     """
     Performs causal analysis using the selected strategy and preprocessed data.
@@ -46,7 +97,9 @@ def build_dowhy_analysis_node() -> RunnableLambda:
         causal_graph = state.get("selected_graph") or state.get("causal_graph")
         if not causal_graph:
             raise ValueError("The causal graph generated is required for DoWhy analysis")
-        dot_graph = causal_graph.get("dot_graph")
+        
+        # Convert graph to DOT format for DoWhy
+        dot_graph = _convert_to_dot_graph(causal_graph)
         
         # Identification
         try:

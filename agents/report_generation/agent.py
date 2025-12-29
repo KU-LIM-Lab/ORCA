@@ -1,18 +1,12 @@
-# agents/report_generation/agent.py
-from typing import Optional, Dict, Any
-from core.base import SpecialistAgent, AgentType
-from core.state import AgentState
-from monitoring.metrics.collector import MetricsCollector
-
 # -*- coding: utf-8 -*-
 # agents/report_generation/agent.py
 from __future__ import annotations
+
 from typing import Optional, Dict, Any
 from core.base import SpecialistAgent, AgentType
 from core.state import AgentState
 from monitoring.metrics.collector import MetricsCollector
 
-# ✅ 새로 추가
 from agents.report_generation.tools import (
     build_table_exploration_section,
     build_table_recommendation_section,
@@ -70,8 +64,15 @@ class ReportGenerationAgent(SpecialistAgent):
             try:
                 from utils.llm import call_llm
                 prompt = build_causal_discovery_prompt(state)
+                
+                # Check prompt size and warn if too large
+                prompt_length = len(prompt)
+                if prompt_length > 50000:  # ~12.5k tokens
+                    print(f"⚠️  [REPORT] Causal discovery prompt is very large ({prompt_length} chars), this may be slow")
+                
                 discovery_md = call_llm(prompt)  # LLM이 마크다운/불릿으로 서술
-            except Exception:
+            except Exception as e:
+                print(f"⚠️  [REPORT] Failed to generate causal discovery narrative: {e}")
                 discovery_md = None
             if discovery_md:
                 sections["4_causal_discovery"] = f"## 4) Causal Discovery Report\n\n{discovery_md}\n\n---"
@@ -97,10 +98,12 @@ class ReportGenerationAgent(SpecialistAgent):
                 sections["5_causal_inference"] = build_causal_inference_section(state)
 
             # 메타데이터 포함 최종 보고서
+            # Optimize: limit execution_log to last 50 entries to avoid bloat
+            execution_log = state.get("execution_log", [])
             state["final_report"] = {
                 "status": "completed",
                 "query": state.get("initial_query"),
-                "total_steps": len(state.get("execution_log", [])),
+                "total_steps": len(execution_log),
                 "sections": sections,
                 "execution_log": state.get("execution_log", []),
                 "results": state.get("results", {}),
@@ -113,6 +116,11 @@ class ReportGenerationAgent(SpecialistAgent):
                     sections.get("5_causal_inference",""),
                 ]).strip()
             }
+            
+            # Mark pipeline as completed
+            state["executor_completed"] = True
+            print("[REPORT] ✅ Report generation completed - pipeline finished")
+            
             return state
 
         except Exception as e:

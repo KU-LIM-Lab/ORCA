@@ -12,7 +12,7 @@ git clone <repository-url>
 cd ORCA
 
 # Set up environment variables
-cp env.example .env
+ .env
 # Edit .env file with your configuration
 
 # Initialize server (creates database, seed data, starts services)
@@ -25,11 +25,6 @@ cp env.example .env
 # Clone repository
 git clone <repository-url>
 cd ORCA
-
-# Set up environment variables
-cp env.example .env
-# Edit .env file with server connection details
-
 # Connect to existing server
 ./connect_server.sh
 ```

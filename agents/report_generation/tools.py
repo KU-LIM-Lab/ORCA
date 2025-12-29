@@ -197,7 +197,8 @@ def build_text2sql_section(sql: Optional[str], result: Any, columns: Optional[Li
     # Result
     lines.append(_h("Execution Result (preview)", 3))
     if isinstance(result, pd.DataFrame):
-        lines.append(df_preview(result))
+        # Only preview head to avoid memory issues
+        lines.append(df_preview(result.head(10), n=10))
     elif isinstance(result, list):
         # 간단 리스트 렌더
         if columns:

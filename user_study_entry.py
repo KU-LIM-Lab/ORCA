@@ -6,8 +6,8 @@ This script is the entry point for user study experiments, supporting two condit
 2. Baseline: Alternative baseline system
 
 Usage example:
-    python user_study_entry.py --participant_id P001 --condition orca --task-id task1
-    python user_study_entry.py --participant_id P002 --condition baseline --task-id task2
+    python user_study_entry.py --participant-id P000 --condition orca --task-id task1
+    python user_study_entry.py --participant-id P000 --condition baseline --task-id task2
 """
 
 import logging
@@ -94,12 +94,14 @@ def run_orca_condition(
         metrics_collector = MetricsCollector(
             session_id=session_id,
             event_logger=event_logger_instance,
-            artifact_manager=artifact_manager_instance
+            artifact_manager=artifact_manager_instance,
+            max_metrics=10000,  # 기본값 유지
+            max_snapshots=720   # 5초 간격으로 1시간 분량
         )
         set_metrics_collector(metrics_collector)
         run_context.set_metrics_collector(metrics_collector)
-        metrics_collector.start_monitoring(interval=1.0)
-        logger.info("✅ Metrics collection started for experiment mode")
+        metrics_collector.start_monitoring(interval=5.0)  # 1초 → 5초로 변경
+        logger.info("✅ Metrics collection started for experiment mode (interval=5.0s)")
     else:
         logger.warning(f"❌ Metrics collector NOT initialized: experiment_mode={experiment_mode}, run_context={run_context is not None}")
     

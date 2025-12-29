@@ -28,9 +28,6 @@ const seedReviews = require("./seed_reviews");
     console.log("🏷️ Seeding brands...");
     await seedBrands();
 
-    console.log("🛒 Seeding cart...");
-    await seedCart();
-
     console.log("📦 Seeding products...");
     await seedProducts();
 
@@ -40,6 +37,9 @@ const seedReviews = require("./seed_reviews");
     console.log("🔢 Seeding SKUs...");
     await seedSku();
 
+    console.log("🛒 Seeding cart...");
+    await seedCart();
+    
     console.log("🎯 Seeding promotions...");
     await seedPromo();
 

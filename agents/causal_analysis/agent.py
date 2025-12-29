@@ -47,6 +47,26 @@ class CausalAnalysisAgent(SpecialistAgent):
         """Return required state keys for causal analysis."""
         return ["df_preprocessed", "initial_query"]
     
+    def _cleanup_state_for_checkpoint(self, state: AgentState) -> None:
+        """Clean up large objects from state before HITL checkpoint to speed up serialization
+        
+        DOES NOT REMOVE (needed downstream):
+        - df_raw: Used by report_generation
+        """
+        import gc
+        
+        # Remove DataFrame if stored in Redis (can be reloaded in dowhy_analysis)
+        if state.get("df_redis_key") and state.get("df_preprocessed") is not None:
+            state.pop("df_preprocessed", None)
+        
+        # NOTE: Do NOT remove df_raw - used by report_generation
+        
+        # Remove other DataFrames
+        state.pop("df", None)
+        state.pop("gt_df", None)
+        
+        gc.collect()
+    
     def _register_specialist_tools(self) -> None:
         """Register causal analysis specific tools"""
         self.register_tool(
@@ -84,7 +104,7 @@ class CausalAnalysisAgent(SpecialistAgent):
             return self._execute_config_selection(state)
         elif current_substep == "effect_estimation":
             return self._execute_dowhy_analysis(state)
-        elif current_substep == "interpretation":
+        elif current_substep in ["interpretation", "generate_answer"]:
             return self._execute_generate_answer(state)
         elif current_substep == "full_pipeline":
             return self._execute_full_pipeline(state)
@@ -213,7 +233,16 @@ class CausalAnalysisAgent(SpecialistAgent):
         """Execute parse question step"""
         print("[CAUSAL] Step: Parsing question...")
         
-        # 커스텀 도구 사용
+        # Check if this is a HITL reexecution with edited variables
+        if state.get("__hitl_reexecution__"):
+            # User made edits, don't re-run LLM
+            print("   ℹ️  Using edited causal variables...")
+            state["parse_question_completed"] = True
+            state.pop("__hitl_reexecution__", None)
+            # Don't request HITL again after edit
+            return state
+        
+        # Normal execution: 커스텀 도구 사용
         result = self.use_tool("parse_question", state)
         
         if result.get("success"):
@@ -224,6 +253,9 @@ class CausalAnalysisAgent(SpecialistAgent):
             
             # Request HITL for parsed query review if interactive mode
             if state.get("interactive", False):
+                # Clean up state before checkpoint
+                self._cleanup_state_for_checkpoint(state)
+                
                 state = self.request_hitl(
                     state,
                     payload={
@@ -244,7 +276,16 @@ class CausalAnalysisAgent(SpecialistAgent):
         """Execute config selection step"""
         print("[CAUSAL] Step: Selecting configuration...")
         
-        # 커스텀 도구 사용
+        # Check if this is a HITL reexecution with edited strategy
+        if state.get("__hitl_reexecution__"):
+            # User made edits, don't re-run LLM
+            print("   ℹ️  Using edited strategy configuration...")
+            state["config_selection_completed"] = True
+            state.pop("__hitl_reexecution__", None)
+            # Don't request HITL again after edit
+            return state
+        
+        # Normal execution: 커스텀 도구 사용
         result = self.use_tool("config_selection", state)
         
         if result.get("success"):
@@ -254,6 +295,9 @@ class CausalAnalysisAgent(SpecialistAgent):
             
             # Request HITL for strategy review if interactive mode
             if state.get("interactive", False):
+                # Clean up state before checkpoint
+                self._cleanup_state_for_checkpoint(state)
+                
                 state = self.request_hitl(
                     state,
                     payload={
@@ -308,6 +352,10 @@ class CausalAnalysisAgent(SpecialistAgent):
             # Fallback to simple answer generation
             state["final_answer"] = self._generate_simple_answer(state)
             state["generate_answer_completed"] = True
+        
+        # Mark pipeline as completed - this is the final step
+        state["executor_completed"] = True
+        print("[CAUSAL] ✅ Causal analysis completed - pipeline finished")
         
         return state
     
