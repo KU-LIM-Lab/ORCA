@@ -102,12 +102,14 @@ class DataPreprocessorAgent(SpecialistAgent):
                 return state
         
         try:
+            # Execution order matches _full_pipeline():
+            # 1. fetch → 2. clean_nulls → 3. schema_detection (encode skipped)
             if substep == "fetch":
                 return self._fetch(state)
-            elif substep == "schema_detection":
-                return self._schema_detection(state)
             elif substep == "clean_nulls":
                 return self._clean_nulls(state)
+            elif substep == "schema_detection":
+                return self._schema_detection(state)
             elif substep == "encode":
                 return self._encode(state)
             elif substep in ["full_pipeline", "data_preprocessing"]:
@@ -329,8 +331,15 @@ class DataPreprocessorAgent(SpecialistAgent):
             return state
 
     def _full_pipeline(self, state: AgentState) -> AgentState:
-        """Run full preprocessing pipeline."""
-        # Run steps sequentially
+        """Run full preprocessing pipeline.
+        
+        Execution order:
+        1. fetch - Fetch data from SQL/Redis
+        2. clean_nulls - Clean null values
+        3. schema_detection - Detect data types and schema
+        (encode is skipped to preserve original data for causal discovery)
+        """
+        # Step 1: Fetch data
         state = self._fetch(state)
         if state.get("error"):
             return state
@@ -362,26 +371,22 @@ class DataPreprocessorAgent(SpecialistAgent):
                             save_df_parquet(self.df_redis_key, self.df)
                         except Exception as e:
                             state.setdefault("warnings", []).append(f"Failed to cache filtered dataframe: {e}")
-        
 
-        state = self._schema_detection(state)
-        if state.get("error"):
-            return state
-
-        logger.info("Cleaning null process")
+        # Step 2: Clean nulls (before schema detection)
+        logger.info("Cleaning null values...")
         state = self._clean_nulls(state)
         if state.get("error"):
             return state
 
-        # Skip encoding if flag is set (for causal discovery with mixed data)
-        # skip_encoding = state.get("skip_one_hot_encoding", False)
-        # if skip_encoding:
+        # Step 3: Schema detection (after cleaning nulls)
+        logger.info("Detecting schema...")
+        state = self._schema_detection(state)
+        if state.get("error"):
+            return state
+
+        # Skip encoding to preserve original data for causal discovery algorithms
         logger.info("One-hot encoding skipped. Original data preserved for causal discovery algorithms.")
         state["encoded_columns"] = []
-        # else:
-        #     state = self._encode(state)
-        #     if state.get("error"):
-        #         return state
 
         # Mark as completed
         state["data_preprocessing_completed"] = True

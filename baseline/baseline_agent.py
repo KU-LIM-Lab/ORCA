@@ -257,7 +257,24 @@ class BaselineAgent:
     def _save_state(self, st: Optional[BaselineState] = None) -> None:
         st = st or self.state
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(json.dumps(asdict(st), ensure_ascii=False, indent=2), encoding="utf-8")
+        
+        # Convert to dict and ensure all Path objects are strings for JSON serialization
+        state_dict = asdict(st)
+        
+        # Recursively convert Path objects to strings
+        def convert_paths(obj):
+            if isinstance(obj, Path):
+                return str(obj)
+            elif isinstance(obj, dict):
+                return {k: convert_paths(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_paths(item) for item in obj]
+            else:
+                return obj
+        
+        state_dict = convert_paths(state_dict)
+        
+        self.state_path.write_text(json.dumps(state_dict, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # -----------------------------
     # CLI loop
@@ -794,9 +811,13 @@ class BaselineAgent:
         Track artifact in state + set convenience paths.
         Also saves the last SQL query if available when saving dataset artifacts.
         """
+        # Ensure path is a string (not PosixPath) for JSON serialization
+        path_raw = save_result.get("path")
+        path_str = str(path_raw) if path_raw is not None else None
+        
         art = {
             "artifact_type": save_result.get("artifact_type"),
-            "path": save_result.get("path"),
+            "path": path_str,
             "sha256": save_result.get("sha256"),
             "ts": time.time(),
         }
@@ -814,12 +835,15 @@ class BaselineAgent:
                         data=self.state.last_sql_query,
                         filename=f"step{step_id}_query.sql",
                         step_id=step_id,
-                        metadata={"associated_dataset": save_result.get("path")}
+                        metadata={"associated_dataset": path_str}
                     )
+                    # Ensure sql_path is a string
+                    sql_path_str = str(sql_path) if sql_path is not None else None
+                    
                     # Add SQL artifact to the same step
                     sql_art = {
                         "artifact_type": "sql",
-                        "path": sql_path,
+                        "path": sql_path_str,
                         "sha256": save_result.get("sha256"),  # Will be recalculated by artifact_manager
                         "ts": time.time(),
                     }
@@ -827,13 +851,13 @@ class BaselineAgent:
                     
                     # Update convenience path if step 1
                     if step_id == "1" and not self.state.step1_sql_path:
-                        self.state.step1_sql_path = sql_path
+                        self.state.step1_sql_path = sql_path_str
             except Exception as e:
                 logger.warning(f"Failed to save associated SQL query: {e}")
         
         self.state.artifacts_by_step[step_id].append(art)
 
-        path = art["path"]
+        path = path_str
 
         if step_id == "1":
             if atype == "sql":

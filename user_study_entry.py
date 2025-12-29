@@ -6,8 +6,8 @@ This script is the entry point for user study experiments, supporting two condit
 2. Baseline: Alternative baseline system
 
 Usage example:
-    python user_study_entry.py --participant_id P001 --condition orca --task-id task1
-    python user_study_entry.py --participant_id P002 --condition baseline --task-id task2
+    python user_study_entry.py --participant-id P000 --condition orca --task-id task1
+    python user_study_entry.py --participant-id P000 --condition baseline --task-id task2
 """
 
 import logging

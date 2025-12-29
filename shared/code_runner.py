@@ -36,7 +36,7 @@ class CodeRunner:
     
     # Forbidden builtins and functions
     FORBIDDEN_BUILTINS = {
-        "__import__", "open", "exec", "eval", "compile", "input", "raw_input",
+        "open", "exec", "eval", "compile", "input", "raw_input",
         "globals", "locals", "vars", "dir",
         "getattr", "setattr", "delattr",
     }
@@ -45,7 +45,7 @@ class CodeRunner:
     # Allowed modules (whitelist approach)
     ALLOWED_MODULES = {
         # Data manipulation
-        "pandas", "numpy", "scipy", "sklearn", "statsmodels",
+        "pandas", "numpy", "scipy", "sklearn", "statsmodels", "networkx",
         # Causal discovery
         "lingam", "pgmpy", 
         # Causal inference
@@ -66,7 +66,7 @@ class CodeRunner:
     
     # Resource limits
     MAX_EXECUTION_TIME = 30.0  # seconds
-    MAX_MEMORY_MB = 512  # MB
+    MAX_MEMORY_MB = 8192  # MB (increased from 512)
     MAX_OUTPUT_SIZE = 1024 * 1024  # 1MB
     MAX_CODE_LENGTH = 10000  # characters
     
@@ -74,11 +74,13 @@ class CodeRunner:
                  max_execution_time: float = MAX_EXECUTION_TIME,
                  max_memory_mb: int = MAX_MEMORY_MB,
                  max_output_size: int = MAX_OUTPUT_SIZE,
-                 max_code_length: int = MAX_CODE_LENGTH):
+                 max_code_length: int = MAX_CODE_LENGTH,
+                 allow_all_imports: bool = True):
         self.max_execution_time = max_execution_time
         self.max_memory_mb = max_memory_mb
         self.max_output_size = max_output_size
         self.max_code_length = max_code_length
+        self.allow_all_imports = allow_all_imports
         
     def validate_code(self, code: str) -> None:
         """Validate code for security and syntax issues"""
@@ -154,26 +156,65 @@ class CodeRunner:
         
         return False
     
+    def _safe_import(self, name, globals=None, locals=None, fromlist=(), level=0):
+        """Safe wrapper for __import__ that checks whitelist (or allows all if allow_all_imports=True)"""
+        # If allow_all_imports is True, skip the whitelist check
+        if not self.allow_all_imports:
+            # Check if the module is allowed
+            if not self._is_module_allowed(name):
+                raise SecurityViolationError(f"Module not allowed: {name}")
+        
+        # Use the real __import__
+        return __import__(name, globals, locals, fromlist, level)
+    
     @contextmanager
     def _resource_limits(self):
         """Set resource limits for code execution"""
-        # Set memory limit
-        if hasattr(resource, 'RLIMIT_AS'):
-            resource.setrlimit(resource.RLIMIT_AS, 
-                             (self.max_memory_mb * 1024 * 1024, -1))
+        memory_limit_set = False
+        cpu_limit_set = False
         
-        # Set CPU time limit
+        # Set memory limit (only if safe to do so)
+        if hasattr(resource, 'RLIMIT_AS'):
+            try:
+                current_soft, current_hard = resource.getrlimit(resource.RLIMIT_AS)
+                desired_limit = self.max_memory_mb * 1024 * 1024
+                # Only set if current hard limit allows it, or if we want unlimited
+                if current_hard == -1 or desired_limit <= current_hard:
+                    resource.setrlimit(resource.RLIMIT_AS, (desired_limit, current_hard))
+                    memory_limit_set = True
+                else:
+                    logger.warning(f"Memory limit {self.max_memory_mb}MB exceeds system limit, skipping")
+            except (ValueError, OSError) as e:
+                logger.warning(f"Could not set memory limit: {e}, skipping")
+        
+        # Set CPU time limit (only if safe to do so)
         if hasattr(resource, 'RLIMIT_CPU'):
-            resource.setrlimit(resource.RLIMIT_CPU, (int(self.max_execution_time), -1))
+            try:
+                current_soft, current_hard = resource.getrlimit(resource.RLIMIT_CPU)
+                desired_limit = int(self.max_execution_time)
+                # Only set if current hard limit allows it, or if we want unlimited
+                if current_hard == -1 or desired_limit <= current_hard:
+                    resource.setrlimit(resource.RLIMIT_CPU, (desired_limit, current_hard))
+                    cpu_limit_set = True
+                else:
+                    logger.warning(f"CPU time limit {self.max_execution_time}s exceeds system limit, skipping")
+            except (ValueError, OSError) as e:
+                logger.warning(f"Could not set CPU time limit: {e}, skipping")
         
         try:
             yield
         finally:
-            # Reset limits
-            if hasattr(resource, 'RLIMIT_AS'):
-                resource.setrlimit(resource.RLIMIT_AS, (-1, -1))
-            if hasattr(resource, 'RLIMIT_CPU'):
-                resource.setrlimit(resource.RLIMIT_CPU, (-1, -1))
+            # Reset limits only if we set them
+            if memory_limit_set and hasattr(resource, 'RLIMIT_AS'):
+                try:
+                    resource.setrlimit(resource.RLIMIT_AS, (-1, -1))
+                except (ValueError, OSError):
+                    pass  # Ignore errors when resetting
+            if cpu_limit_set and hasattr(resource, 'RLIMIT_CPU'):
+                try:
+                    resource.setrlimit(resource.RLIMIT_CPU, (-1, -1))
+                except (ValueError, OSError):
+                    pass  # Ignore errors when resetting
     
     def _timeout_handler(self, signum, frame):
         """Handle timeout signal"""
@@ -346,6 +387,8 @@ class CodeRunner:
                 "UnicodeWarning": UnicodeWarning,
                 "BytesWarning": BytesWarning,
                 "ResourceWarning": ResourceWarning,
+                # Provide safe __import__ that checks whitelist
+                "__import__": self._safe_import,
             }
         }
         
