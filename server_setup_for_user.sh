@@ -1,6 +1,17 @@
 # ORCA 서버 초기 설정 스크립트
 # 새로운 서버에 ORCA 시스템을 처음 설정하는 용도
 
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate userstudy
+
+PYTHON_BIN="$(command -v python)"
+echo "Using python: $PYTHON_BIN"
+
+$PYTHON_BIN -c "
+import yaml
+print('✅ PyYAML ok:', yaml.__version__)
+"
+
 echo "requirements를 다운로드 합니다 ..."
 pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
@@ -134,7 +145,7 @@ fi
 echo "📋 5단계: 연결 테스트"
 echo "생성된 서버에 연결을 테스트합니다..."
 
-python3 -c "
+$PYTHON_BIN -c "
 import sys
 sys.path.append('.')
 from utils.settings import POSTGRES_CONFIG, REDIS_CONFIG
@@ -176,7 +187,7 @@ fi
 echo "📋 6단계: 메타데이터 생성"
 echo "테이블 관계 및 메타데이터를 생성합니다..."
 
-python3 -c "
+$PYTHON_BIN -c "
 import sys
 sys.path.append('.')
 from utils.data_prep.runner import run
