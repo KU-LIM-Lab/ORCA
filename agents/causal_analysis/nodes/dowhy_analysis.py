@@ -91,8 +91,6 @@ def build_dowhy_analysis_node() -> RunnableLambda:
         confounders = clean_var_names(parsed_info.get("confounders", []))
         mediators = clean_var_names(parsed_info.get("mediators", []))
         ivs = clean_var_names(parsed_info.get("instrumental_variables", []))
-
-
         # Create CausalModel
         causal_graph = state.get("selected_graph") or state.get("causal_graph")
         if not causal_graph:
