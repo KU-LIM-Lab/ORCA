@@ -4,7 +4,7 @@ from langgraph.graph import StateGraph, END
 from .state import CausalAnalysisState
 from .nodes.parse_question import build_parse_question_node
 from .nodes.config_selection import build_config_selection_node
-from .nodes.dowhy_analysis import build_dowhy_analysis_node
+from .nodes.dowhy_analysis_patched import build_dowhy_analysis_node
 from .nodes.generate_answer import build_generate_answer_node
 
 def generate_causal_analysis_graph(llm):

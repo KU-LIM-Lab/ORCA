@@ -3,7 +3,7 @@ from typing import Any, Dict, Optional
 from core.base import SpecialistAgent, AgentType, AgentState
 from monitoring.metrics.collector import MetricsCollector
 from utils.redis_df import load_df_parquet
-from agents.causal_analysis.nodes.dowhy_analysis import build_dowhy_analysis_node
+from agents.causal_analysis.nodes.dowhy_analysis_patched import build_dowhy_analysis_node
 from agents.causal_analysis.nodes.config_selection import build_config_selection_node
 from agents.causal_analysis.nodes.generate_answer import build_generate_answer_node
 from agents.causal_analysis.nodes.parse_question import build_parse_question_node
@@ -332,6 +332,58 @@ class CausalAnalysisAgent(SpecialistAgent):
                 "refutation_result": result.get("refutation_result")
             })
             state["dowhy_analysis_completed"] = True
+            
+            # Save ATE artifact if artifact manager is available
+            try:
+                from monitoring.experiment.utils import get_artifact_manager
+                artifact_manager = get_artifact_manager()
+                
+                if artifact_manager and state.get("causal_effect_ate") is not None:
+                    # Prepare ATE artifact data
+                    parsed_query = state.get("parsed_query", {})
+                    strategy = state.get("strategy")
+                    
+                    # Safely extract strategy attributes (handle both object and dict)
+                    estimator = None
+                    identification_method = None
+                    if strategy:
+                        if hasattr(strategy, "estimator"):
+                            estimator = strategy.estimator
+                            identification_method = getattr(strategy, "identification_method", None)
+                        elif isinstance(strategy, dict):
+                            estimator = strategy.get("estimator")
+                            identification_method = strategy.get("identification_method")
+                    
+                    ate_artifact_data = {
+                        "ate": state.get("causal_effect_ate"),
+                        "confidence_interval": state.get("causal_effect_ci"),
+                        "treatment": parsed_query.get("treatment"),
+                        "outcome": parsed_query.get("outcome"),
+                        "confounders": parsed_query.get("confounders", []),
+                        "mediators": parsed_query.get("mediators", []),
+                        "instrumental_variables": parsed_query.get("instrumental_variables", []),
+                        "estimator": estimator,
+                        "identification_method": identification_method,
+                        "refutation_result": state.get("refutation_result"),
+                        "causal_estimate": state.get("causal_estimate")
+                    }
+                    
+                    artifact_manager.save_artifact(
+                        artifact_type="ate",
+                        data=ate_artifact_data,
+                        filename="ate_result.json",
+                        step_id="3",
+                        metadata={
+                            "treatment": parsed_query.get("treatment"),
+                            "outcome": parsed_query.get("outcome"),
+                            "estimator": estimator,
+                            "ate_value": state.get("causal_effect_ate")
+                        }
+                    )
+                    print("[CAUSAL] ✅ ATE artifact saved")
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f"Failed to save ATE artifact: {e}")
         else:
             state["error"] = result.get("error", "DoWhy analysis failed")
         
@@ -352,43 +404,6 @@ class CausalAnalysisAgent(SpecialistAgent):
             # Fallback to simple answer generation
             state["final_answer"] = self._generate_simple_answer(state)
             state["generate_answer_completed"] = True
-        
-        # Save ATE artifact if artifact manager is available
-        try:
-            from monitoring.experiment.utils import get_artifact_manager
-            artifact_manager = get_artifact_manager()
-            
-            if artifact_manager and state.get("causal_effect_ate") is not None:
-                # Prepare ATE result data
-                parsed_query = state.get("parsed_query", {})
-                ate_data = {
-                    "ate": state.get("causal_effect_ate"),
-                    "ci_lower": state.get("causal_effect_ci", [None, None])[0] if state.get("causal_effect_ci") else None,
-                    "ci_upper": state.get("causal_effect_ci", [None, None])[1] if state.get("causal_effect_ci") else None,
-                    "method": state.get("causal_estimate", {}).get("method") if state.get("causal_estimate") else None,
-                    "treatment": parsed_query.get("treatment") if parsed_query else None,
-                    "outcome": parsed_query.get("outcome") if parsed_query else None,
-                    "confounders": parsed_query.get("confounders", []) if parsed_query else [],
-                    "refutation_result": state.get("refutation_result")
-                }
-                
-                # Save ATE artifact
-                artifact_manager.save_artifact(
-                    artifact_type="ate",
-                    data=ate_data,
-                    filename="ate_result.json",
-                    step_id="3",
-                    metadata={
-                        "treatment": ate_data.get("treatment"),
-                        "outcome": ate_data.get("outcome"),
-                        "method": ate_data.get("method"),
-                        "ate": ate_data.get("ate")
-                    }
-                )
-                print("[CAUSAL] ✅ ATE artifact saved")
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(f"Failed to save ATE artifact: {e}")
         
         # Mark pipeline as completed - this is the final step
         state["executor_completed"] = True
