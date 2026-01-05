@@ -3,7 +3,7 @@ from typing import Any, Dict, Optional
 from core.base import SpecialistAgent, AgentType, AgentState
 from monitoring.metrics.collector import MetricsCollector
 from utils.redis_df import load_df_parquet
-from agents.causal_analysis.nodes.dowhy_analysis import build_dowhy_analysis_node
+from agents.causal_analysis.nodes.dowhy_analysis_patched import build_dowhy_analysis_node
 from agents.causal_analysis.nodes.config_selection import build_config_selection_node
 from agents.causal_analysis.nodes.generate_answer import build_generate_answer_node
 from agents.causal_analysis.nodes.parse_question import build_parse_question_node

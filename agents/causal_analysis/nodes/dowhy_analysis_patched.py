@@ -11,6 +11,52 @@ from tabpfn import TabPFNClassifier
 import statsmodels.api as sm
 from utils.redis_df import load_df_parquet
 
+
+def _ols_fallback_ate(df: pd.DataFrame, treatment: str, outcome: str, covariates: List[str] | None = None):
+    """Simple OLS adjustment fallback ATE.
+    Returns (ate, ci_tuple_or_None). Uses HC1 robust SE when available.
+    """
+    if covariates is None:
+        covariates = [c for c in df.columns if c not in [treatment, outcome]]
+
+    use_cols = [treatment, outcome] + [c for c in covariates if c in df.columns]
+    d = df[use_cols].copy()
+
+    # Coerce to numeric in a safe, conservative way
+    for col in d.columns:
+        s = d[col]
+        if pd.api.types.is_bool_dtype(s):
+            d[col] = s.astype(int)
+        elif pd.api.types.is_numeric_dtype(s):
+            # leave as is
+            pass
+        else:
+            # category/object/etc -> factorize
+            d[col] = pd.factorize(s)[0].astype(float)
+
+    d = d.replace([np.inf, -np.inf], np.nan).dropna()
+    if d.shape[0] < 5:
+        return 0.0, None
+
+    y = d[outcome].astype(float)
+    X = d[[treatment] + [c for c in covariates if c in d.columns and c != outcome]].astype(float)
+    X = sm.add_constant(X, has_constant="add")
+
+    try:
+        fit = sm.OLS(y, X).fit(cov_type="HC1")
+    except Exception:
+        fit = sm.OLS(y, X).fit()
+
+    ate = float(fit.params.get(treatment, 0.0))
+    ci = None
+    try:
+        ci_arr = fit.conf_int(alpha=0.05)
+        if treatment in ci_arr.index:
+            ci = (float(ci_arr.loc[treatment, 0]), float(ci_arr.loc[treatment, 1]))
+    except Exception:
+        ci = None
+    return ate, ci
+
 def clean_var_names(vars: List[str]) -> List[str]:
     return [v.split(".")[-1] if isinstance(v, str) and "." in v else v for v in vars]
 
@@ -64,18 +110,6 @@ def _convert_to_dot_graph(causal_graph: Dict) -> str:
     dot_lines.append("}")
     
     return "\n".join(dot_lines)
-
-def _coerce_object_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Convert object columns to numeric or category codes to avoid statsmodels dtype errors."""
-    df = df.copy()
-    for col in df.columns:
-        if df[col].dtype == object:
-            coerced = pd.to_numeric(df[col], errors="ignore")
-            if coerced.dtype == object:
-                df[col] = df[col].astype("category").cat.codes
-            else:
-                df[col] = coerced
-    return df
 
 def _extract_edges_and_vars(causal_graph: Dict):
     """Return (edges, variables) from either unified schema or legacy schema."""
@@ -161,44 +195,45 @@ def build_dowhy_analysis_node() -> RunnableLambda:
         # --- Pre-check: if there is no directed causal path, skip estimation ---
         edges, _ = _extract_edges_and_vars(causal_graph)
 
-        # 1) Treatment -> Outcome must exist (otherwise effect is structurally zero under the learned DAG)
+        # 1) Treatment -> Outcome must exist under the learned DAG; if not, fall back to OLS adjustment
         if not _has_directed_path(edges, treatment, outcome):
-            state["causal_effect_ate"] = 0.0
-            state["causal_effect_ci"] = None
+            ate, ci = _ols_fallback_ate(df, treatment, outcome)
+            state["causal_effect_ate"] = ate
+            state["causal_effect_ci"] = ci
             state["causal_effect_note"] = (
                 f"No directed path from [{treatment}] to [{outcome}] in the discovered graph; "
-                "returned ATE=0.0 by fallback policy."
+                "used OLS-adjustment fallback (Y ~ T + X) to compute ATE."
             )
+            # state["causal_effect_mode"] = "ols_fallback_no_directed_path"
             state["causal_model"] = None
             state["causal_estimand"] = None
             state["causal_estimate"] = {
-                "value":  0.0,
-                "method": "NOT_ESTIMATED",
+                "value":  ate,
+                "method": "ols_fallback",
             }
             return state
 
-        # 2) If using IV, each instrument must have a directed path to the treatment
+# 2) If using IV, each instrument must have a directed path to the treatment
         if strategy.identification_method == "iv" and ivs:
             invalid_ivs = [iv for iv in ivs if not _has_directed_path(edges, iv, treatment)]
             if invalid_ivs:
-                state["causal_effect_ate"] = 0.0
-                state["causal_effect_ci"] = None
+                ate, ci = _ols_fallback_ate(df, treatment, outcome)
+                state["causal_effect_ate"] = ate
+                state["causal_effect_ci"] = ci
                 state["causal_effect_note"] = (
                     f"Invalid IVs (no directed path to treatment [{treatment}]): {invalid_ivs}; "
-                    "returned ATE=0.0 by fallback policy."
+                    "used OLS-adjustment fallback (Y ~ T + X) to compute ATE."
                 )
+                # state["causal_effect_mode"] = "ols_fallback_invalid_iv"
                 state["causal_model"] = None
                 state["causal_estimand"] = None
                 state["causal_estimate"] = {
-                    "value":  0.0,
-                    "method": "NOT_ESTIMATED",
+                    "value":  ate,
+                    "method": "ols_fallback",
                 }
                 return state
 
-        df = _coerce_object_columns(df)
-
-        
-        # Identification
+# Identification
         try:
             if dot_graph:
                 model = CausalModel(
@@ -278,10 +313,10 @@ def build_dowhy_analysis_node() -> RunnableLambda:
 
         # Save to state
         state["causal_model"] = str(model)
-        state["causal_estimand"] = str(identified_estimand) if identified_estimand is not None else "NOT_IDENTIFIED"
+        state["causal_estimand"] = str(identified_estimand)
         state["causal_estimate"] = {
-            "value": float(estimate.value) if estimate is not None and getattr(estimate, "value", None) is not None else 0.0,
-            "method": str(getattr(estimate, "method_name", None)) if estimate is not None and getattr(estimate, "method_name", None) is not None else "NOT_ESTIMATED",
+            "value": float(getattr(estimate, "value", None)) if getattr(estimate, "value", None) is not None else None,
+            "method": getattr(estimate, "method_name", None),
         }
         
         # Save useful scalar values separately
@@ -298,7 +333,7 @@ def build_dowhy_analysis_node() -> RunnableLambda:
         state["causal_effect_ate"] = float(getattr(estimate, "value", None)) if getattr(estimate, "value", None) is not None else None
         state["causal_effect_ci"] = ci
 
-        # state.pop("df_preprocessed", None)
+        state.pop("df_preprocessed", None)
         return state
 
     return RunnableLambda(invoke)
