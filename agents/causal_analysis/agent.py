@@ -353,6 +353,43 @@ class CausalAnalysisAgent(SpecialistAgent):
             state["final_answer"] = self._generate_simple_answer(state)
             state["generate_answer_completed"] = True
         
+        # Save ATE artifact if artifact manager is available
+        try:
+            from monitoring.experiment.utils import get_artifact_manager
+            artifact_manager = get_artifact_manager()
+            
+            if artifact_manager and state.get("causal_effect_ate") is not None:
+                # Prepare ATE result data
+                parsed_query = state.get("parsed_query", {})
+                ate_data = {
+                    "ate": state.get("causal_effect_ate"),
+                    "ci_lower": state.get("causal_effect_ci", [None, None])[0] if state.get("causal_effect_ci") else None,
+                    "ci_upper": state.get("causal_effect_ci", [None, None])[1] if state.get("causal_effect_ci") else None,
+                    "method": state.get("causal_estimate", {}).get("method") if state.get("causal_estimate") else None,
+                    "treatment": parsed_query.get("treatment") if parsed_query else None,
+                    "outcome": parsed_query.get("outcome") if parsed_query else None,
+                    "confounders": parsed_query.get("confounders", []) if parsed_query else [],
+                    "refutation_result": state.get("refutation_result")
+                }
+                
+                # Save ATE artifact
+                artifact_manager.save_artifact(
+                    artifact_type="ate",
+                    data=ate_data,
+                    filename="ate_result.json",
+                    step_id="3",
+                    metadata={
+                        "treatment": ate_data.get("treatment"),
+                        "outcome": ate_data.get("outcome"),
+                        "method": ate_data.get("method"),
+                        "ate": ate_data.get("ate")
+                    }
+                )
+                print("[CAUSAL] ✅ ATE artifact saved")
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Failed to save ATE artifact: {e}")
+        
         # Mark pipeline as completed - this is the final step
         state["executor_completed"] = True
         print("[CAUSAL] ✅ Causal analysis completed - pipeline finished")
