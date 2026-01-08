@@ -1,3 +1,6 @@
+const initSeed = require("./seed");
+initSeed(process.env.SEED ?? 2);
+
 const seedUsers = require("./seed_users");
 const seedCategories = require("./seed_categories");
 const seedBrands = require("./seed_brands");
