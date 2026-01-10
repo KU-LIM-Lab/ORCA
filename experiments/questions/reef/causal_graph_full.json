@@ -18,6 +18,7 @@
     "user.created_at",
     "user.point_balance",
     "user.is_active",
+    "user.is_active_score",
     "inventory.quantity",
     "sku.discontinued_at",
     "sku.created_at",
@@ -69,11 +70,15 @@
     ],
     [
       "user.avg_browsing_time",
+      "user.is_active_score"
+    ],
+    [
+      "user.is_active_score",
       "user.is_active"
     ],
     [
       "user.created_at",
-      "user.is_active"
+      "user.is_active_score"
     ],
     [
       "user.created_at",

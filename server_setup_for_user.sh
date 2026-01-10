@@ -66,7 +66,7 @@ cd "$SEED_DIR" || exit 1
 if [ ! -f "package.json" ]; then
   echo "📦 package.json이 없어 생성합니다..."
   npm init -y
-  npm install @faker-js/faker pg dotenv uuid
+  npm install @faker-js/faker pg dotenv uuid seedrandom
 elif [ -f "package-lock.json" ]; then
   echo "📦 package-lock.json 발견 → npm ci 실행"
   npm ci
