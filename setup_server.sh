@@ -38,7 +38,7 @@ fi
 
 # DDL 실행 (에러는 무시하고 계속 진행)
 echo "DDL을 실행합니다..."
-psql -d reef_db -f REEF/REEF_ddl_continuous.sql > /dev/null 2>&1
+psql -d reef_db -f REEF/REEF_ddl.sql > /dev/null 2>&1
 
 # DDL 실행 결과 확인 (일부 에러는 정상 - 이미 존재하는 객체들)
 echo "✅ 데이터베이스 스키마 생성 완료"
@@ -49,7 +49,7 @@ echo "샘플 데이터를 생성합니다..."
 
 # Node.js 의존성 설치
 echo "Node.js 의존성을 설치합니다..."
-cd REEF/seed_R1
+cd REEF/seed
 if [ ! -d "node_modules" ]; then
     echo "npm 패키지를 설치합니다..."
     npm install
@@ -65,7 +65,7 @@ cd ../..
 
 # 시드 데이터 실행
 echo "시드 데이터를 생성합니다..."
-node REEF/seed_R1/run_all_seeds.js
+node REEF/seed/run_all_seeds.js
 
 if [ $? -eq 0 ]; then
     echo "✅ 시드 데이터 생성 완료"
