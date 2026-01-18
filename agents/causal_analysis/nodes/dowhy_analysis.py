@@ -11,6 +11,52 @@ from tabpfn import TabPFNClassifier
 import statsmodels.api as sm
 from utils.redis_df import load_df_parquet
 
+
+def _ols_fallback_ate(df: pd.DataFrame, treatment: str, outcome: str, covariates: List[str] | None = None):
+    """Simple OLS adjustment fallback ATE.
+    Returns (ate, ci_tuple_or_None). Uses HC1 robust SE when available.
+    """
+    if covariates is None:
+        covariates = [c for c in df.columns if c not in [treatment, outcome]]
+
+    use_cols = [treatment, outcome] + [c for c in covariates if c in df.columns]
+    d = df[use_cols].copy()
+
+    # Coerce to numeric in a safe, conservative way
+    for col in d.columns:
+        s = d[col]
+        if pd.api.types.is_bool_dtype(s):
+            d[col] = s.astype(int)
+        elif pd.api.types.is_numeric_dtype(s):
+            # leave as is
+            pass
+        else:
+            # category/object/etc -> factorize
+            d[col] = pd.factorize(s)[0].astype(float)
+
+    d = d.replace([np.inf, -np.inf], np.nan).dropna()
+    if d.shape[0] < 5:
+        return 0.0, None
+
+    y = d[outcome].astype(float)
+    X = d[[treatment] + [c for c in covariates if c in d.columns and c != outcome]].astype(float)
+    X = sm.add_constant(X, has_constant="add")
+
+    try:
+        fit = sm.OLS(y, X).fit(cov_type="HC1")
+    except Exception:
+        fit = sm.OLS(y, X).fit()
+
+    ate = float(fit.params.get(treatment, 0.0))
+    ci = None
+    try:
+        ci_arr = fit.conf_int(alpha=0.05)
+        if treatment in ci_arr.index:
+            ci = (float(ci_arr.loc[treatment, 0]), float(ci_arr.loc[treatment, 1]))
+    except Exception:
+        ci = None
+    return ate, ci
+
 def clean_var_names(vars: List[str]) -> List[str]:
     return [v.split(".")[-1] if isinstance(v, str) and "." in v else v for v in vars]
 
@@ -65,6 +111,51 @@ def _convert_to_dot_graph(causal_graph: Dict) -> str:
     
     return "\n".join(dot_lines)
 
+def _extract_edges_and_vars(causal_graph: Dict):
+    """Return (edges, variables) from either unified schema or legacy schema."""
+    if causal_graph is None:
+        return [], []
+    if "graph" in causal_graph:
+        edges = causal_graph["graph"].get("edges", []) or []
+        variables = causal_graph["graph"].get("variables", []) or []
+    else:
+        edges = causal_graph.get("edges", []) or []
+        variables = causal_graph.get("variables", []) or causal_graph.get("nodes", []) or []
+    return edges, variables
+
+
+def _has_directed_path(edges: List[Dict], src: str, dst: str) -> bool:
+    """Directed reachability src -> ... -> dst following the same edge inclusion rules as _convert_to_dot_graph."""
+    if src is None or dst is None:
+        return False
+    src = str(src)
+    dst = str(dst)
+    if src == dst:
+        return True
+
+    adj: Dict[str, List[str]] = {}
+    for e in edges or []:
+        f = str(e.get("from", ""))
+        t = str(e.get("to", ""))
+        et = e.get("type", "->")
+        if not f or not t:
+            continue
+        if et == "->" or et in ["--", "o-o"]:
+            adj.setdefault(f, []).append(t)
+
+    seen = {src}
+    stack = [src]
+    while stack:
+        u = stack.pop()
+        for v in adj.get(u, []):
+            if v == dst:
+                return True
+            if v not in seen:
+                seen.add(v)
+                stack.append(v)
+    return False
+
+
 def build_dowhy_analysis_node() -> RunnableLambda:
     """
     Performs causal analysis using the selected strategy and preprocessed data.
@@ -91,6 +182,8 @@ def build_dowhy_analysis_node() -> RunnableLambda:
         confounders = clean_var_names(parsed_info.get("confounders", []))
         mediators = clean_var_names(parsed_info.get("mediators", []))
         ivs = clean_var_names(parsed_info.get("instrumental_variables", []))
+
+
         # Create CausalModel
         causal_graph = state.get("selected_graph") or state.get("causal_graph")
         if not causal_graph:
@@ -98,8 +191,49 @@ def build_dowhy_analysis_node() -> RunnableLambda:
         
         # Convert graph to DOT format for DoWhy
         dot_graph = _convert_to_dot_graph(causal_graph)
-        
-        # Identification
+
+        # --- Pre-check: if there is no directed causal path, skip estimation ---
+        edges, _ = _extract_edges_and_vars(causal_graph)
+
+        # 1) Treatment -> Outcome must exist under the learned DAG; if not, fall back to OLS adjustment
+        if not _has_directed_path(edges, treatment, outcome):
+            ate, ci = _ols_fallback_ate(df, treatment, outcome)
+            state["causal_effect_ate"] = ate
+            state["causal_effect_ci"] = ci
+            state["causal_effect_note"] = (
+                f"No directed path from [{treatment}] to [{outcome}] in the discovered graph; "
+                "used OLS-adjustment fallback (Y ~ T + X) to compute ATE."
+            )
+            # state["causal_effect_mode"] = "ols_fallback_no_directed_path"
+            state["causal_model"] = None
+            state["causal_estimand"] = None
+            state["causal_estimate"] = {
+                "value":  ate,
+                "method": "ols_fallback",
+            }
+            return state
+
+# 2) If using IV, each instrument must have a directed path to the treatment
+        if strategy.identification_method == "iv" and ivs:
+            invalid_ivs = [iv for iv in ivs if not _has_directed_path(edges, iv, treatment)]
+            if invalid_ivs:
+                ate, ci = _ols_fallback_ate(df, treatment, outcome)
+                state["causal_effect_ate"] = ate
+                state["causal_effect_ci"] = ci
+                state["causal_effect_note"] = (
+                    f"Invalid IVs (no directed path to treatment [{treatment}]): {invalid_ivs}; "
+                    "used OLS-adjustment fallback (Y ~ T + X) to compute ATE."
+                )
+                # state["causal_effect_mode"] = "ols_fallback_invalid_iv"
+                state["causal_model"] = None
+                state["causal_estimand"] = None
+                state["causal_estimate"] = {
+                    "value":  ate,
+                    "method": "ols_fallback",
+                }
+                return state
+
+# Identification
         try:
             if dot_graph:
                 model = CausalModel(

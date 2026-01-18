@@ -59,8 +59,8 @@ def build_generate_answer_node(llm: BaseChatModel) -> RunnableLambda:
 
         state["final_answer"] = result
         state["final_answer"] = result.explanation if hasattr(result, "explanation") else str(result)
-        for key in ("df_preprocessed", "df_raw", "df", "gt_df"):
-            state.pop(key, None)
+        # for key in ("df_preprocessed", "df_raw", "df", "gt_df"):
+        #     state.pop(key, None)
         
         total_time = time.time() - start_time
         print(f"🔍 [generate_answer] Total time: {total_time:.2f}s")

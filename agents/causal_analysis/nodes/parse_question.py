@@ -45,6 +45,13 @@ def build_parse_question_node(llm: BaseChatModel) -> Callable:
                 return None
         
         return None
+
+    def _drop_state_key(state_obj: Dict, key: str) -> None:
+        if isinstance(state_obj, dict):
+            state_obj.pop(key, None)
+            return
+        if hasattr(state_obj, key):
+            setattr(state_obj, key, None)
     
     def _identify_treatment_outcome(state: Dict) -> Dict[str, str]:
         """
@@ -274,8 +281,8 @@ def build_parse_question_node(llm: BaseChatModel) -> Callable:
         if state.get("__hitl_reexecution__"):
             # User has edited the values, skip graph-based role identification
             state["parsed_query"] = parsed
-            state.pop("df_preprocessed", None)
-            state.pop("__hitl_reexecution__", None)
+            _drop_state_key(state, "df_preprocessed")
+            _drop_state_key(state, "__hitl_reexecution__")
             return state
         
         # Step 5: build causal graph
@@ -299,7 +306,7 @@ def build_parse_question_node(llm: BaseChatModel) -> Callable:
             parsed["colliders"] = roles["colliders"]
         
         state["parsed_query"] = parsed
-        state.pop("df_preprocessed", None)
+        # state.pop("df_preprocessed", None)
         return state
 
     return RunnableLambda(invoke)

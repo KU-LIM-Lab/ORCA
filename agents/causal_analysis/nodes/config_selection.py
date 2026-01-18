@@ -122,7 +122,7 @@ def build_config_selection_node(llm: BaseChatModel) -> RunnableLambda:
             refuter=result.refutation_methods[0] if result.refutation_methods else None
         )
         # 메모리 정리
-        state.pop("df_preprocessed", None)
+        # state.pop("df_preprocessed", None)
         gc.collect()
         return state
 
