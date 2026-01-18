@@ -1044,7 +1044,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
             executor = ThreadPoolExecutor(max_workers=len(algorithm_configs))
             try:
                 futures = {}
-                algorithm_timeout = 300
+                algorithm_timeout = 600
                 for config in algorithm_configs:
                     alg_name = config["alg"]
                     
@@ -1694,6 +1694,22 @@ class CausalDiscoveryAgent(SpecialistAgent):
                     logger.warning(f"DAG visualization failed: {visualization_result.get('error', 'Unknown error')}")
             except Exception as e:
                 logger.warning(f"Failed to visualize DAG: {e}")
+            
+            # Visualize and save consensus PAG (with edge types and confidence)
+            try:
+                from .tools import GraphVisualizer
+                pag_visualization_result = GraphVisualizer.save_graph(
+                    pag_result,
+                    output_dir="outputs/images/causal_graphs",
+                    formats=["png", "svg"]
+                )
+                if "error" not in pag_visualization_result:
+                    state["pag_visualization_path"] = pag_visualization_result.get("saved_paths", {})
+                    logger.info(f"Consensus PAG visualization saved: {pag_visualization_result.get('saved_paths', {})}")
+                else:
+                    logger.warning(f"Consensus PAG visualization failed: {pag_visualization_result.get('error', 'Unknown error')}")
+            except Exception as e:
+                logger.warning(f"Failed to visualize consensus PAG: {e}")
             
             # Log final selected graph with details and reasoning
             n_edges = len(get_edges(dag_result))

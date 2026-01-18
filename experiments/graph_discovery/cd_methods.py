@@ -372,6 +372,7 @@ def orca_method(
         "df_preprocessed": df_input.copy(),
         "db_id": ctx.get("db_id", "graph_discovery"),
         "skip_one_hot_encoding": True,
+        "completed_substeps": ["fetch"],  # Mark fetch as completed to prevent reset
     }
 
     prep_state["current_substep"] = "schema_detection"

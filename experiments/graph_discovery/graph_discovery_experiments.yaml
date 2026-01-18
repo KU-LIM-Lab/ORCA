@@ -8,15 +8,15 @@ experiments:
     methods:
       # - notears_linear
       # - notears_nonlinear
-      # - autocd
+      - autocd
       # - lingam
       # - anm
       - orca
-      # - gpt4o_mini
+      - gpt4o_mini
     # Restrict to a single run for quick checks
-    scenarios: [CD-1_Baseline, CD-2_Graph, CD-4_SCM] # [] → all scenarios (candidate: CD-1_Baseline, CD-2_Graph, CD-3_Noise, CD-4_SCM, CD-5_Complex)
-    d_list: [2,3,5] # null → all dimensionalities
-    runs: 1 # run_id < 1 → only first run
+    scenarios: [CD-5_Complex] # [] → all scenarios (candidate: CD-1_Baseline, CD-2_Graph, CD-3_Noise, CD-4_SCM, CD-5_Complex)
+    d_list: [10] # null → all dimensionalities
+    runs:  # run_id < 1 → only first run
     results_dir: experiments/results/graph_discovery
     seed: 0
 
@@ -31,8 +31,8 @@ experiments:
       # - anm
       - orca
       - gpt4o_mini
-    scenarios: [CD-1_Baseline, CD-2_Graph, CD-4_SCM]
-    d_list: [2, 3, 5, 10]
+    scenarios: [CD-3_Noise]
+    d_list: [10]
     runs: 
     results_dir: experiments/results/graph_discovery
     seed: 0
