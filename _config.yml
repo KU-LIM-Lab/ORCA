@@ -1,6 +1,6 @@
 llm:
-  provider: "openai" # or "ollama"
-  model: "gpt-4o-mini" # "llama3.1:latest"
+  provider: "openai"
+  model: "gpt-4o-mini"
   temperature: 0.3
 
 prompt_column_desc_system: "column_desc_system"
@@ -10,20 +10,19 @@ routing_prompt: "routing_prompt"
 database: # Modify DB path
   type: postgresql # Select DB type
   postgresql:
-    host: localhost
-    port: 5432
-    dbname: reef_db
-    user: postgres
+    host: ${PGHOST}
+    port: ${PGPORT}
+    dbname: ${PGDATABASE}
+    user: ${PGUSER}
     password: ${PGPASSWORD}
-  sqlite:
-    sqlite_path: data/bird_db.sqlite
+  # sqlite:
+  #   sqlite_path: data/bird_db.sqlite
 
 redis:
-  host: localhost
-  port: 6379
-  db: 0
-  password:
-  decode_responses: true
+  host: ${REDIS_HOST}
+  port: ${REDIS_PORT}
+  db: ${REDIS_DB}
+  password: ${REDIS_PASSWORD}
 
 # Global agent configs
 agents:
