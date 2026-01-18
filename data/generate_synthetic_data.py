@@ -6,8 +6,6 @@ import networkx as nx
 from scipy.special import expit  # Logistic/Sigmoid function
 import json 
 
-# --- 1. Causal Discovery (CD) 벤치마크 생성기 ---
-
 def _topological_sort(adj: np.ndarray) -> list[int]:
     """Return a topological order for a DAG adjacency matrix using networkx."""
     n = adj.shape[0]
