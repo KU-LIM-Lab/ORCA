@@ -61,10 +61,6 @@ logs/
 # Redis dumps
 dump.rdb
 
-# Monitoring data
-monitoring_data/
-metrics/
-traces/
 
 # Temporary files
 tmp/
@@ -102,16 +98,4 @@ coverage.xml
 .dmypy.json
 dmypy.json
 
-# files
-outputs/
-data/raw/
-data/synthetic_cd/
-data/synthetic_ci/
-tests/results/
-experiments/results/
-runs/
-user_study/
-REEF_v2/
-orchestration_flow_debug.py
-post_estimation.py
 

@@ -9,7 +9,7 @@ module.exports = async function () {
   const DAY_MS = 24 * 60 * 60 * 1000;
   const today = new Date();
 
-  // 1. 유저 및 SKU 목록 불러오기 (age, gender, is_active, created_at 포함)
+  // 1. Load user and SKU lists (including age, gender, is_active, created_at)
   const userRes = await client.query(
     'SELECT user_id, age, gender, is_active, created_at FROM users'
   );
@@ -18,7 +18,7 @@ module.exports = async function () {
   const users = userRes.rows;
   const skus = skuRes.rows;
 
-  // 2. 전체 유저 중 90% 선택
+  // 2. Select 90% of all users
   const sampledUsers = faker.helpers.arrayElements(
     users,
     Math.floor(users.length * 0.9)
@@ -30,7 +30,7 @@ module.exports = async function () {
     const gender = user.gender;                  // 'M' / 'F' / null
     const userCreatedAt = new Date(user.created_at);
 
-    // 한 유저당 1~5개의 SKU를 카트에 담게
+    // Each user adds 1~5 SKUs to cart
     const productCount = faker.number.int({ min: 1, max: 5 });
     const sampledSkus = faker.helpers.arrayElements(skus, productCount);
 

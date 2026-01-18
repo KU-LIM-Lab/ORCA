@@ -7,7 +7,7 @@ module.exports = async function () {
   await client.connect();
   console.log('Connected. Seeding coupons with promotion linkage...');
 
-  // 1. 프로모션 목록 불러오기
+  // 1. Load promotion list
   const promoRes = await client.query(`
     SELECT promo_id, discount_value, discount_type, start_at, end_at
     FROM promotion
@@ -26,11 +26,11 @@ module.exports = async function () {
   for (let i = 0; i < promotions.length; i++) {
     const promo = promotions[i];
 
-    // discount_type: 'amount' / 'rate' / (호환용) 'fixed' / 'percentage'
+    // discount_type: 'amount' / 'rate' / (compatibility) 'fixed' / 'percentage'
     const type = promo.discount_type;
     const isRate =
       type === 'rate' ||
-      type === 'percentage'; // 예전 스키마 호환
+      type === 'percentage'; // Legacy schema compatibility
     const isAmount =
       type === 'amount' ||
       type === 'fixed';
@@ -39,19 +39,19 @@ module.exports = async function () {
     let discount_rate = 0;
 
     if (isAmount) {
-      discount_amount = Number(promo.discount_value);     // 예: 3~15
+      discount_amount = Number(promo.discount_value);     // e.g., 3~15
     } else if (isRate) {
-      discount_rate = Number(promo.discount_value);       // 예: 0.05~0.30
+      discount_rate = Number(promo.discount_value);       // e.g., 0.05~0.30
     }
 
-    // ───────── discount_strength: 할인 강도의 스칼라 표현 ─────────
-    // amount: 금액을 약간 축소해서, rate: 비율을 확대해서 비슷한 스케일로 맞춤
+    // ───────── discount_strength: Scalar representation of discount strength ─────────
+    // amount: Slightly reduce amount, rate: Expand ratio to match similar scale
     let discount_strength;
     if (isAmount) {
-      // 3~15  → 0.3~1.5 정도로
+      // 3~15  → approximately 0.3~1.5
       discount_strength = discount_amount / 10;
     } else if (isRate) {
-      // 0.05~0.30 → 0.5~3.0 정도로
+      // 0.05~0.30 → approximately 0.5~3.0
       discount_strength = discount_rate * 10;
     } else {
       discount_strength = 0;
@@ -62,20 +62,20 @@ module.exports = async function () {
     let min_order_amount =
       20 + 1.5 * discount_strength + epsM;
     if (min_order_amount < 0) min_order_amount = 0;
-    // 필요하면 통화 스케일로 곱해도 됨 (예: *1000)
+    // Can multiply by currency scale if needed (e.g., *1000)
 
     const start_date = promo.start_at;
     const expiration_date = promo.end_at;
 
-    // ───────── is_active: 프로모션 기간 내이면 1, 아니면 0 ─────────
+    // ───────── is_active: 1 if within promotion period, else 0 ─────────
     const start = new Date(start_date);
     const end = new Date(expiration_date);
     const is_active = today >= start && today <= end;
 
     const isRateDesc = isRate;
     const desc = isRateDesc
-      ? `${promo.discount_value * (promo.discount_value <= 1 ? 100 : 1)}% 할인 쿠폰`
-      : `₩${discount_amount} 할인 쿠폰`;
+      ? `${promo.discount_value * (promo.discount_value <= 1 ? 100 : 1)}% discount coupon`
+      : `₩${discount_amount} discount coupon`;
 
     couponList.push({
       coupon_id: uuidv4(),

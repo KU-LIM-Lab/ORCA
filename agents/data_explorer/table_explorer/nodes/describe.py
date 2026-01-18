@@ -10,7 +10,7 @@ from utils.redis_client import redis_client
 # -------------------------------
 def describe_table(db_id, table_name: str, llm: BaseChatModel) -> TableAnalysis:
     try:
-        # Redis에서 schema 정보 불러오기
+        # Load schema information from Redis
         redis_key = f"{db_id}:metadata:{table_name}"
         metadata_raw = redis_client.get(redis_key)
         

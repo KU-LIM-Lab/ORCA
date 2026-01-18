@@ -18,10 +18,10 @@ module.exports = async function () {
     return 1 / (1 + Math.exp(-x));
   }
 
-  // 20·30·40대 비중을 크게 주는 age 샘플러
+  // Age sampler giving higher weight to 20s, 30s, 40s
   function sampleAge() {
     const decades = [20, 30, 40, 50, 60];
-    const weights = [0.35, 0.30, 0.20, 0.10, 0.05]; // 합 ≈ 1
+    const weights = [0.35, 0.30, 0.20, 0.10, 0.05]; // Sum ≈ 1
     const r = Math.random();
     let acc = 0;
     let chosenDecade = decades[0];
@@ -40,7 +40,7 @@ module.exports = async function () {
   for (let i = 0; i < USER_COUNT; i++) {
     const user_id = uuidv4();
 
-    // 1%는 email/username 중복 허용
+    // Allow 1% email/username duplicates
     const useDuplicate = Math.random() < 0.01;
 
     const email = useDuplicate
@@ -53,13 +53,13 @@ module.exports = async function () {
     emailsUsed.add(email);
     usernamesUsed.add(username);
 
-    // 10%는 일부 NULL 값 포함
+    // 10% include some NULL values
     const name = Math.random() < 0.1 ? null : faker.person.fullName();
     const address = Math.random() < 0.1 ? null : faker.location.streetAddress();
     const phone = Math.random() < 0.1 ? null : faker.phone.number();
 
     // ───────────────
-    // SCM 기반 생성
+    // Generate based on SCM
     // ───────────────
 
     // signup_days_ago ~ Uniform(0, 3*365)
@@ -70,10 +70,10 @@ module.exports = async function () {
       today.getTime() - signup_days_ago * 24 * 60 * 60 * 1000
     );
 
-    // age: 20·30·40대 비중↑, 각 decade 내 U(d, d+9)
+    // age: Higher weight for 20s, 30s, 40s, U(d, d+9) within each decade
     const age = sampleAge();
 
-    // birth_year = current_year - age (+ 작은 노이즈는 month/day로 표현)
+    // birth_year = current_year - age (+ small noise expressed as month/day)
     const birth = new Date(
       today.getFullYear() - age,
       faker.number.int({ min: 0, max: 11 }),
@@ -88,7 +88,7 @@ module.exports = async function () {
     const epsilonB = faker.number.float({ mean: 0, stddev: 5 });
     let avg_browsing_time =
       35 - 0.6 * (age - 30) + 8 * (gender === 'F' ? 1 : 0) + epsilonB;
-    if (avg_browsing_time < 1) avg_browsing_time = 1; // 하한
+    if (avg_browsing_time < 1) avg_browsing_time = 1; // Lower bound
 
     // is_active_score = -1.0 + 0.04*avg_browsing_time - 0.004*signup_days_ago + ε_A
     const epsilonA = faker.number.float({ mean: 0, stddev: 1 });
@@ -99,7 +99,7 @@ module.exports = async function () {
     const pActive = sigmoid(is_active_score);
     const is_active = Math.random() < pActive;
 
-    const updated_at = created_at; // 엑셀 정의에 맞게 동일하게 두기
+    const updated_at = created_at; // Keep same as per Excel definition
 
     const point_balance = faker.number.int({ min: 100, max: 50000 });
 
@@ -145,7 +145,7 @@ module.exports = async function () {
         is_active,
         created_at,
         updated_at,
-        point_balance, // point_balance (2차 seeding에서 point_transaction로 업데이트 예정)
+        point_balance, // point_balance (will be updated to point_transaction in 2nd seeding)
       ]
     );
   }

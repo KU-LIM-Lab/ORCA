@@ -20,6 +20,7 @@ from datetime import datetime
 
 from core.base import SpecialistAgent, AgentType
 from core.state import AgentState
+from monitoring.metrics.collector import MetricsCollector
 from agents.causal_discovery.tools import get_edges, get_variables, get_graph_type, validate_graph_schema
 
 
@@ -43,7 +44,7 @@ def _convert_numpy_types(obj):
     else:
         return obj
 
-"""Algorithm cheatsheet (assumptions → brief)  [근거/References in brackets]
+"""Algorithm cheatsheet (assumptions → brief)  [References in brackets]
 
 LiNGAM  — Required: linear relations + non‑Gaussian noise.
           Identifiable causal ordering via ICA/independent noise.  
@@ -145,8 +146,8 @@ class CausalDiscoveryAgent(SpecialistAgent):
     """Causal Discovery Agent using tool registry pattern"""
     
     def __init__(self, name: str = "causal_discovery", config: Optional[Dict[str, Any]] = None, 
-                 metrics_collector: Optional[Any] = None):
-        super().__init__(name, AgentType.SPECIALIST, config, None)
+                 metrics_collector: Optional[MetricsCollector] = None):
+        super().__init__(name, AgentType.SPECIALIST, config, metrics_collector)
         
         # Set domain expertise
         self.set_domain_expertise([
@@ -348,19 +349,19 @@ class CausalDiscoveryAgent(SpecialistAgent):
             # Check for variable schema from preprocessing
             variable_schema = state.get("variable_schema", {})
             
-            # 1. 기본 검사 (p > n, 데이터 유형 등)
+            # 1. Basic checks (p > n, data types, etc.)
             basic_profile = self._run_basic_checks(variable_schema, df)
             logger.info(f"Basic checks profile: {basic_profile}")
             
-            # 2. 전역 테스트 (GES 및 Mixed Data)
+            # 2. Global tests (GES and Mixed Data)
             global_profile = self._run_global_tests(df, variable_schema, basic_profile)
             logger.info(f"Global tests profile: {global_profile}")
             
-            # 3. 쌍별 테스트 (LiNGAM, ANM)
+            # 3. Pairwise tests (LiNGAM, ANM)
             pairwise_profile = self._run_pairwise_profiles(df, variable_schema, basic_profile)
             logger.info(f"Pairwise profiles: {pairwise_profile}")
             
-            # 4. 최종 프로파일 취합
+            # 4. Aggregate final profile
             data_profile = {
                 "basic_checks": basic_profile,
                 "global_scores": global_profile,
@@ -417,22 +418,22 @@ class CausalDiscoveryAgent(SpecialistAgent):
         n_cont = stats.get("n_continuous", 0)
         n_cat = stats.get("n_categorical", 0) + stats.get("n_binary", 0)
         
-        # 1. 데이터 유형(Data Type) 분류
+        # 1. Classify data type
         data_type_profile = "Mixed"
         if n_cont > 0 and n_cat == 0:
             data_type_profile = "Pure Continuous"
         elif n_cont == 0 and n_cat > 0:
             data_type_profile = "Pure Categorical"
         
-        # 2. 차원성(Dimensionality)에 기반한 CI 신뢰도 판단 
+        # 2. Assess CI reliability based on dimensionality 
         n_variables = len(df.columns)
         n_samples = len(df)
         p_gt_n = n_variables > n_samples
         
         ci_reliability = "High"
         if p_gt_n:
-            ci_reliability = "Critically Low (p > n)"  # p > n 이면 CI 테스트는 통계적으로 신뢰 불가
-        elif n_variables > 20:  # 변수가 많아도 CI 테스트 검정력 저하
+            ci_reliability = "Critically Low (p > n)"  # CI tests are statistically unreliable when p > n
+        elif n_variables > 20:  # CI test power decreases with many variables
             ci_reliability = "Low (High-Dimensional)"
         
         # 3. High cardinality check
@@ -447,7 +448,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
         }
     
     def _run_global_tests(self, df: pd.DataFrame, variable_schema: Dict[str, Any], basic_profile: Dict[str, Any]) -> Dict[str, Any]:
-        """Global tests: GES 및 Mixed Data 전역 가정 검증
+        """Global tests: Validate global assumptions for GES and Mixed Data
         
         Args:
             df: DataFrame to profile
@@ -464,25 +465,25 @@ class CausalDiscoveryAgent(SpecialistAgent):
         data_type = basic_profile.get("data_type_profile", "Mixed")
         global_scores = {}
         
-        # 변수 분류
+        # Classify variables
         schema_vars = variable_schema.get("variables", {}) if variable_schema else {}
         cont_vars = [k for k, v in schema_vars.items() if v.get("data_type") == "Continuous"]
         cat_vars = [k for k, v in schema_vars.items() if v.get("data_type") in ["Nominal", "Binary", "Ordinal"]]
         
-        # 다변량 정규성: Pure Continuous만
+        # Multivariate normality: Pure Continuous only
         if data_type == "Pure Continuous" and cont_vars:
             try:
-                # Henze-Zirkler(HZ) 테스트
-                # H0: 데이터가 다변량 정규분포를 따름
+                # Henze-Zirkler (HZ) test
+                # H0: Data follows multivariate normal distribution
                 hz_pvalue = StatsTool.global_normality_test(df[cont_vars])
                 global_scores["s_global_normality_pvalue"] = hz_pvalue
             except Exception as e:
                 logger.warning(f"Global normality test failed: {e}")
-                global_scores["s_global_normality_pvalue"] = 0.0  # 실패 시 비정규성으로 간주
+                global_scores["s_global_normality_pvalue"] = 0.0  # Assume non-normality on failure
         else:
             global_scores["s_global_normality_pvalue"] = np.nan
         
-        # 전역 선형성: Pure Continuous 또는 Mixed
+        # Global linearity: Pure Continuous or Mixed
         if data_type in ["Pure Continuous", "Mixed"]:
             try:
                 if data_type == "Pure Continuous" and cont_vars:
@@ -493,7 +494,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
                         if cat_var in test_df.columns:
                             dummies = pd.get_dummies(test_df[cat_var], prefix=cat_var, drop_first=True)
                             test_df = pd.concat([test_df.drop(columns=[cat_var]), dummies], axis=1)
-                    # 연속형 변수와 더미 변수 모두 포함
+                    # Include both continuous variables and dummy variables
                     selected_cols = []
                     if cont_vars:
                         selected_cols.extend([c for c in test_df.columns if c in cont_vars])
@@ -520,7 +521,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
         return global_scores
     
     def _run_pairwise_profiles(self, df: pd.DataFrame, variable_schema: Dict[str, Any], basic_profile: Dict[str, Any]) -> Dict[str, Any]:
-        """Pairwise profiles: LiNGAM / ANM용 쌍별 가정 검증
+        """Pairwise profiles: Validate pairwise assumptions for LiNGAM / ANM
         
         Args:
             df: DataFrame to profile
@@ -553,7 +554,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
         
         for var1, var2 in cont_cont_pairs:
             try:
-                # 1. 선형성 (Linearity): GLM vs GAM MSE 비교
+                # 1. Linearity: GLM vs GAM MSE comparison
                 lin_result = StatsTool.linearity_test(df[var1], df[var2])
                 scores_lin_cont.append(lin_result.get("linearity_score", np.nan))
             except Exception as e:
@@ -561,16 +562,16 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 scores_lin_cont.append(np.nan)
             
             try:
-                # 2. 비정규성 (Non-Gaussianity): 잔차의 정규성 p-value
-                ng_result = StatsTool.gaussian_eqvar_test(df[var1], df[var2])  # 잔차 정규성 테스트
-                gaussian_p_value = ng_result.get("gaussian_score", 0.5)  # p-value (높을수록 정규성)
-                scores_ng_cont.append(1.0 - gaussian_p_value)  # 비정규성 점수로 변환 (높을수록 비정규성)
+                # 2. Non-Gaussianity: Residual normality p-value
+                ng_result = StatsTool.gaussian_eqvar_test(df[var1], df[var2])  # Residual normality test
+                gaussian_p_value = ng_result.get("gaussian_score", 0.5)  # p-value (higher = more normal)
+                scores_ng_cont.append(1.0 - gaussian_p_value)  # Convert to non-Gaussianity score (higher = more non-Gaussian)
             except Exception as e:
                 logger.warning(f"Non-Gaussianity test failed for {var1}-{var2}: {e}")
                 scores_ng_cont.append(np.nan)
             
             try:
-                # 3. ANM 적합성: HSIC p-value
+                # 3. ANM compatibility: HSIC p-value
                 anm_result = IndependenceTool.anm_test(df[var1], df[var2])
                 scores_anm_cont.append(anm_result.get("anm_score", np.nan))
             except Exception as e:
@@ -646,7 +647,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
         default_ci_test = "fisherz"
         if data_type_profile == "Pure Categorical":
             default_ci_test = "gsq"
-        elif ci_reliability != "High":  # p > n 또는 High-Dimensional
+        elif ci_reliability != "High":  # p > n or High-Dimensional
             if n_samples <= 1000 :
                 default_ci_test = "kernel_kcit"
         
@@ -654,7 +655,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
         global_linearity_pvalue = global_scores.get("s_global_linearity_pvalue", np.nan)
         pairwise_linearity_score = pairwise_scores.get("s_pairwise_linearity_score", np.nan)
         
-        is_mostly_linear = None  # 기본 가정
+        is_mostly_linear = None  # Default assumption
         
         if data_type_profile == "Pure Continuous" and not np.isnan(pairwise_linearity_score):
             # 1st priority: Pure Continuous uses Pairwise score
@@ -685,7 +686,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
         elif data_type_profile == "Pure Continuous" and is_mostly_linear:
             logger.info("Scenario 1: Pure Continuous, Linear")
             
-            # 정규성(Gaussianity) 확인 (GES, PC용)
+            # Check normality (Gaussianity) for GES, PC
             is_gaussian = global_scores.get("s_global_normality_pvalue", 0.0) >= 0.05
             
             pc_ci_test = "fisherz" if (is_gaussian and ci_reliability == "High") else "kernel_kcit"
@@ -693,7 +694,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
             
             execution_plan.extend([
                 {"alg": "PC", "ci_test": pc_ci_test},
-                {"alg": "GES", "score": "bic-g" if is_gaussian else "generalized_rkhs"},  # 정규성이면 bic-g, 아니면 rkhs
+                {"alg": "GES", "score": "bic-g" if is_gaussian else "generalized_rkhs"},  # Use bic-g if normal, else rkhs
                 {"alg": "FCI", "ci_test": fci_ci_test},
             ])
             
@@ -706,7 +707,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
             
             # LiNGAM: Linear + Non-Gaussianity
             non_gaussian_score = pairwise_scores.get("s_pairwise_non_gaussianity_score", 0.0)
-            if non_gaussian_score >= 0.5:  # 비정규성 점수가 0.5 이상일 때만
+            if non_gaussian_score >= 0.5:  # Only when non-Gaussianity score >= 0.5
                 execution_plan.append({"alg": "LiNGAM"})
         
         # Scenario 2: Pure Continuous, Nonlinear
@@ -726,12 +727,12 @@ class CausalDiscoveryAgent(SpecialistAgent):
             else:
                 logger.warning("NOTEARS-nonlinear is not available, skipping from execution plan")
             
-            # ANM: 비선형 + ANM 적합성
+            # ANM: Nonlinear + ANM compatibility
             anm_score = pairwise_scores.get("s_pairwise_anm_score", 0.0)
-            if anm_score >= 0.5:  # ANM 적합성 점수가 0.5 이상일 때만
+            if anm_score >= 0.5:  # Only when ANM compatibility score >= 0.5
                 execution_plan.append({"alg": "ANM"})
         
-        # Scenario 3: Mixed Data, Linear (High Cardinality가 아닐 때)
+        # Scenario 3: Mixed Data, Linear (when not High Cardinality)
         elif data_type_profile == "Mixed" and is_mostly_linear:
             logger.info("Scenario 3: Mixed Data, Linear")
             execution_plan.extend([
@@ -749,7 +750,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 {"alg": "FCI", "ci_test": "kernel_kcit"}
             ])
         
-        # Default (이론상 도달 불가능해야)
+        # Default (should be unreachable)
         if not execution_plan:
             logger.warning("No scenario matched, using default execution plan")
             default_ci_test = "kernel_kcit" if ci_reliability != "High" else "fisherz"
@@ -763,266 +764,19 @@ class CausalDiscoveryAgent(SpecialistAgent):
         
         return execution_plan
 
-    # def _generate_execution_plan(
-    #     self,
-    #     data_profile: Dict[str, Any],
-    #     variable_schema: Optional[Dict[str, Any]] = None
-    # ) -> List[Dict[str, Any]]:
-    #     """Generate execution plan based on data profile (n-sample aware, kernel-gated)."""
-    #     execution_plan: List[Dict[str, Any]] = []
-
-    #     # ---------------------------
-    #     # Config knobs (tune as needed)
-    #     # ---------------------------
-    #     N_KERNEL_SOFT_CUTOFF = 2000   # >= soft: kernel only with subsampling
-    #     N_KERNEL_HARD_CUTOFF = 5000   # >= hard: kernel forbidden
-    #     KCI_SUBSAMPLE_SIZE   = 1500   # subsample size when kernel_sampled_only
-    #     KCI_MAX_PERMUTATIONS = 200    # limit permutations/bootstrapping (if supported)
-
-    #     D_PCFI_CUTOFF = 30            # if d > cutoff => exclude PC/FCI
-    #     # (optional) you can set a tighter cutoff for FCI only if you want:
-    #     # D_FCI_CUTOFF = 20
-
-    #     # ---------------------------
-    #     # Extract profile
-    #     # ---------------------------
-    #     basic_checks = data_profile.get("basic_checks", {})
-    #     n_samples = int(data_profile.get("n_samples", 1000))
-    #     data_type_profile = basic_checks.get("data_type_profile", "Mixed")
-    #     ci_reliability = basic_checks.get("ci_reliability", "High")
-    #     high_cardinality = bool(basic_checks.get("high_cardinality", False))
-
-    #     global_scores = data_profile.get("global_scores", {})
-    #     pairwise_scores = data_profile.get("pairwise_scores", {})
-
-    #     # ---------------------------
-    #     # Determine d (num variables)
-    #     # ---------------------------
-    #     d = None
-    #     if variable_schema:
-    #         # try common layouts
-    #         if isinstance(variable_schema.get("variables"), list):
-    #             d = len(variable_schema["variables"])
-    #         elif isinstance(variable_schema.get("variables"), dict):
-    #             d = len(variable_schema["variables"])
-    #         elif isinstance(variable_schema.get("columns"), list):
-    #             d = len(variable_schema["columns"])
-    #     if d is None:
-    #         d = int(basic_checks.get("n_variables", 0)) or None  # optional if you store it
-    #     # if still None, we just won't apply d cutoff
-
-    #     # ---------------------------
-    #     # Kernel policy (n-sample gated)
-    #     # ---------------------------
-    #     kernel_forbidden = (n_samples >= N_KERNEL_HARD_CUTOFF)
-    #     kernel_sampled_only = (N_KERNEL_SOFT_CUTOFF <= n_samples < N_KERNEL_HARD_CUTOFF)
-
-    #     def kci_params() -> Dict[str, Any]:
-    #         """Parameters to keep kernel CI tests tractable (if runner supports them)."""
-    #         params = {"max_permutations": KCI_MAX_PERMUTATIONS}
-    #         if kernel_sampled_only:
-    #             params["subsample"] = KCI_SUBSAMPLE_SIZE
-    #         return params
-
-    #     # ---------------------------
-    #     # Linearity 판단 (기존 로직 유지)
-    #     # ---------------------------
-    #     global_linearity_pvalue = global_scores.get("s_global_linearity_pvalue", np.nan)
-    #     pairwise_linearity_score = pairwise_scores.get("s_pairwise_linearity_score", np.nan)
-
-    #     is_mostly_linear = None
-    #     if data_type_profile == "Pure Continuous" and not np.isnan(pairwise_linearity_score):
-    #         is_mostly_linear = True if pairwise_linearity_score >= 0.5 else False
-    #     elif not np.isnan(global_linearity_pvalue):
-    #         is_mostly_linear = True if global_linearity_pvalue >= 0.05 else False
-
-    #     # ---------------------------
-    #     # d cutoff: exclude PC/FCI when too many variables
-    #     # ---------------------------
-    #     exclude_pc_fci = (d is not None and d > D_PCFI_CUTOFF)
-
-    #     # ---------------------------
-    #     # Fast CI test defaults (by data type)
-    #     # ---------------------------
-    #     def fast_ci_test_for_pc_fci() -> str:
-    #         if data_type_profile == "Pure Categorical":
-    #             return "gsq"
-    #         if data_type_profile == "Mixed":
-    #             # linear mixed는 lrt가 1순위
-    #             return "lrt"
-    #         # Pure Continuous
-    #         return "fisherz"
-
-    #     # ---------------------------
-    #     # Decide CI tests for PC/FCI with new rules
-    #     # ---------------------------
-    #     def choose_pc_ci() -> Dict[str, Any]:
-    #         """
-    #         Prefer fast tests; kernel only if allowed AND really needed.
-    #         - Pure Continuous + Linear: fisherz default (do not flip to kernel by gaussianity pvalue)
-    #         - Nonlinear cases: kernel allowed only under n cutoff
-    #         - ci_reliability 낮아도, 큰 n에서는 kernel 금지 → fast test + (optionally) limit depth elsewhere
-    #         """
-    #         ci = fast_ci_test_for_pc_fci()
-
-    #         # Pure Continuous + Nonlinear or Mixed + Nonlinear: kernel could help, but only if allowed
-    #         nonlinear = (is_mostly_linear is False)
-    #         if nonlinear and (not kernel_forbidden):
-    #             # allow kernel (sampled_only handled via ci_params)
-    #             return {"ci_test": "kernel_kcit", "ci_params": kci_params()}
-
-    #         # ci_reliability가 낮아서 kernel을 쓰고 싶어도, n 크면 금지
-    #         if (ci_reliability != "High") and (not kernel_forbidden) and (n_samples < N_KERNEL_SOFT_CUTOFF):
-    #             return {"ci_test": "kernel_kcit", "ci_params": kci_params()}
-
-    #         return {"ci_test": ci}
-
-    #     def choose_fci_ci() -> Dict[str, Any]:
-    #         """
-    #         FCI는 kernel이 가장 잘 터지므로 더 보수적으로:
-    #         - Mixed Linear: lrt 우선 (kernel은 n 작을 때만)
-    #         - Pure Continuous Linear: fisherz 우선
-    #         - Nonlinear: kernel은 n 작을 때만 (soft/hard 정책 적용)
-    #         """
-    #         ci = fast_ci_test_for_pc_fci()
-    #         nonlinear = (is_mostly_linear is False)
-
-    #         if nonlinear and (not kernel_forbidden):
-    #             return {"ci_test": "kernel_kcit", "ci_params": kci_params()}
-
-    #         if (ci_reliability != "High") and (not kernel_forbidden) and (n_samples < N_KERNEL_SOFT_CUTOFF):
-    #             return {"ci_test": "kernel_kcit", "ci_params": kci_params()}
-
-    #         return {"ci_test": ci}
-
-    #     # ---------------------------
-    #     # Scenario handling (updated)
-    #     # ---------------------------
-
-    #     # Scenario 6: High Cardinality
-    #     if high_cardinality:
-    #         logger.info("Scenario 6: High Cardinality (kernel forbidden + prefer fast tests)")
-    #         # high-cardinality + kernel is worst -> avoid kernel; also FCI is often not worth it.
-    #         if not exclude_pc_fci:
-    #             pc_ci = fast_ci_test_for_pc_fci()
-    #             execution_plan.append({"alg": "PC", "ci_test": pc_ci})
-    #             # FCI 제외(기본). 꼭 필요하면 아래 주석 해제 + fast ci로만
-    #             # execution_plan.append({"alg": "FCI", "ci_test": pc_ci})
-    #         # 대안들
-    #         if data_type_profile == "Pure Categorical":
-    #             execution_plan.append({"alg": "GES", "score": "bic-d"})
-    #         elif data_type_profile == "Mixed":
-    #             execution_plan.append({"alg": "GES", "score": "bic-cg"})
-    #             execution_plan.append({"alg": "LiM"})
-    #         else:  # Pure Continuous
-    #             execution_plan.append({"alg": "GES", "score": "bic-g"})
-    #             execution_plan.append({"alg": "NOTEARS-linear" if (is_mostly_linear is True) else "NOTEARS-nonlinear"})
-
-    #     # Scenario 5: Pure Categorical
-    #     elif data_type_profile == "Pure Categorical":
-    #         logger.info("Scenario 5: Pure Categorical")
-    #         execution_plan.append({"alg": "GES", "score": "bic-d"})
-    #         if not exclude_pc_fci:
-    #             execution_plan.append({"alg": "PC", "ci_test": "gsq"})
-    #             execution_plan.append({"alg": "FCI", "ci_test": "gsq"})
-
-    #     # Scenario 1: Pure Continuous, Linear
-    #     elif data_type_profile == "Pure Continuous" and is_mostly_linear:
-    #         logger.info("Scenario 1: Pure Continuous, Linear (prefer fisherz; no gaussianity flip)")
-    #         # GES scoring만 gaussianity로 분기 유지(이건 CI test 비용이랑 별개라 OK)
-    #         is_gaussian = global_scores.get("s_global_normality_pvalue", 0.0) >= 0.05
-
-    #         execution_plan.extend([
-    #             {"alg": "GES", "score": "bic-g" if is_gaussian else "generalized_rkhs"},
-    #             {"alg": "NOTEARS-linear"},
-    #         ])
-
-    #         if not exclude_pc_fci:
-    #             pc_sel = choose_pc_ci()   # 대부분 fisherz로 떨어짐
-    #             fci_sel = choose_fci_ci()
-    #             execution_plan.insert(0, {"alg": "PC", **pc_sel})
-    #             execution_plan.insert(2, {"alg": "FCI", **fci_sel})
-
-    #         # LiNGAM: Linear + Non-Gaussianity
-    #         non_gaussian_score = pairwise_scores.get("s_pairwise_non_gaussianity_score", 0.0)
-    #         if non_gaussian_score >= 0.5:
-    #             execution_plan.append({"alg": "LiNGAM"})
-
-    #     # Scenario 2: Pure Continuous, Nonlinear
-    #     elif data_type_profile == "Pure Continuous" and is_mostly_linear is False:
-    #         logger.info("Scenario 2: Pure Continuous, Nonlinear (kernel only if allowed)")
-    #         execution_plan.extend([
-    #             {"alg": "GES", "score": "generalized_rkhs"},
-    #             {"alg": "NOTEARS-nonlinear"},
-    #         ])
-
-    #         if not exclude_pc_fci:
-    #             pc_sel = choose_pc_ci()
-    #             fci_sel = choose_fci_ci()
-    #             execution_plan.insert(0, {"alg": "PC", **pc_sel})
-    #             execution_plan.insert(2, {"alg": "FCI", **fci_sel})
-
-    #         anm_score = pairwise_scores.get("s_pairwise_anm_score", 0.0)
-    #         if anm_score >= 0.5:
-    #             execution_plan.append({"alg": "ANM"})
-
-    #     # Scenario 3: Mixed Data, Linear
-    #     elif data_type_profile == "Mixed" and is_mostly_linear:
-    #         logger.info("Scenario 3: Mixed Data, Linear (FCI not forced to kernel)")
-    #         execution_plan.extend([
-    #             {"alg": "GES", "score": "bic-cg"},
-    #             {"alg": "LiM"},
-    #         ])
-
-    #         if not exclude_pc_fci:
-    #             # PC: lrt, FCI: lrt 우선 (kernel은 n 작을 때만)
-    #             pc_sel = {"ci_test": "lrt"}
-    #             fci_sel = choose_fci_ci()
-    #             execution_plan.insert(0, {"alg": "PC", **pc_sel})
-    #             execution_plan.insert(2, {"alg": "FCI", **fci_sel})
-
-    #     # Scenario 4: Mixed Data, Nonlinear
-    #     elif data_type_profile == "Mixed" and is_mostly_linear is False:
-    #         logger.info("Scenario 4: Mixed Data, Nonlinear (kernel only if allowed; else skip PC/FCI)")
-    #         # Mixed nonlinear은 kernel이 없으면 PC/FCI로 얻는 이득이 제한적일 수 있음
-    #         if (not exclude_pc_fci) and (not kernel_forbidden):
-    #             pc_sel = choose_pc_ci()
-    #             fci_sel = choose_fci_ci()
-    #             execution_plan.extend([
-    #                 {"alg": "PC", **pc_sel},
-    #                 {"alg": "FCI", **fci_sel},
-    #             ])
-    #         else:
-    #             # kernel 금지/또는 d 큼: PC/FCI 제외하고 대안 위주
-    #             execution_plan.extend([
-    #                 {"alg": "GES", "score": "bic-cg"},  # mixed에서도 baseline으로 유용
-    #                 {"alg": "LiM"},
-    #             ])
-
-    #     # Default fallback
-    #     if not execution_plan:
-    #         logger.warning("No scenario matched, using safe default execution plan")
-    #         # safe fast default
-    #         if data_type_profile == "Pure Categorical":
-    #             fast_ci = "gsq"
-    #         elif data_type_profile == "Mixed":
-    #             fast_ci = "lrt"
-    #         else:
-    #             fast_ci = "fisherz"
-
-    #         if not exclude_pc_fci:
-    #             execution_plan.extend([
-    #                 {"alg": "PC", "ci_test": fast_ci},
-    #                 {"alg": "FCI", "ci_test": fast_ci},
-    #             ])
-    #         else:
-    #             execution_plan.append({"alg": "GES", "score": "bic-cg" if data_type_profile == "Mixed" else "bic-g"})
-
-    #     return execution_plan
-            
     def _run_algorithms_portfolio(self, state: AgentState) -> AgentState:
         """Stage 3: Run algorithms from execution_plan in parallel"""
         logger.info("Running algorithm portfolio in parallel...")
+        
+        # Get event logger if available
+        event_logger = None
+        try:
+            from monitoring.metrics.collector import get_metrics_collector
+            collector = get_metrics_collector()
+            if collector and hasattr(collector, 'event_logger'):
+                event_logger = collector.event_logger
+        except Exception:
+            pass
         
         try:
             execution_plan = state.get("cd_execution_plan", [])
@@ -1189,9 +943,9 @@ class CausalDiscoveryAgent(SpecialistAgent):
             logger.info(f"Graph scoring completed. Scored {len(scored_graphs)} graphs")
             
             import gc
-            # algorithm_results는 이미 scored_graphs로 변환되었으므로 메모리에서 제거 가능
+            # algorithm_results already converted to scored_graphs, can be removed from memory
             if state.get("algorithm_results_key"):
-                # Redis에 저장된 경우 메모리에서 제거
+                # Remove from memory if stored in Redis
                 state.pop("algorithm_results", None)
             gc.collect()
                         
@@ -1667,7 +1421,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
                     "structural_stability": top_candidate.get("structural_stability", "N/A")
                 }
             
-            # 실험 돌릴 때만 주석처리
+            # Comment out only when running experiments
             logger.info( 
                 f"Final selected graph:\n"
                 f"  Algorithm: {top_algorithm}\n"

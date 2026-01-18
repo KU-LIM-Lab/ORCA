@@ -22,7 +22,7 @@ module.exports = async function () {
   await client.connect();
   console.log('Connected. Seeding reviews...');
 
-  // 1) 유저 활동성 정보
+  // 1) User activity info
   const userRes = await client.query(
     'SELECT user_id, is_active, is_active_score FROM users'
   );
@@ -33,10 +33,10 @@ module.exports = async function () {
     userScore[row.user_id] = row.is_active_score;
   }
 
-  // 2) 주문 + 결제 + 배송 + 상품 정보
-  //  - 주문 총액: orders.total_amount
-  //  - 결제일: payment.payment_date
-  //  - 배송완료일: shipping.delivered_at
+  // 2) Order + payment + shipping + product info
+  //  - Order total: orders.total_amount
+  //  - Payment date: payment.payment_date
+  //  - Delivery completion date: shipping.delivered_at
   const orderItemRes = await client.query(`
     SELECT
       o.order_id,
@@ -55,7 +55,7 @@ module.exports = async function () {
     WHERE p.payment_status = 'COMPLETED'
   `);
 
-  const usedPairs = new Set(); // user-product 한 번만 리뷰
+  const usedPairs = new Set(); // Review once per user-product
   let count = 0;
 
   for (const row of orderItemRes.rows) {
@@ -68,7 +68,7 @@ module.exports = async function () {
       delivered_at
     } = row;
 
-    // 배송 완료되지 않은 주문은 리뷰 생성 X
+    // Do not create reviews for orders not yet delivered
     if (!delivered_at || !payment_date) continue;
 
     const key = `${user_id}-${product_id}`;
@@ -86,8 +86,8 @@ module.exports = async function () {
     let delay_days = (delivDate.getTime() - payDate.getTime()) / DAY_MS;
     if (!Number.isFinite(delay_days) || delay_days < 0) delay_days = 0;
 
-    // ───────── 2-1. 리뷰를 남길지 여부 (intent) ─────────
-    // 활동성 + 주문규모 + 배송지연(지연되면 의욕↓) 반영
+    // ───────── 2-1. Whether to leave review (intent) ─────────
+    // Reflect activity + order size + delivery delay (delay reduces motivation)
     const epsIntent = faker.number.float({ mean: 0, stddev: 1 });
     const review_intent_score =
       0.5 * (is_active ? 1 : 0) +
@@ -99,7 +99,7 @@ module.exports = async function () {
     const reviewProb = sigmoid(review_intent_score);
     if (Math.random() > reviewProb) continue;
 
-    // ───────── 2-2. 연속 평점 score_cont ─────────
+    // ───────── 2-2. Continuous rating score_cont ─────────
     const epsS = faker.number.float({ mean: 0, stddev: 0.7 });
     let score_cont =
       3.0 +
@@ -108,13 +108,13 @@ module.exports = async function () {
       0.05 * delay_days +
       epsS;
 
-    // 1~5로 클램핑
+    // Clamp to 1~5
     score_cont = Math.max(1, Math.min(5, score_cont));
 
-    // ordinal 컷포인트 적용
+    // Apply ordinal cutpoints
     const score = continuousToOrdinal(score_cont);
 
-    // ───────── 2-3. 리뷰 작성 시점: 배송 후 0~14일 ─────────
+    // ───────── 2-3. Review creation time: 0~14 days after delivery ─────────
     const offsetDays = faker.number.int({ min: 0, max: 14 });
     const createdAt = new Date(delivDate.getTime() + offsetDays * DAY_MS);
 

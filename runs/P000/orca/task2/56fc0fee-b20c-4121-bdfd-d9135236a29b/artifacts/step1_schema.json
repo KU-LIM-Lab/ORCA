@@ -1,0 +1,24 @@
+{
+  "columns": [
+    "users_avg_browsing_time",
+    "users_age",
+    "users_is_active",
+    "cart_quantity"
+  ],
+  "dtypes": {
+    "users_avg_browsing_time": "object",
+    "users_age": "int64",
+    "users_is_active": "bool",
+    "cart_quantity": "object"
+  },
+  "shape": [
+    10,
+    4
+  ],
+  "null_counts": {
+    "users_avg_browsing_time": 0,
+    "users_age": 0,
+    "users_is_active": 0,
+    "cart_quantity": 10
+  }
+}

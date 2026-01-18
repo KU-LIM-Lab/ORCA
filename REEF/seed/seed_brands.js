@@ -19,7 +19,7 @@ module.exports = async function () {
   await client.connect();
   console.log("Connected to DB. Inserting brands...");
 
-  // 1) categories 테이블에서 parent 정보 가져오기
+  // 1) Get parent info from categories table
   const res = await client.query(`SELECT category_id, name, created_at, category_popularity_score FROM categories`);
   const categoryDict = {};
   res.rows.forEach(row => {

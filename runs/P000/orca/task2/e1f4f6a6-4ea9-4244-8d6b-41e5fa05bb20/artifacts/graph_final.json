@@ -1,0 +1,78 @@
+{
+  "graph": {
+    "edges": [
+      {
+        "from": "users_age",
+        "to": "users_avg_browsing_time",
+        "type": "->",
+        "weight": 1.5,
+        "confidence": 1.5,
+        "direction": "uncertain",
+        "forward_votes": 0.0,
+        "backward_votes": 0.0,
+        "total_votes": 0.0
+      },
+      {
+        "from": "users_age",
+        "to": "cart_quantity",
+        "type": "->",
+        "weight": 1.5,
+        "confidence": 1.5,
+        "direction": "backward",
+        "forward_votes": 0.0,
+        "backward_votes": 0.5,
+        "total_votes": 0.5
+      },
+      {
+        "from": "cart_quantity",
+        "to": "users_is_active",
+        "type": "->",
+        "weight": 1.5,
+        "confidence": 1.5,
+        "direction": "uncertain",
+        "forward_votes": 0.0,
+        "backward_votes": 0.0,
+        "total_votes": 0.0
+      }
+    ],
+    "variables": [
+      "users_point_balance",
+      "users_age",
+      "cart_quantity",
+      "users_is_active",
+      "users_avg_browsing_time"
+    ]
+  },
+  "metadata": {
+    "graph_type": "DAG",
+    "method": "consensus_skeleton",
+    "params": {
+      "data_profile": {
+        "basic_checks": {
+          "data_type_profile": "Mixed",
+          "ci_reliability": "High",
+          "high_cardinality": true,
+          "n_variables": 5,
+          "n_samples": 1000
+        },
+        "global_scores": {
+          "s_global_normality_pvalue": NaN,
+          "s_global_linearity_pvalue": 0.0
+        },
+        "pairwise_scores": {}
+      },
+      "skipped_edges_count": 0,
+      "final_edge_count": 3
+    },
+    "construction_method": "tie_breaking_and_cycle_avoidance",
+    "uncertainty_markers": true,
+    "edge_types": [
+      "->",
+      "o-o",
+      "o->",
+      "<->",
+      "--"
+    ],
+    "top_algorithm": "PC"
+  }
+}

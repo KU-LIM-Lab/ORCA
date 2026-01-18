@@ -6,7 +6,7 @@ module.exports = async function () {
   await client.connect();
   console.log('Connected. Seeding coupon_usage...');
 
-  // orders × coupon × user_coupons 조인
+  // Join orders × coupon × user_coupons
   const res = await client.query(`
     SELECT
       o.order_id,
@@ -49,7 +49,7 @@ module.exports = async function () {
     const start = new Date(start_date);
     const end = new Date(expiration_date);
 
-    // 쿠폰 유효 기간 안에서만 사용 기록 생성
+    // Create usage record only within coupon validity period
     if (usedAt < start || usedAt > end) {
       console.warn(
         `⏭️ Skip: order ${order_id} uses coupon ${coupon_id} outside validity window`

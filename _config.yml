@@ -7,8 +7,8 @@ prompt_column_desc_system: "column_desc_system"
 prompt_column_desc_human: "column_desc_human"
 routing_prompt: "routing_prompt"
 
-database: # DB 경로 수정
-  type: postgresql # DB 종류 선택
+database: # Modify DB path
+  type: postgresql # Select DB type
   postgresql:
     host: localhost
     port: 5432

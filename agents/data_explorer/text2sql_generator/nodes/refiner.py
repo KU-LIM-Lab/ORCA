@@ -51,7 +51,7 @@ def refiner_node(state, llm: BaseChatModel):
             'pred': new_sql,
             'try_times': try_times + 1,
             'send_to': 'refiner_node',
-            # 'llm_review': None  # 한 번 반영했으니 초기화
+            # 'llm_review': None  # Reset after applying once
             'messages': state['messages'] + [
                 {"role": "refiner", "content": llm_reply}
             ]
@@ -65,15 +65,15 @@ def refiner_node(state, llm: BaseChatModel):
                 return {
                     **state,
                     'result': result,
-                    'columns': columns,  # SQL 실행 후 컬럼명 저장
-                    'error': None,  # 에러 초기화
+                    'columns': columns,  # Store column names after SQL execution
+                    'error': None,  # Reset error
                     'send_to': 'review_node'
                 }
-            else: # 실행은 성공했지만 반환된 결과가 없는 경우
+            else: # Execution succeeded but no results returned
                 return {
                     **state,
                     'result': "Sql executed but no rows returned, there might be something wrong with the sql or no data in the table that matches the query.",
-                    'error': None,  # 에러 초기화
+                    'error': None,  # Reset error
                     'send_to': 'review_node'}
                 
         except Exception as e:
@@ -121,7 +121,7 @@ def refiner_node(state, llm: BaseChatModel):
             'pred': new_sql,
             'try_times': try_times + 1,
             'send_to': 'refiner_node',
-            # 'llm_review': None  # 한 번 반영했으니 초기화
+            # 'llm_review': None  # Reset after applying once
             'messages': state['messages'] + [
                 {"role": "refiner", "content": llm_reply}
             ]

@@ -1,0 +1,24 @@
+{
+  "columns": [
+    "cart_quantity",
+    "brands_brand_strength_score",
+    "users_age",
+    "users_avg_browsing_time"
+  ],
+  "dtypes": {
+    "cart_quantity": "float64",
+    "brands_brand_strength_score": "float64",
+    "users_age": "float64",
+    "users_avg_browsing_time": "object"
+  },
+  "shape": [
+    790676,
+    4
+  ],
+  "null_counts": {
+    "cart_quantity": 1810,
+    "brands_brand_strength_score": 0,
+    "users_age": 4392,
+    "users_avg_browsing_time": 4392
+  }
+}

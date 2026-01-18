@@ -1,0 +1,138 @@
+{
+  "total_artifacts": 13,
+  "artifacts": [
+    {
+      "type": "sql",
+      "path": "artifacts/step1_final.sql",
+      "filename": "step1_final.sql",
+      "sha256": "f80067f2cdb541eaf72ca45803e9eb9e7bdd854a02853889bf33e61c757154c1",
+      "step_id": "1",
+      "metadata": {
+        "db_id": "reef_db",
+        "sql_hash": "b1fa8954"
+      }
+    },
+    {
+      "type": "dataset",
+      "path": "artifacts/step1_dataset.parquet",
+      "filename": "step1_dataset.parquet",
+      "sha256": "bde1b678a886c7fd6f15512a445f76061e41be059afe9c652d75f6f46dd98103",
+      "step_id": "1",
+      "metadata": {
+        "rows": 28056,
+        "columns": 5
+      }
+    },
+    {
+      "type": "schema",
+      "path": "artifacts/step1_schema.json",
+      "filename": "step1_schema.json",
+      "sha256": "a13f871f358e1e6748ac59b43c587a40c741e10cc2ab0b827e18b8037913156b",
+      "step_id": "1",
+      "metadata": {}
+    },
+    {
+      "type": "sql",
+      "path": "artifacts/step1_final.sql",
+      "filename": "step1_final.sql",
+      "sha256": "70514463a98d5914497f18c455998adf48c711ec990e0619805ab39acd851c96",
+      "step_id": "1",
+      "metadata": {
+        "db_id": "reef_db",
+        "sql_hash": "b908359d"
+      }
+    },
+    {
+      "type": "dataset",
+      "path": "artifacts/step1_dataset.parquet",
+      "filename": "step1_dataset.parquet",
+      "sha256": "fa740ba2f4f194ebcb4d6d5c81ba133876dd8985179570eb25b9895d62a0ec79",
+      "step_id": "1",
+      "metadata": {
+        "rows": 10,
+        "columns": 5
+      }
+    },
+    {
+      "type": "schema",
+      "path": "artifacts/step1_schema.json",
+      "filename": "step1_schema.json",
+      "sha256": "e24cbb6cc44b90e85f9fdc6b5750c14498e6be8aed2aeadf42ccc8401c055cab",
+      "step_id": "1",
+      "metadata": {}
+    },
+    {
+      "type": "sql",
+      "path": "artifacts/step1_final.sql",
+      "filename": "step1_final.sql",
+      "sha256": "70514463a98d5914497f18c455998adf48c711ec990e0619805ab39acd851c96",
+      "step_id": "1",
+      "metadata": {
+        "db_id": "reef_db",
+        "sql_hash": "b908359d"
+      }
+    },
+    {
+      "type": "dataset",
+      "path": "artifacts/step1_dataset.parquet",
+      "filename": "step1_dataset.parquet",
+      "sha256": "fa740ba2f4f194ebcb4d6d5c81ba133876dd8985179570eb25b9895d62a0ec79",
+      "step_id": "1",
+      "metadata": {
+        "rows": 10,
+        "columns": 5
+      }
+    },
+    {
+      "type": "schema",
+      "path": "artifacts/step1_schema.json",
+      "filename": "step1_schema.json",
+      "sha256": "e24cbb6cc44b90e85f9fdc6b5750c14498e6be8aed2aeadf42ccc8401c055cab",
+      "step_id": "1",
+      "metadata": {}
+    },
+    {
+      "type": "sql",
+      "path": "artifacts/step1_final.sql",
+      "filename": "step1_final.sql",
+      "sha256": "f80067f2cdb541eaf72ca45803e9eb9e7bdd854a02853889bf33e61c757154c1",
+      "step_id": "1",
+      "metadata": {
+        "db_id": "reef_db",
+        "sql_hash": "b1fa8954"
+      }
+    },
+    {
+      "type": "dataset",
+      "path": "artifacts/step1_dataset.parquet",
+      "filename": "step1_dataset.parquet",
+      "sha256": "bde1b678a886c7fd6f15512a445f76061e41be059afe9c652d75f6f46dd98103",
+      "step_id": "1",
+      "metadata": {
+        "rows": 28056,
+        "columns": 5
+      }
+    },
+    {
+      "type": "schema",
+      "path": "artifacts/step1_schema.json",
+      "filename": "step1_schema.json",
+      "sha256": "a13f871f358e1e6748ac59b43c587a40c741e10cc2ab0b827e18b8037913156b",
+      "step_id": "1",
+      "metadata": {}
+    },
+    {
+      "type": "graph",
+      "path": "artifacts/graph_final.json",
+      "filename": "graph_final.json",
+      "sha256": "486e710f68529a0063cabaf04bae94aae0e856f9d1b6f5e53401b5a1a81d916a",
+      "step_id": "2",
+      "metadata": {
+        "algorithm": null,
+        "graph_type": null,
+        "num_nodes": null,
+        "num_edges": null
+      }
+    }
+  ]
+}

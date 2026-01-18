@@ -7,7 +7,7 @@ module.exports = async function () {
   await client.connect();
   console.log('Connected. Seeding point transactions from orders...');
 
-  // 주문 + 결제 정보 가져오기 (완료된 결제만)
+  // Get order + payment info (completed payments only)
   const res = await client.query(`
     SELECT
       o.order_id,
@@ -44,7 +44,7 @@ module.exports = async function () {
 
     const baseTime = payment_date || order_created_at;
 
-    // ───────── 1) earn 트랜잭션: 주문 금액 기반 적립 ─────────
+    // ───────── 1) earn transaction: Points earned based on order amount ─────────
     // earn_rate ~ U(0.005, 0.03) (0.5%~3%)
     const earnRate = faker.number.float({
       min: 0.005,
@@ -52,7 +52,7 @@ module.exports = async function () {
       precision: 0.0001,
     });
 
-    // ε_C ~ N(0, 5^2) 정도로 노이즈
+    // ε_C ~ N(0, 5^2) noise approximately
     const epsC = faker.number.float({ mean: 0, stddev: 5 });
 
     let earnPointsStar = earnRate * Number(total_amount) + epsC;
@@ -74,7 +74,7 @@ module.exports = async function () {
           uuidv4(),
           user_id,
           earnPoints,
-          '구매 적립',
+          'Purchase points',
           baseTime,
           'earn',
         ]
@@ -82,7 +82,7 @@ module.exports = async function () {
       earnCount++;
     }
 
-    // ───────── 2) used 트랜잭션: 주문에서 사용한 포인트 차감 ─────────
+    // ───────── 2) used transaction: Deduct points used in order ─────────
     if (Number(point_used) > 0) {
       const usedPoints = -Math.round(Number(point_used));
 
@@ -101,7 +101,7 @@ module.exports = async function () {
           uuidv4(),
           user_id,
           usedPoints,
-          '주문 사용',
+          'Order usage',
           baseTime,
           'used',
         ]

@@ -15,6 +15,6 @@ const getClient = require("./db");
     WHERE sku.product_id = p.product_id
   `);
 
-  console.log("✅ sku.created_at 동기화 완료!");
+  console.log("✅ sku.created_at synchronization complete!");
   await client.end();
 })();

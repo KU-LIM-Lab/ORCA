@@ -6,10 +6,10 @@ def run(db_id: str = "reef_db"):
     print("Starting data prep pipeline...")
 
     print("--- generating(updating) table relations...")
-    # 테이블 관계 자료형 생성 및 업데이트
+    # Create and update table relations data structure
     schema, change = update_table_relations(db_id)
 
-    # 테이블별 메타데이터 생성 및 업데이트
+    # Create and update metadata per table
     print(f"----- generating(updating) metadata...")
     update_metadata(db_id, schema, change)
         

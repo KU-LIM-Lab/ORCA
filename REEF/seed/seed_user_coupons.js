@@ -13,7 +13,7 @@ module.exports = async function () {
     return 1 / (1 + Math.exp(-x));
   }
 
-  // 1) 유저 정보: is_active_score, is_active, created_at
+  // 1) User info: is_active_score, is_active, created_at
   const resUsers = await client.query(
     'SELECT user_id, is_active_score, is_active, created_at FROM users'
   );
@@ -28,7 +28,7 @@ module.exports = async function () {
   const activeUsers = users.filter(u => u.is_active);
   const inactiveUsers = users.filter(u => !u.is_active);
 
-  // 2) 쿠폰 정보: start_date, expiration_date, discount_strength
+  // 2) Coupon info: start_date, expiration_date, discount_strength
   const resCoupons = await client.query(`
     SELECT
       coupon_id,
@@ -56,7 +56,7 @@ module.exports = async function () {
       continue;
     }
 
-    // 쿠폰당 약 100명: 활성 유저 비중을 더 높게 (예: 70:30)
+    // About 100 users per coupon: higher proportion of active users (e.g., 70:30)
     const targetPerCoupon = 100;
     const numActive = Math.min(
       activeUsers.length,
@@ -75,19 +75,19 @@ module.exports = async function () {
       const { user_id, is_active_score, is_active, created_at } = user;
       const userCreatedAt = new Date(created_at);
 
-      // ───────── 1) assigned_at: active 유저일수록 더 빨리 받게 ─────────
+      // ───────── 1) assigned_at: active users receive faster ─────────
       // Δ_assign = 20 - 10 * I(is_active) + ε_A  (days)
       const epsA = faker.number.float({ mean: 0, stddev: 5 });
       let deltaAssignDays = 20 - 10 * (is_active ? 1 : 0) + epsA;
       if (deltaAssignDays < 0) deltaAssignDays = 0;
 
-      // 기준은 coupon.start_date 이후로, 유저 가입일도 고려
+      // Base is after coupon.start_date, also consider user signup date
       let candidate = new Date(startDate.getTime() + deltaAssignDays * DAY_MS);
       if (candidate < userCreatedAt) {
         candidate = userCreatedAt;
       }
 
-      // 만료일 이후면 쿠폰을 준 적이 없는 것으로 간주하고 skip
+      // If after expiration date, consider as never given coupon and skip
       if (candidate > expDate) continue;
 
       const assignedAt = candidate;

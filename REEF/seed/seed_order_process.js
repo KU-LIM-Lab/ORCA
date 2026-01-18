@@ -15,9 +15,9 @@ module.exports = async function () {
   await client.connect();
   console.log('Connected. Seeding orders + order_items + payment + shipping...');
 
-  // ───────────────── 1. 필요 데이터 로딩 ─────────────────
+  // ───────────────── 1. Load required data ─────────────────
 
-  // users: 결제 score, 포인트, 주문 생성 시점 등에 사용
+  // users: Used for payment score, points, order creation time, etc.
   const userRes = await client.query(`
     SELECT user_id, age, gender, is_active, created_at, point_balance
     FROM users
@@ -29,7 +29,7 @@ module.exports = async function () {
     return;
   }
 
-  // sku + product 생성일: 주문 가능한 시점 계산용
+  // sku + product creation date: For calculating orderable time
   const skuRes = await client.query(`
     SELECT s.sku_id, s.price, p.created_at AS product_created_at
     FROM sku s
@@ -42,7 +42,7 @@ module.exports = async function () {
     return;
   }
 
-  // user_coupons + coupon: 할인 금액/비율, 강도, 유효 기간
+  // user_coupons + coupon: Discount amount/rate, strength, validity period
   const userCouponRes = await client.query(`
     SELECT
       uc.user_id,
@@ -64,17 +64,17 @@ module.exports = async function () {
     couponsByUser[row.user_id].push(row);
   }
 
-  // ───────────────── 2. 주문 생성 루프 ─────────────────
+  // ───────────────── 2. Order creation loop ─────────────────
 
   for (let i = 0; i < ORDER_COUNT; i++) {
     const user = faker.helpers.arrayElement(users);
     const userId = user.user_id;
 
-    // 2-1. 주문에 들어갈 SKU 샘플링
+    // 2-1. Sample SKUs to include in order
     const itemCount = faker.number.int({ min: 1, max: 5 });
     const selectedSkus = faker.helpers.arrayElements(skus, itemCount);
 
-    // 주문 생성 가능 최소 시점 = max(유저 가입일, 해당 상품들 생성일)
+    // Minimum order creation time = max(user signup date, product creation dates)
     const earliestProductCreated = selectedSkus.reduce((acc, sku) => {
       const d = new Date(sku.product_created_at);
       return d > acc ? d : acc;
@@ -86,7 +86,7 @@ module.exports = async function () {
     const plusDays = faker.number.int({ min: 0, max: 300 });
     const orderCreatedAt = new Date(baseCreated.getTime() + plusDays * DAY_MS);
 
-    // 2-2. order_items 생성 + subtotal 계산
+    // 2-2. Create order_items + calculate subtotal
     const orderId = uuidv4();
     const orderItems = [];
     let subtotal = 0;
@@ -107,7 +107,7 @@ module.exports = async function () {
       });
     }
 
-    // 2-3. 쿠폰/포인트 적용 → discount_amount, point_used, total_amount
+    // 2-3. Apply coupon/points → discount_amount, point_used, total_amount
     let coupon_used = null;
     let discount_amount = 0;
 
@@ -119,20 +119,20 @@ module.exports = async function () {
     );
 
     if (eligibleCoupons.length > 0 && Math.random() < 0.7) {
-      // 쿠폰이 있고, 70% 확률로 사용
+      // If coupon exists, use with 70% probability
       const coupon = faker.helpers.arrayElement(eligibleCoupons);
       coupon_used = coupon.coupon_id;
 
       if (coupon.discount_amount && coupon.discount_amount > 0) {
         discount_amount = Number(coupon.discount_amount);
       } else if (coupon.discount_rate && coupon.discount_rate > 0) {
-        // coupon.discount_rate는 0.05~0.30 비율이라고 가정
+        // Assume coupon.discount_rate is ratio 0.05~0.30
         discount_amount = subtotal * Number(coupon.discount_rate);
       }
       if (discount_amount > subtotal) discount_amount = subtotal;
     }
 
-    // point_used = user.point_balance * U(0,1), 단 subtotal 안 넘도록
+    // point_used = user.point_balance * U(0,1), but not exceeding subtotal
     let point_used = 0;
     const maxPointUse = Math.min(Number(user.point_balance || 0), subtotal - discount_amount);
     if (maxPointUse > 0) {
@@ -142,7 +142,7 @@ module.exports = async function () {
     let total_amount = subtotal - discount_amount - point_used;
     if (total_amount < 0) total_amount = 0;
 
-    // ───────────────── 3. 결제 생성 (payment) ─────────────────
+    // ───────────────── 3. Create payment ─────────────────
 
     // score_card = α0 + α1*log1p(total_amount) + α2*I(age>=40) + ε
     // const ageOver40 = user.age >= 40 ? 1 : 0;
@@ -161,7 +161,7 @@ module.exports = async function () {
     //   paymentStatus = 'FAILED';
     // }
 
-    // payment_date: 주문일 이후 0~3일
+    // payment_date: 0~3 days after order date
     let paymentDate = null;
     const attempt = Math.random() < 0.9;
     if (attempt) {
@@ -176,13 +176,13 @@ module.exports = async function () {
     let paymentStatus;
 
     if (paymentDate === null) {
-      const elapsedFromOrder = (now - orderCreatedAt) / DAY_MS;  // 주문 시점 기준 경과일
+      const elapsedFromOrder = (now - orderCreatedAt) / DAY_MS;  // Days elapsed from order time
     
       if (elapsedFromOrder < 2) {
-        // 아직 시간 충분히 안 지남 → 입금대기(PENDING)
+        // Not enough time has passed → Pending deposit (PENDING)
         paymentStatus = 'PENDING';
       } else {
-        // 오래됐는데도 아직 결제 X → 실패
+        // Old but still no payment → Failed
         paymentStatus = 'FAILED';
       }
     } else {
@@ -197,7 +197,7 @@ module.exports = async function () {
       { value: 'BANK', weight: 0.10 }
     ]);
 
-    // ───────────────── 4. 주문 상태(order_status) 결정 ─────────────────
+    // ───────────────── 4. Determine order status ─────────────────
     let orderStatus = 'PENDING';
     if (paymentStatus === 'FAILED') {
       orderStatus = 'CANCELLED';
@@ -205,7 +205,7 @@ module.exports = async function () {
       orderStatus = 'PAID';
     }
 
-    // ───────────────── 5. 배송(shipping) 생성 ─────────────────
+    // ───────────────── 5. Create shipping ─────────────────
     let shippingRow = null;
 
     if (paymentStatus === 'COMPLETED') {
@@ -220,7 +220,7 @@ module.exports = async function () {
       const delvOffset = faker.number.int({ min: 1, max: 3 });
       const deliveredAt = new Date(shippedAt.getTime() + delvOffset * DAY_MS);
 
-      const status = 'DELIVERED'; // 대부분 배송 완료 상태로 둠
+      const status = 'DELIVERED'; // Mostly set as delivered status
 
       shippingRow = {
         shipping_id: shippingId,
@@ -232,11 +232,11 @@ module.exports = async function () {
         delivered_at: deliveredAt
       };
 
-      // 배송까지 끝났다면 주문 상태 = COMPLETED
+      // If delivery is complete, order status = COMPLETED
       orderStatus = 'COMPLETED';
     }
 
-    // ───────────────── 6. 실제 DB insert (트랜잭션) ─────────────────
+    // ───────────────── 6. Actual DB insert (transaction) ─────────────────
     try {
       await client.query('BEGIN');
 
@@ -318,7 +318,7 @@ module.exports = async function () {
         ]
       );
 
-      // shipping (있을 경우만)
+      // shipping (only if exists)
       if (shippingRow) {
         await client.query(
           `

@@ -6,7 +6,7 @@ module.exports = async function () {
   await client.connect();
   console.log("Connected. Seeding inventory...");
 
-  // sku와 그에 대응하는 product의 stock_quantity, sku.created_at을 함께 가져오기
+  // Get sku and corresponding product's stock_quantity, sku.created_at together
   const result = await client.query(`
     SELECT
       s.sku_id,
@@ -24,7 +24,7 @@ module.exports = async function () {
     // SCM 1) quantity = products.stock_quantity
     const quantity = row.stock_quantity ?? 0;
 
-    // SCM 2) last_updated = sku.created_at  (필요하면 여기에 약간의 노이즈 추가 가능)
+    // SCM 2) last_updated = sku.created_at  (can add some noise here if needed)
     const lastUpdated = row.sku_created_at;
 
     await client.query(

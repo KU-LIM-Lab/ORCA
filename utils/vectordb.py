@@ -26,7 +26,7 @@ class VectorStore:
 
         self.schema = index_schema or IndexSchema.from_dict({
             "index": {
-                "name": f"{self.db}_table_columns_index", # 제거
+                "name": f"{self.db}_table_columns_index", # Remove
                 "prefix": f"{self.db}:vector_doc",
                 "key_separator": ":",
                 "storage_type": "hash"

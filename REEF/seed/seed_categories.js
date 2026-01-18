@@ -22,7 +22,7 @@ module.exports = async function () {
   const today = new Date();
   const DAY_MS = 24 * 60 * 60 * 1000;
 
-  // Uniform(a, b) days ago → 실제 날짜 반환
+  // Uniform(a, b) days ago → Return actual date
   const daysAgo = (minDays, maxDays) => {
     const d = faker.number.int({ min: minDays, max: maxDays });
     return new Date(today.getTime() - d * 24 * 60 * 60 * 1000);
@@ -52,7 +52,7 @@ module.exports = async function () {
       stddev: 1
     });
 
-    // 4) parent_id — 여기서는 상위 카테고리 없음 (계층 만들고 싶으면 아래에 샘플 코드 제공)
+    // 4) parent_id — No parent category here (sample code provided below if you want to create hierarchy)
     const parent_id = null;
 
     try {

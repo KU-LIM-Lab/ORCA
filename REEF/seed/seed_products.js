@@ -3,7 +3,7 @@ const getClient = require("./db");
 
 const PRODUCT_COUNT = 1000;
 
-// 각 카테고리에 맞는 상품 키워드 리스트
+// Product keyword list for each category
 const productMap = {
   Electronics: ["스마트폰", "노트북", "모니터", "이어폰", "태블릿"],
   Fashion: ["운동화", "재킷", "셔츠", "바지", "모자"],
@@ -29,7 +29,7 @@ module.exports = async function () {
     return 1 / (1 + Math.exp(-x));
   }
 
-  // ✅ 브랜드, 카테고리 + 브랜드 생성일 정보까지 가져오기
+  // ✅ Get brand, category + brand creation date info
   const res = await client.query(`
     SELECT 
       b.brand_id,
@@ -47,7 +47,7 @@ module.exports = async function () {
     const categoryName = brand.category_name;
     const keywords = productMap[categoryName];
 
-    // productMap에 없는 카테고리가 혹시 있다면 skip
+    // Skip if category not in productMap
     if (!keywords) {
       console.warn(`⚠ No product keywords for category: ${categoryName}`);
       continue;
@@ -57,7 +57,7 @@ module.exports = async function () {
     const productName = `${brand.brand_name} ${productKeyword}`;
     const productId = faker.string.uuid();
 
-    // ───────── stock_quantity (외생) ─────────
+    // ───────── stock_quantity (exogenous) ─────────
     const stock_quantity = faker.number.int({ min: 10, max: 300 });
 
     const thumbnail_url = faker.image.urlPicsumPhotos();
@@ -78,7 +78,7 @@ module.exports = async function () {
     const pActive = sigmoid(aStar);
     const is_active = Math.random() < pActive;
 
-    // ───────── updated_at = created_at (단순) ─────────
+    // ───────── updated_at = created_at (simple) ─────────
     const updated_at = created_at;
 
     try {

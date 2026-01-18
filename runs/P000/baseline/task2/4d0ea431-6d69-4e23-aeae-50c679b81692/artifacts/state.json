@@ -1,0 +1,28 @@
+{
+  "participant_id": "P000",
+  "session_id": "P000_20251229_171422",
+  "db_id": "reef_db",
+  "current_step": "1",
+  "artifacts_by_step": {
+    "1": [
+      {
+        "artifact_type": "sql",
+        "path": "runs/P000/baseline/task2/4d0ea431-6d69-4e23-aeae-50c679b81692/artifacts/step1_final.sql",
+        "sha256": "2ff99051...",
+        "ts": 1766996193.5536041
+      }
+    ],
+    "2": [],
+    "3": []
+  },
+  "user_question": "tell me about the database",
+  "treatment": null,
+  "outcome": null,
+  "confounders": [],
+  "last_sql_query": "SELECT \n    b.brand_id, \n    b.brand_strength_score, \n    b.brand_name, \n    c.cart_id, \n    c.user_id, \n    c.sku_id, \n    c.quantity \nFROM \n    brands b \nJOIN \n    products p ON b.category_id = p.category_id \nJOIN \n    sku s ON p.product_id = s.product_id \nJOIN \n    cart c ON s.sku_id = c.sku_id \nLIMIT 100;",
+  "step1_sql_path": "runs/P000/baseline/task2/4d0ea431-6d69-4e23-aeae-50c679b81692/artifacts/step1_final.sql",
+  "step1_dataset_path": null,
+  "step2_graph_path": null,
+  "step2_graph_adj_path": null,
+  "step3_ate_path": null
+}

@@ -18,8 +18,8 @@ module.exports = async function () {
     return x < 1 ? 1 : x;
   }
 
-  // products + categories + brands 정보 한 번에 가져오기
-  // products.product_name 이 "브랜드명 XXX" 라는 가정 하에 prefix join
+  // Get products + categories + brands info at once
+  // Assuming products.product_name is "BrandName XXX", use prefix join
   const resProducts = await client.query(`
     SELECT
       p.product_id,
@@ -55,12 +55,12 @@ module.exports = async function () {
     const variantBase = faker.helpers.arrayElement(VARIANT_NAMES);
     const variantName = `${variantBase} ${option}`;
 
-    // 간단한 SKU 코드: product_id 앞 8자리 + color + option + variant
+    // Simple SKU code: first 8 chars of product_id + color + option + variant
     const skuCode = `${product.product_id.slice(0, 8)}-${color}-${option}-${variantBase}`;
     if (usedSkuCodes.has(skuCode)) continue;
     usedSkuCodes.add(skuCode);
 
-    // ───────── 가격: price = 20 + 8*cat_pop + brand_strength + ε_p ─────────
+    // ───────── Price: price = 20 + 8*cat_pop + brand_strength + ε_p ─────────
     const catScore = product.category_popularity_score ?? 0;
     const brandScore = product.brand_strength_score ?? 0;
     const epsP = faker.number.float({ mean: 0, stddev: 5 });
@@ -68,17 +68,17 @@ module.exports = async function () {
     let price = 20 + 8 * catScore + brandScore + epsP;
     price = clampPrice(price);
 
-    // ───────── 날짜: created_at = product.created_at, available_from = created_at ─────────
+    // ───────── Date: created_at = product.created_at, available_from = created_at ─────────
     const createdAt = new Date(product.product_created_at);
-    let availableFrom = new Date(createdAt); // 동일하게 설정
+    let availableFrom = new Date(createdAt); // Set same
 
     // ───────── discontinued_at + is_active ─────────
-    // 재고가 0이면 어떤 시점에 단종, 아니면 NULL
+    // If stock is 0, discontinue at some point, otherwise NULL
     let discontinuedAt = null;
     let isActive = true;
 
     if (product.stock_quantity <= 0) {
-      // 생성 후 ~오늘 사이 아무 때나 단종시킴
+      // Discontinue at any time between creation and today
       const endTimestamp = today.getTime();
       const startTimestamp = createdAt.getTime();
       const randTime = faker.number.int({
@@ -88,7 +88,7 @@ module.exports = async function () {
       discontinuedAt = new Date(randTime);
       isActive = false;
     } else {
-      // 재고가 있고, 오늘이 아직 discontinued 이전이면 활성
+      // If stock exists and today is before discontinued, then active
       isActive = true;
     }
 

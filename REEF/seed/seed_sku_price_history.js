@@ -14,14 +14,14 @@ module.exports = async function () {
     return 1 / (1 + Math.exp(-x));
   }
 
-  // 1. 프로모션 목록 가져오기
+  // 1. Get promotion list
   const promoRes = await client.query(`
     SELECT promo_id, discount_value, discount_type, start_at, end_at
     FROM promotion
   `);
   const promotions = promoRes.rows;
 
-  // 2. SKU 목록 가져오기
+  // 2. Get SKU list
   const skuRes = await client.query(`
     SELECT sku_id, price
     FROM sku
@@ -29,7 +29,7 @@ module.exports = async function () {
   const skus = skuRes.rows;
 
   if (promotions.length === 0 || skus.length === 0) {
-    console.error('🚨 프로모션 또는 SKU가 없습니다. 먼저 시드해주세요.');
+    console.error('🚨 No promotions or SKUs found. Please seed first.');
     await client.end();
     return;
   }
@@ -47,9 +47,9 @@ module.exports = async function () {
 
     const originalPrice = Number(sku.price);
 
-    // ───────── discount_price: 설계식 적용 ─────────
-    const dv = Number(promo.discount_value); // amount 또는 rate (0~1)
-    const type = promo.discount_type;        // 'amount' or 'rate' (또는 'percentage' 호환)
+    // ───────── discount_price: Apply design formula ─────────
+    const dv = Number(promo.discount_value); // amount or rate (0~1)
+    const type = promo.discount_type;        // 'amount' or 'rate' (or 'percentage' compatible)
     const isAmount = type === 'amount';
     const isRate = type === 'rate' || type === 'percentage';
 
@@ -58,19 +58,19 @@ module.exports = async function () {
 
     let discountPriceStar;
     if (isAmount) {
-      // 정액 할인: price - discount_value
+      // Fixed amount discount: price - discount_value
       discountPriceStar = originalPrice - dv + epsD;
     } else if (isRate) {
-      // 정률 할인: price * (1 - discount_value), dv는 0.05~0.3 같은 비율이라고 가정
+      // Percentage discount: price * (1 - discount_value), assume dv is ratio like 0.05~0.3
       discountPriceStar = originalPrice * (1 - dv) + epsD;
     } else {
-      // 예외: 타입이 이상하면 할인 없이
+      // Exception: if type is invalid, no discount
       discountPriceStar = originalPrice + epsD;
     }
 
     let discountPrice = Math.max(0, discountPriceStar);
 
-    // ───────── is_stackable: 강한 할인일수록 stack 불가 ─────────
+    // ───────── is_stackable: Stronger discounts cannot be stacked ─────────
     // D_norm = IF(type='amount', discount_value / price, discount_value)
     let D_norm;
     if (isAmount) {
@@ -79,7 +79,7 @@ module.exports = async function () {
       D_norm = dv;
     }
 
-    // ε_s ~ N(0, 0.5^2) 정도
+    // ε_s ~ N(0, 0.5^2) approximately
     const epsS = faker.number.float({ mean: 0, stddev: 0.5 });
     const S_star = 0.5 - 4.0 * D_norm + epsS;
     const pStack = sigmoid(S_star);

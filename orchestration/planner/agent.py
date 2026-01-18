@@ -25,21 +25,21 @@ class PlannerAgent(OrchestratorAgent):
             "data_exploration": {
                 "agent": "data_explorer",
                 "action": "explore_data",
-                "description": "데이터베이스 탐색 및 스키마 분석",
+                "description": "Database exploration and schema analysis",
                 "timeout": 300,
                 "required_outputs": ["data_explored", "schema_metadata", "candidate_tables"]
             },
             "causal_discovery": {
                 "agent": "causal_discovery",
                 "action": "discover_causal_graph", 
-                "description": "인과 발견 알고리즘 선택 및 그래프 생성",
+                "description": "Causal discovery algorithm selection and graph generation",
                 "timeout": 600,
                 "required_outputs": ["causal_graph", "algorithm_scores"]
             },
             "causal_analysis": {
                 "agent": "causal_analysis",
                 "action": "estimate_causal_effects",
-                "description": "인과 효과 추정", 
+                "description": "Causal effect estimation", 
                 "timeout": 900,
                 "required_outputs": ["causal_estimates", "confidence_intervals", "final_answer"]
             }

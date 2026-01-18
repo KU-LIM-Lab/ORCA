@@ -18,7 +18,7 @@ class CausalAnalysisAgent(SpecialistAgent):
         super().__init__(name, AgentType.SPECIALIST, config, metrics_collector)
         self.llm = llm
         
-        # 1. 도메인 전문성 설정
+        # 1. Set domain expertise
         self.set_domain_expertise([
             "causal_analysis",
             "doWhy",
@@ -228,7 +228,7 @@ class CausalAnalysisAgent(SpecialistAgent):
             self.on_event("generate_answer_error", error=str(e))
             return {"error": str(e), "success": False}
     
-    # 5. 단계별 실행 메서드
+    # 5. Step-by-step execution methods
     def _execute_parse_question(self, state: AgentState) -> AgentState:
         """Execute parse question step"""
         print("[CAUSAL] Step: Parsing question...")
@@ -242,11 +242,11 @@ class CausalAnalysisAgent(SpecialistAgent):
             # Don't request HITL again after edit
             return state
         
-        # Normal execution: 커스텀 도구 사용
+        # Normal execution: use custom tool
         result = self.use_tool("parse_question", state)
         
         if result.get("success"):
-            # 상태 업데이트
+            # Update state
             state["parsed_query"] = result.get("parsed_query")
             state["table_schema_str"] = result.get("table_schema_str")
             state["parse_question_completed"] = True
@@ -285,11 +285,11 @@ class CausalAnalysisAgent(SpecialistAgent):
             # Don't request HITL again after edit
             return state
         
-        # Normal execution: 커스텀 도구 사용
+        # Normal execution: use custom tool
         result = self.use_tool("config_selection", state)
         
         if result.get("success"):
-            # 상태 업데이트
+            # Update state
             state["strategy"] = result.get("strategy")
             state["config_selection_completed"] = True
             
@@ -318,11 +318,11 @@ class CausalAnalysisAgent(SpecialistAgent):
         """Execute DoWhy analysis step"""
         print("[CAUSAL] Step: Running DoWhy analysis...")
         
-        # 커스텀 도구 사용
+        # Use custom tool
         result = self.use_tool("dowhy_analysis", state)
         
         if result.get("success"):
-            # 상태 업데이트
+            # Update state
             state.update({
                 "causal_model": result.get("causal_model"),
                 "causal_estimand": result.get("causal_estimand"),
@@ -393,11 +393,11 @@ class CausalAnalysisAgent(SpecialistAgent):
         """Execute generate answer step"""
         print("[CAUSAL] Step: Generating answer...")
         
-        # 커스텀 도구 사용
+        # Use custom tool
         result = self.use_tool("generate_answer", state)
         
         if result.get("success"):
-            # 상태 업데이트
+            # Update state
             state["final_answer"] = result.get("final_answer")
             state["generate_answer_completed"] = True
         else:

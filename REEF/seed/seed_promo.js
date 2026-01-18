@@ -14,22 +14,22 @@ module.exports = async function () {
 
   for (let i = 0; i < PROMO_COUNT; i++) {
     const promoId = uuidv4();
-    const name = faker.company.catchPhrase(); // 랜덤 프로모션 이름
+    const name = faker.company.catchPhrase(); // Random promotion name
 
-    // discount_type: rate(정률) 쪽이 조금 더 자주 등장
+    // discount_type: rate (percentage) appears slightly more often
     const discountType = Math.random() < 0.6 ? 'rate' : 'amount';
 
-    // discount_value: type에 따라 구간 다르게
+    // discount_value: Different ranges depending on type
     let discountValue;
     if (discountType === 'amount') {
-      // 정액 할인: 3 ~ 15 (예: 3,000 ~ 15,000원)
+      // Fixed amount discount: 3 ~ 15 (e.g., 3,000 ~ 15,000 KRW)
       discountValue = faker.number.float({ min: 3, max: 15, precision: 0.01 });
     } else {
-      // 정률 할인: 5% ~ 30% (0.05 ~ 0.30)
+      // Percentage discount: 5% ~ 30% (0.05 ~ 0.30)
       discountValue = faker.number.float({ min: 0.05, max: 0.30, precision: 0.0001 });
     }
 
-    // start_at: 기준일 이후 0~365일 사이
+    // start_at: 0~365 days after base date
     const offsetDays = faker.number.int({ min: 0, max: 365 });
     const startDate = new Date(baseDate.getTime() + offsetDays * DAY_MS);
 

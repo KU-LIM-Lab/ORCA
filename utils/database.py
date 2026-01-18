@@ -36,7 +36,7 @@ class Database:
                 conn = psycopg2.connect(
                     host=self.config["host"],
                     port=self.config["port"],
-                    dbname="postgres",  # 시스템 DB
+                    dbname="postgres",  # System database
                     user=self.config["user"],
                     password=self.config["password"]
                 )
@@ -227,7 +227,7 @@ class Database:
                     column_names = [desc[0] for desc in cursor.description]
                     results.append((rows, column_names))
                 except Exception:
-                    # SELECT가 아닌 경우 (예: UPDATE, INSERT)
+                    # Not a SELECT statement (e.g., UPDATE, INSERT)
                     results.append((None, None))
             return results
         finally:

@@ -24,7 +24,7 @@ class DataExplorerAgent(SpecialistAgent):
         super().__init__(name, AgentType.SPECIALIST, config, metrics_collector)
         self.llm = llm
         
-        # 1. 도메인 전문성 설정
+        # 1. Set domain expertise
         self.set_domain_expertise([
             "table_selection",
             "data_retrieval", 
@@ -85,7 +85,7 @@ class DataExplorerAgent(SpecialistAgent):
     
     def _register_specialist_tools(self) -> None:
         """Register data explorer specific tools"""
-        # 2. 커스텀 도구들 등록
+        # 2. Register custom tools
         self.register_tool(
             "table_selection",
             self._table_recommendation_tool,
@@ -112,7 +112,7 @@ class DataExplorerAgent(SpecialistAgent):
     
     def step(self, state: AgentState) -> AgentState:
         """Execute one step of the data exploration process"""
-        # 3. 메인 실행 로직
+        # 3. Main execution logic
         current_substep = state.get("current_substep", "full_pipeline")
         
         if current_substep == "table_selection":
@@ -128,7 +128,7 @@ class DataExplorerAgent(SpecialistAgent):
         else:
             raise ValueError(f"Unknown substep: {current_substep}")
     
-    # 4. 커스텀 도구 구현
+    # 4. Custom tool implementations
     def _table_recommendation_tool(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """Recommend relevant tables for analysis"""
         try:
@@ -338,7 +338,7 @@ class DataExplorerAgent(SpecialistAgent):
             self.on_event("data_preprocessing_error", error=str(e))
             return {"error": str(e), "success": False}
     
-    # 5. 단계별 실행 메서드
+    # 5. Step-by-step execution methods
     def _execute_table_recommendation(self, state: AgentState) -> AgentState:
         """Execute table recommendation step"""
         print("\n🔍 Analyzing query and selecting relevant tables...")
@@ -354,11 +354,11 @@ class DataExplorerAgent(SpecialistAgent):
             # Don't request HITL again after edit - user already made their decision
             return state
         
-        # Normal execution: 커스텀 도구 사용
+        # Normal execution: use custom tool
         result = self.use_tool("table_selection", state)
         
         if result.get("success"):
-            # 상태 업데이트
+            # Update state
             state["selected_tables"] = result.get("recommended_tables", [])
             state["objective_summary"] = result.get("objective_summary", "")
             state["erd_image_path"] = result.get("erd_image_path", "")
@@ -402,7 +402,7 @@ class DataExplorerAgent(SpecialistAgent):
         state.pop("__hitl_reexecution__", None)
         
         if result.get("success"):
-            # 상태 업데이트
+            # Update state
             state["sql_query"] = result.get("final_sql", "")
             state["final_sql"] = result.get("final_sql", "")  # Also set final_sql for consistency
             state["df_raw"] = result.get("result", [])
@@ -434,11 +434,11 @@ class DataExplorerAgent(SpecialistAgent):
         """Execute table exploration step"""
         print("\n🔍 Analyzing selected tables and their relationships...")
         
-        # 커스텀 도구 사용
+        # Use custom tool
         result = self.use_tool("table_exploration", state)
         
         if result.get("success"):
-            # 상태 업데이트
+            # Update state
             state["schema_analysis"] = result.get("schema_analysis", {})
             state["table_exploration_completed"] = True
             
@@ -464,11 +464,11 @@ class DataExplorerAgent(SpecialistAgent):
         """Execute data preprocessing step"""
         print("\n🧹 Preprocessing data for causal analysis...")
         
-        # 커스텀 도구 사용
+        # Use custom tool
         result = self.use_tool("data_preprocessing", state)
         
         if result.get("success"):
-            # 상태 업데이트 - only set non-DataFrame fields to avoid serialization issues
+            # Update state - only set non-DataFrame fields to avoid serialization issues
             if result.get("df_preprocessed") is not None:
                 state["df_preprocessed"] = result.get("df_preprocessed")
             state["warnings"] = result.get("warnings", [])

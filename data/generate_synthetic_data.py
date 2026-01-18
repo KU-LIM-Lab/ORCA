@@ -22,7 +22,7 @@ def _generate_graph_adj(
     rng: np.random.Generator,
     graph_type: str = "er",
     p: float | None = None, 
-    avg_degree: float = 2.0, # 평균 차수 기본값
+    avg_degree: float = 2.0, # Default average degree
     m: int = 2,
 ) -> np.ndarray:
     """
@@ -40,12 +40,12 @@ def _generate_graph_adj(
 
     perm = rng.permutation(n_nodes)
     inv = np.empty(n_nodes, dtype=int)
-    inv[perm] = np.arange(n_nodes) # inv[i] = 노드 i의 순열상 위치
+    inv[perm] = np.arange(n_nodes) # inv[i] = position of node i in permutation
 
     G = nx.DiGraph()
     G.add_nodes_from(range(n_nodes))
     for u, v in Gu.edges():
-        if inv[u] < inv[v]: # 위치를 O(1)로 조회
+        if inv[u] < inv[v]: # Lookup position in O(1)
             G.add_edge(u, v)
         else:
             G.add_edge(v, u)

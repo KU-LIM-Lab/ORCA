@@ -1,29 +1,29 @@
-# echo "데이터베이스를 초기화합니다..."
+# echo "Initializing database..."
 dropdb --if-exists reef_db 2>/dev/null || true
 createdb reef_db
 
-# DDL 실행
-echo "DDL을 실행합니다..."
+# Execute DDL
+echo "Executing DDL..."
 psql -d reef_db -f REEF_ddl.sql
 
 if [ $? -eq 0 ]; then
-    echo "✅ 데이터베이스 스키마 생성 완료"
+    echo "✅ Database schema creation complete"
 else
-    echo "❌ 데이터베이스 스키마 생성 실패"
+    echo "❌ Database schema creation failed"
     exit 1
 fi
 
-# 3단계: 시드 데이터 생성
-echo "📋 3단계: 시드 데이터 생성"
-echo "샘플 데이터를 생성합니다..."
+# Step 3: Generate seed data
+echo "📋 Step 3: Generate seed data"
+echo "Generating sample data..."
 
-# 시드 데이터 실행
-echo "시드 데이터를 생성합니다..."
+# Execute seed data
+echo "Generating seed data..."
 node seed/run_all_seeds.js
 
 if [ $? -eq 0 ]; then
-    echo "✅ 시드 데이터 생성 완료"
+    echo "✅ Seed data generation complete"
 else
-    echo "❌ 시드 데이터 생성 실패"
+    echo "❌ Seed data generation failed"
     exit 1
 fi

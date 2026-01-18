@@ -6,7 +6,7 @@ from utils.llm import call_llm
 from utils.redis_client import redis_client
 from utils.vectordb import VectorStore
 
-# 테이블 구조 markdown 생성 (LLM 입력용)
+# Generate table structure markdown (for LLM input)
 def generate_table_markdown(sub_schema: Dict[str, dict]) -> str:
     lines = []
     for table, info in sub_schema.items():
@@ -14,14 +14,14 @@ def generate_table_markdown(sub_schema: Dict[str, dict]) -> str:
         for col, meta in info["columns"].items():
             parts = [f"{col} ({meta['type']})"]
 
-            # 기본 속성
+            # Basic attributes
             if meta.get("pk"): parts.append("PK")
             if meta.get("fk"): parts.append(f"FK to {meta['fk']}")
             if meta.get("unique"): parts.append("UNIQUE")
             if meta.get("nullable") is False: parts.append("NOT NULL")
             if meta.get("default") is not None: parts.append(f"DEFAULT {meta['default']}")
 
-            # 통계 정보
+            # Statistical information
             if "count" in meta: parts.append(f"count={meta['count']}")
             if "nulls" in meta: parts.append(f"nulls={meta['nulls']}")
             if "distinct" in meta: parts.append(f"distinct={meta['distinct']}")
@@ -92,7 +92,7 @@ def update_metadata(db_id, schema: Optional[dict] = None, change: bool = False) 
             print(f"🔁 No metadata change for table: {table_name}")
 
     if docs_to_load:
-        vector_store.load(docs_to_load)  # Redis 벡터 인덱스에 실제로 저장
+        vector_store.load(docs_to_load)  # Actually store in Redis vector index
         return True
     
     return False
@@ -114,7 +114,7 @@ def update_metadata(db_id, schema: Optional[dict] = None, change: bool = False) 
 #         await cache.sadd_asyc("metadata:table_names", table_name)
 #         print(f"Metadata updated for table: {table_name}")
 
-#         # 벡터 문서 생성
+#         # Generate vector document
 #         doc_text = f"{new_metadata.get('description', '')}\n\nColumns:\n"
 #         doc_text += "\n".join([f"- `{col}`: {desc}" for col, desc in new_metadata["columns"].items()])
 #         return await vector_store.upsert(table_name, doc_text)
@@ -139,7 +139,7 @@ def update_metadata(db_id, schema: Optional[dict] = None, change: bool = False) 
 #     ]
 #     results = await asyncio.gather(*tasks)
 
-#     # None 제외하고 저장
+#     # Store excluding None
 #     docs_to_store = [doc for doc in results if doc is not None]
 #     if docs_to_store:
 #         await vector_store.load(docs_to_store, id_field="table")

@@ -3,18 +3,18 @@ import yaml
 from pathlib import Path
 from dotenv import load_dotenv
 
-# 프로젝트 루트 디렉토리 기준
+# Based on project root directory
 ROOT_DIR = Path(__file__).resolve().parents[1]
 
-# .env 로드
+# Load .env
 load_dotenv(dotenv_path=ROOT_DIR / ".env")
 
-# config.yml 로드
+# Load config.yml
 CONFIG_PATH = ROOT_DIR / "_config.yml"
 with open(CONFIG_PATH, "r") as f:
     raw_config = yaml.safe_load(f)
 
-# 환경변수 치환
+# Environment variable substitution
 def resolve_env(value):
     if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
         return os.getenv(value[2:-1], "")
@@ -28,10 +28,10 @@ def resolve_nested(d):
             d[k] = resolve_env(v)
     return d
 
-# 최종 config 객체
+# Final config object
 CONFIG = resolve_nested(raw_config)
 
-# DB 설정 불러오기
+# Load database configuration
 POSTGRES_CONFIG = CONFIG.get("database", {}).get("postgresql", {})
 SQLITE_CONFIG = CONFIG.get("database", {}).get("sqlite", {})
 REDIS_CONFIG = CONFIG.get("redis", {})
