@@ -46,21 +46,13 @@ CREATE TABLE public.users (
     name character varying(255),
     email character varying(255),
     phone character varying(255),
-
-    -- [추가] SCM 루트 변수
     age integer,
-
     birth date,
     gender character(10),
     address character varying(255),
-
-    -- [추가] 파생 변수들
     avg_browsing_time numeric(10,2),
     is_active_score numeric(10,2),
-
-    -- [타입 변경] float -> boolean (Bernoulli 결과)
     is_active boolean NOT NULL,
-
     created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     point_balance numeric(10,2) DEFAULT 0.00 NOT NULL
@@ -102,16 +94,9 @@ CREATE TABLE public.categories (
     parent_id uuid,
     name character varying(100) NOT NULL,
     description text,
-
-    -- optional: 계층 정보 (쓰고 싶으면 유지, 필요 없으면 지워도 됨)
-    -- category_level integer,
-
-    -- ★ seeding 코드와 맞추기: N(0,1)에서 뽑는 연속값
-    category_popularity_score double precision,
-
+    category_popularity_score double precision, 
     created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-
     CONSTRAINT fk_categories_parent
         FOREIGN KEY(parent_id)
         REFERENCES public.categories(category_id)
@@ -128,15 +113,10 @@ CREATE INDEX idx_categories_parent_id
 CREATE TABLE public.brands (
     brand_id uuid PRIMARY KEY,
     category_id uuid NOT NULL,
-
     brand_name character varying(100) NOT NULL,
-
     created_at timestamp without time zone NOT NULL DEFAULT now(),
     updated_at timestamp without time zone NOT NULL DEFAULT now(),
-
-    -- SCM: brand_strength_score = 0.8 * category_popularity_score + ε_B
     brand_strength_score double precision NOT NULL,
-
     CONSTRAINT fk_brands_category
         FOREIGN KEY(category_id)
         REFERENCES public.categories(category_id)
@@ -157,7 +137,7 @@ CREATE TABLE public.promotion (
 
 ALTER TABLE public.promotion OWNER TO postgres;
 
--- promotion id pk로
+-- promotion id as pk
 
 ALTER TABLE ONLY public.promotion
     ADD CONSTRAINT promotion_pkey PRIMARY KEY (promo_id);
@@ -168,34 +148,23 @@ ALTER TABLE ONLY public.promotion
 
 CREATE TABLE public.coupon (
     coupon_id uuid PRIMARY KEY,
-
-    code varchar(50) NOT NULL,            -- 나중에 UNIQUE 주는 것 권장
+    code varchar(50) NOT NULL,            
     description text,
-
     discount_amount numeric(10,2) NOT NULL DEFAULT 0.00,
     discount_rate numeric(5,2) NOT NULL DEFAULT 0.00,
-
-    -- ★ seeding 코드에서 계산함
     discount_strength numeric(10,2) NOT NULL,
-
     min_order_amount numeric(10,2) NOT NULL DEFAULT 0.00,
-
-    -- ★ seeding 코드에서 사용하는 실제 시작일
     start_date timestamp NOT NULL,
-
     expiration_date timestamp NOT NULL,
-
     is_active boolean NOT NULL DEFAULT true,
-
     promo_id uuid NOT NULL,
-
     CONSTRAINT fk_coupon_promotion
         FOREIGN KEY (promo_id)
         REFERENCES public.promotion(promo_id)
         ON DELETE CASCADE
 );
 
--- 필요하면 UNIQUE 설정
+-- set unique if needed
 CREATE UNIQUE INDEX idx_coupon_code ON public.coupon(code);
 
 
@@ -246,20 +215,15 @@ ALTER TABLE public.inventory OWNER TO postgres;
 CREATE TABLE public.sku (
     sku_id uuid PRIMARY KEY,
     product_id uuid NOT NULL,
-
     sku_code varchar(150) NOT NULL,
     variant_name varchar(150),
     color varchar(100),
-    variant_option varchar(100),   -- ← option 이름 변경 (option is reserved keyword)
-
+    variant_option varchar(100),  
     is_active boolean NOT NULL DEFAULT true,
     price numeric(10,2) NOT NULL DEFAULT 0.00,
-
     created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
     available_from timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    discontinued_at timestamp NULL,  -- 기본값 NULL
-
+    discontinued_at timestamp NULL, 
     CONSTRAINT fk_sku_product
         FOREIGN KEY(product_id)
         REFERENCES public.products(product_id)
@@ -275,24 +239,18 @@ ALTER TABLE public.sku OWNER TO postgres;
 CREATE TABLE public.orders (
     order_id uuid PRIMARY KEY,
     user_id uuid NOT NULL,
-
     order_status varchar(20) NOT NULL DEFAULT 'PLACED',
-
-    -- ★ seeding 코드에서 추가로 쓰는 컬럼
     subtotal_amount numeric(10,2) NOT NULL DEFAULT 0.00,
     total_amount    numeric(10,2) NOT NULL DEFAULT 0.00,
     discount_amount numeric(10,2) NOT NULL DEFAULT 0.00,
-    coupon_used     uuid,                      -- 쿠폰 없을 수 있으니 NULL 허용
+    coupon_used     uuid,                      
     point_used      numeric(10,2) NOT NULL DEFAULT 0.00,
-
     created_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
     CONSTRAINT fk_orders_user
         FOREIGN KEY (user_id)
         REFERENCES public.users(user_id)
         ON DELETE CASCADE,
-
     CONSTRAINT fk_orders_coupon
         FOREIGN KEY (coupon_used)
         REFERENCES public.coupon(coupon_id)
@@ -310,21 +268,15 @@ CREATE TABLE public.order_items (
     order_item_id uuid PRIMARY KEY,
     order_id uuid NOT NULL,
     sku_id uuid NOT NULL,
-
     quantity   integer      NOT NULL DEFAULT 1,
     unit_price numeric(10,2) NOT NULL,
-
-    -- ★ 더 이상 GENERATED ALWAYS 아님 (코드에서 직접 total_price 넣음)
     total_price numeric(10,2) NOT NULL,
-
     created_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
     CONSTRAINT fk_order_items_order
         FOREIGN KEY (order_id)
         REFERENCES public.orders(order_id)
         ON DELETE CASCADE,
-
     CONSTRAINT fk_order_items_sku
         FOREIGN KEY (sku_id)
         REFERENCES public.sku(sku_id)

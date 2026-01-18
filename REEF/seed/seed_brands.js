@@ -2,16 +2,16 @@ const { faker } = require('@faker-js/faker');
 const getClient = require('./db');
 
 const brandMap = {
-  'Electronics': ['삼성전자', 'LG전자', '애플', '소니', '샤오미'],
-  'Fashion': ['나이키', '아디다스', '뉴발란스', '푸마', '리복'],
-  'Home Appliances': ['쿠쿠', '다이슨', '발뮤다', '필립스', '일렉트로룩스'],
-  'Books': ['문학동네', '민음사', '위즈덤하우스', '한겨레출판', '창비'],
-  'Toys': ['레고', '영실업', '반다이', '타카라토미', '미미월드'],
-  'Beauty': ['설화수', '라네즈', '이니스프리', '클리오', '미샤'],
-  'Groceries': ['오뚜기', '농심', 'CJ', '풀무원', '동원'],
-  'Furniture': ['한샘', '이케아', '일룸', '동서가구', '에이스침대'],
-  'Sports': ['휠라', '데상트', '언더아머', '나이키', '캘러웨이'],
-  'Automotive': ['불스원', '카렉스', '아이나비', '카템']
+  'Electronics': ['SAMSUNG', 'LG', 'APPLE', 'SONY', 'XIAOMI'],
+  'Fashion': ['NIKE', 'ADIDAS', 'NEW BALANCE', 'PUMA', 'REEBOK'],
+  'Home Appliances': ['CUCKOO', 'DYSON', 'BALMUDA', 'PHILIPS', 'ELECTROLUX'],
+  'Books': ['MUNHAKDONGNE', 'MINUMSA', 'WISDOM HOUSE', 'HANGYOREH PUBLISHING', 'CHANGBI'],
+  'Toys': ['LEGO', 'YOUNGTOYS', 'BANDAI', 'TAKARA TOMY', 'MIMI WORLD'],
+  'Beauty': ['SULWHASOO', 'LANEIGE', 'INNISFREE', 'CLIO', 'MISSHA'],
+  'Groceries': ['OTTOGI', 'NONGSHIM', 'CJ', 'PULMUONE', 'DONGWON'],
+  'Furniture': ['HANSSEM', 'IKEA', 'ILOOM', 'DONGSEO FURNITURE', 'ACE BED'],
+  'Sports': ['FILA', 'DESCENTE', 'UNDER ARMOUR', 'NIKE', 'CALLAWAY'],
+  'Automotive': ['BULLSONE', 'CAREX', 'INAVI', 'CARTEM']
 };
 
 module.exports = async function () {

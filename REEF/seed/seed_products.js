@@ -5,16 +5,16 @@ const PRODUCT_COUNT = 1000;
 
 // Product keyword list for each category
 const productMap = {
-  Electronics: ["스마트폰", "노트북", "모니터", "이어폰", "태블릿"],
-  Fashion: ["운동화", "재킷", "셔츠", "바지", "모자"],
-  "Home Appliances": ["청소기", "공기청정기", "냉장고", "전자레인지", "세탁기"],
-  Books: ["소설", "자기계발서", "에세이", "잡지", "만화"],
-  Toys: ["프라모델", "인형", "퍼즐", "블록", "보드게임"],
-  Beauty: ["에센스", "크림", "팩트", "쿠션", "립밤"],
-  Groceries: ["라면", "햇반", "참치", "과자", "두부"],
-  Furniture: ["침대", "책상", "서랍장", "소파", "테이블"],
-  Sports: ["운동복", "러닝화", "골프공", "라켓", "요가매트"],
-  Automotive: ["엔진코팅제", "블랙박스", "방향제", "와이퍼", "세차용품"],
+  'Electronics': ['Smartphone', 'Laptop', 'Monitor', 'Earphones', 'Tablet'],
+  'Fashion': ['Sneakers', 'Jacket', 'Shirt', 'Pants', 'Hat'],
+  'Home Appliances': ['Vacuum Cleaner', 'Air Purifier', 'Refrigerator', 'Microwave', 'Washing Machine'],
+  'Books': ['Novel', 'Self-Help Book', 'Essay Collection', 'Magazine', 'Comic Book'],
+  'Toys': ['Model Kit', 'Doll', 'Puzzle', 'Building Blocks', 'Board Game'],
+  'Beauty': ['Essence', 'Cream', 'Compact', 'Cushion Foundation', 'Lip Balm'],
+  'Groceries': ['Instant Noodles', 'Instant Rice', 'Canned Tuna', 'Snacks', 'Tofu'],
+  'Furniture': ['Bed', 'Desk', 'Drawer', 'Sofa', 'Table'],
+  'Sports': ['Sportswear', 'Running Shoes', 'Golf Balls', 'Racket', 'Yoga Mat'],
+  'Automotive': ['Engine Coating', 'Dash Cam', 'Air Freshener', 'Windshield Wipers', 'Car Wash Supplies'],
 };
 
 module.exports = async function () {
