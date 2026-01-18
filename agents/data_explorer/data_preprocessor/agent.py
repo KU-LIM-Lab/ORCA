@@ -37,6 +37,8 @@ class DataPreprocessorAgent(SpecialistAgent):
         # Store DataFrame in memory for reuse across steps
         self.df: Optional[pd.DataFrame] = None
         self.df_redis_key: Optional[str] = None
+        self.df_1000: Optional[pd.DataFrame] = None
+        self.df_redis_key_1000: Optional[str] = None
         self._data_fetched: bool = False
 
     def make_df_redis_key_by_time(self,db_id: str, prefix: str = "df") -> str:
@@ -135,6 +137,7 @@ class DataPreprocessorAgent(SpecialistAgent):
             final_sql = state.get("final_sql") or state.get("sql_query")
             session_id = state.get("session_id", "default_session")
             self.df_redis_key = f"{db_id}:raw_df:{session_id}"
+            self.df_redis_key_1000 = f"{db_id}:raw_df:{session_id}:1000"
             df_raw_key = state.get("df_redis_key") or self.df_redis_key
             force_refresh = bool(state.get("force_refresh", False))
 
@@ -262,7 +265,7 @@ class DataPreprocessorAgent(SpecialistAgent):
             null_ratio = state.get("clean_nulls_ratio", 0.95)
 
             # Use clean_nulls_tool directly
-            self.df, dropped_cols = clean_nulls_tool(self.df, null_ratio=null_ratio)
+            self.df, dropped_cols, self.df_1000 = clean_nulls_tool(self.df, null_ratio=null_ratio)
 
             # Save cleaned DataFrame to Redis
             if self.df_redis_key:
@@ -279,7 +282,19 @@ class DataPreprocessorAgent(SpecialistAgent):
                 state["df_redis_key"] = self.df_redis_key
                 state["df_shape"] = tuple(self.df.shape)
                 state["columns"] = list(self.df.columns)
-
+            if isinstance(self.df_1000, pd.DataFrame) :
+                from utils.redis_df import save_df_parquet
+                processed_key = f"{self.df_redis_key}:clean_nulls:1000"
+                self.df_1000, renamed = self._dedupe_columns(self.df_1000)
+                if renamed:
+                    renamed_cols = ", ".join([new for _, new in renamed])
+                    state.setdefault("warnings", []).append(
+                        f"Renamed duplicate columns before clean_nulls_1000 cache: {renamed_cols}"
+                    )
+                save_df_parquet(processed_key, self.df_1000)
+                self.df_redis_key_1000 = processed_key
+                state["df_redis_key_1000"] = self.df_redis_key_1000
+                
             state["dropped_null_columns"] = dropped_cols
             state.setdefault("warnings", []).extend(
                 [f"Dropped column {col} due to high null ratio" for col in dropped_cols]

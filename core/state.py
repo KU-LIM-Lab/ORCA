@@ -129,6 +129,7 @@ class AgentState(TypedDict, total=False):
     df_preprocessed: Optional[Any]  # pandas DataFrame
     # Redis persistence for dataframes
     df_redis_key: Optional[str]
+    df_redis_key_1000: Optional[str]
     df_shape: Optional[Any]
     variable_info: Dict[str, Any]
     variable_schema: Dict[str, Any]  # Comprehensive schema with types and cardinality

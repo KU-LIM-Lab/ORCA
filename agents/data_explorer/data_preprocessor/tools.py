@@ -140,12 +140,13 @@ def coerce_df_to_numeric(
         if verbose: print(f"Dropped {before - len(df_out)} rows due to NaN")
 
     # Cap rows to 1000 with random sampling to keep downstream methods tractable.
+    df_out_1000 = None
     if len(df_out) > 1000:
-        df_out = df_out.sample(n=1000, random_state=42)
+        df_out_1000 = df_out.sample(n=1000, random_state=42)
         if verbose:
             print("[Row cap] Sampled 2000 rows")
 
-    return df_out
+    return df_out, df_out_1000
 
 def clean_nulls_tool(
     df: pd.DataFrame,
@@ -170,10 +171,10 @@ def clean_nulls_tool(
     thresh = max(int(len(df) * ratio), 1)
     
     # cleaned_df = df.dropna(axis=1, thresh=thresh)
-    cleaned_df = coerce_df_to_numeric(df)
+    cleaned_df, cleaned_df_1000 = coerce_df_to_numeric(df)
     dropped_cols = [col for col in df.columns if col not in cleaned_df.columns]
     
-    return cleaned_df, dropped_cols
+    return cleaned_df, dropped_cols, cleaned_df_1000
 
 
 def encode_categorical_tool(

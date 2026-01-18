@@ -13,5 +13,6 @@ class PreprocessState(TypedDict):
     # Outputs
     df_redis_key: Annotated[Optional[str], None]
     df_shape: Annotated[Optional[tuple], None]
+    df_redis_key_1000: Annotated[Optional[str], None]
 
 
