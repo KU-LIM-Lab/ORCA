@@ -8,6 +8,7 @@ module.exports = async function () {
   console.log('Connected. Seeding coupons with promotion linkage...');
 
   // 1. Load promotion list
+  // 1. Load promotion list
   const promoRes = await client.query(`
     SELECT promo_id, discount_value, discount_type, start_at, end_at
     FROM promotion
@@ -31,6 +32,7 @@ module.exports = async function () {
     const isRate =
       type === 'rate' ||
       type === 'percentage'; // Legacy schema compatibility
+      type === 'percentage'; // Legacy schema compatibility
     const isAmount =
       type === 'amount' ||
       type === 'fixed';
@@ -40,7 +42,9 @@ module.exports = async function () {
 
     if (isAmount) {
       discount_amount = Number(promo.discount_value);     // e.g., 3~15
+      discount_amount = Number(promo.discount_value);     // e.g., 3~15
     } else if (isRate) {
+      discount_rate = Number(promo.discount_value);       // e.g., 0.05~0.30
       discount_rate = Number(promo.discount_value);       // e.g., 0.05~0.30
     }
 
@@ -49,8 +53,10 @@ module.exports = async function () {
     let discount_strength;
     if (isAmount) {
       // 3~15  → approximately 0.3~1.5
+      // 3~15  → approximately 0.3~1.5
       discount_strength = discount_amount / 10;
     } else if (isRate) {
+      // 0.05~0.30 → approximately 0.5~3.0
       // 0.05~0.30 → approximately 0.5~3.0
       discount_strength = discount_rate * 10;
     } else {
@@ -63,10 +69,12 @@ module.exports = async function () {
       20 + 1.5 * discount_strength + epsM;
     if (min_order_amount < 0) min_order_amount = 0;
     // Can multiply by currency scale if needed (e.g., *1000)
+    // Can multiply by currency scale if needed (e.g., *1000)
 
     const start_date = promo.start_at;
     const expiration_date = promo.end_at;
 
+    // ───────── is_active: 1 if within promotion period, else 0 ─────────
     // ───────── is_active: 1 if within promotion period, else 0 ─────────
     const start = new Date(start_date);
     const end = new Date(expiration_date);
@@ -74,6 +82,8 @@ module.exports = async function () {
 
     const isRateDesc = isRate;
     const desc = isRateDesc
+      ? `${promo.discount_value * (promo.discount_value <= 1 ? 100 : 1)}% discount coupon`
+      : `₩${discount_amount} discount coupon`;
       ? `${promo.discount_value * (promo.discount_value <= 1 ? 100 : 1)}% discount coupon`
       : `₩${discount_amount} discount coupon`;
 
