@@ -706,9 +706,19 @@ class Bootstrapper:
                         # LiM requires variable_schema, but we'll try without it for bootstrap
                         bootstrap_result = LiMTool.discover(bootstrap_df)
                     elif algorithm == "NOTEARS-linear":
-                        bootstrap_result = NOTEARSLinearTool.discover(bootstrap_df)
+                        if is_notears_linear_available():
+                            bootstrap_result = NOTEARSLinearTool.discover(bootstrap_df)
+                        else:
+                            failures.append(i)
+                            logger.warning(f"NOTEARS-linear is not available, skipping bootstrap iteration {i}")
+                            continue
                     elif algorithm == "NOTEARS-nonlinear":
-                        bootstrap_result = NOTEARSNonlinearTool.discover(bootstrap_df)
+                        if is_notears_nonlinear_available():
+                            bootstrap_result = NOTEARSNonlinearTool.discover(bootstrap_df)
+                        else:
+                            failures.append(i)
+                            logger.warning(f"NOTEARS-nonlinear is not available, skipping bootstrap iteration {i}")
+                            continue
                     else:
                         failures.append(i)
                         logger.debug(f"Unknown algorithm '{algorithm}' in bootstrap iteration {i}")
@@ -1540,6 +1550,36 @@ class LiMTool:
             logger.error(f"LiM execution failed: {e}")
             return {"error": f"LiM not available: {e}"}
 
+# === NOTEARS Availability Checkers ===
+
+def is_notears_linear_available() -> bool:
+    """Check if NOTEARS-linear is available"""
+    try:
+        from algorithms.notears.linear import notears_linear
+        return True
+    except ImportError:
+        return False
+
+def is_notears_nonlinear_available() -> bool:
+    """Check if NOTEARS-nonlinear is available"""
+    try:
+        import sys
+        from pathlib import Path
+        
+        # Get algorithms directory path
+        this_file = Path(__file__).resolve()
+        algorithms_dir = this_file.parent.parent.parent / "algorithms"
+        algorithms_dir_str = str(algorithms_dir)
+        
+        # Add to sys.path if not already there
+        if algorithms_dir_str not in sys.path:
+            sys.path.insert(0, algorithms_dir_str)
+        
+        from notears.nonlinear import NotearsMLP, notears_nonlinear
+        return True
+    except ImportError:
+        return False
+
 class NOTEARSLinearTool:
     """NOTEARS linear algorithm implementation"""
     
@@ -2079,9 +2119,17 @@ class PruningTool:
                     elif algorithm_name == "FCI":
                         subset_result = FCITool.discover(subset_df)
                     elif algorithm_name == "NOTEARS-linear":
-                        subset_result = NOTEARSLinearTool.discover(subset_df)
+                        if is_notears_linear_available():
+                            subset_result = NOTEARSLinearTool.discover(subset_df)
+                        else:
+                            logger.warning(f"NOTEARS-linear is not available, skipping structural consistency test for subset {i}")
+                            continue
                     elif algorithm_name == "NOTEARS-nonlinear":
-                        subset_result = NOTEARSNonlinearTool.discover(subset_df)
+                        if is_notears_nonlinear_available():
+                            subset_result = NOTEARSNonlinearTool.discover(subset_df)
+                        else:
+                            logger.warning(f"NOTEARS-nonlinear is not available, skipping structural consistency test for subset {i}")
+                            continue
                     else:
                         continue
                     

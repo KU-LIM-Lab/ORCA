@@ -5,7 +5,6 @@ from langgraph.checkpoint.memory import InMemorySaver
 from core.state import AgentState, ExecutionStatus, create_initial_state
 from orchestration.planner.agent import PlannerAgent
 from orchestration.executor.agent import ExecutorAgent
-from monitoring.metrics.collector import MetricsCollector
 from utils.database import Database
 import json
 import time
@@ -17,25 +16,23 @@ class OrchestrationGraph:
     def __init__(self, 
                  planner_config: Optional[Dict[str, Any]] = None,
                  executor_config: Optional[Dict[str, Any]] = None,
-                 metrics_collector: Optional[MetricsCollector] = None,
+                 metrics_collector: Optional[Any] = None,
                  orchestration_config: Optional[Dict[str, Any]] = None,
                  event_logger: Optional[Any] = None):
-        self.metrics_collector = metrics_collector
         self.orchestration_config = orchestration_config or {}
         self.interactive = bool(self.orchestration_config.get("interactive", False))
-        self.event_logger = event_logger  # EventLogger for experiment tracking
         
         # Initialize agents
         self.planner = PlannerAgent(
             name="planner",
             config=planner_config,
-            metrics_collector=metrics_collector
+            metrics_collector=None
         )
         
         self.executor = ExecutorAgent(
             name="executor", 
             config=executor_config,
-            metrics_collector=metrics_collector
+            metrics_collector=None
         )
         
         # Build the graph
@@ -93,37 +90,9 @@ class OrchestrationGraph:
         
         State is persisted when this node returns.
         """
-        # Map substep to step_id for logging
-        plan = state.get("execution_plan", []) or []
-        idx = state.get("current_execute_step", 0)
-        current_substep = plan[idx]["substep"] if idx < len(plan) else state.get("current_substep", "")
-        step_id = self._map_substep_to_step_id(current_substep)
-        
-        # Log step enter if event logger available
-        if self.event_logger and step_id:
-            self.event_logger.log_step_enter(
-                step_id=step_id,
-                substep=current_substep,
-                metadata={"timestamp": time.time()}
-            )
-        
-        step_start_time = time.time()
-        
         # Execute single step - returns state with advanced step counter
         updated_state = self.executor.step(state)
-                
         state = updated_state
-        
-        # Log step exit if event logger available
-        if self.event_logger and step_id:
-            duration = time.time() - step_start_time
-            self.event_logger.log_step_exit(
-                step_id=step_id,
-                substep=current_substep,
-                success=not bool(state.get("error")),
-                duration=duration,
-                metadata={"timestamp": time.time()}
-            )
         
         # Return state immediately so LangGraph persists it to checkpoint
         return state
@@ -149,16 +118,6 @@ class OrchestrationGraph:
         current_idx = state.get("current_execute_step", 1) - 1  # Step already advanced
         substep = plan[current_idx]["substep"] if 0 <= current_idx < len(plan) else "unknown"        
         
-        # Log HITL prompt
-        step_id = self._map_substep_to_step_id(substep)
-        if self.event_logger and step_id:
-            self.event_logger.log_hitl_prompt_shown(
-                step_id=step_id,
-                phase=payload.get("phase", "unknown"),
-                description=payload.get("description"),
-                metadata={"hitl_type": hitl_type}
-            )
-        
         # Trigger interrupt - this will suspend execution
         # After resume, the node re-executes from the beginning
         # So we check if flags were cleared by update_state
@@ -167,16 +126,6 @@ class OrchestrationGraph:
         
         if user_input and isinstance(user_input, dict):
             decision = user_input.get("decision", "approve")
-            
-            # Log decision
-            if self.event_logger and step_id:
-                self.event_logger.log_hitl_decision(
-                    step_id=step_id,
-                    decision=decision,
-                    edits=user_input.get("edits"),
-                    feedback=user_input.get("feedback"),
-                    metadata={}
-                )
             
             # Handle different decisions
             if decision == "approve":
@@ -188,26 +137,14 @@ class OrchestrationGraph:
                 edits = user_input.get("edits", {})
                 new_step_idx = state.get("current_execute_step", "N/A")
                 print(f"[HITL Gate]: Edits applied, re-executing step {substep} (idx={new_step_idx})")
-                # print(f"   - current_state_executed: {state.get('current_state_executed', 'N/A')}")
-                # print(f"   - completed_substeps: {state.get('completed_substeps', [])}")
                 
             elif decision == "rerun":
                 # User feedback already applied via update_state()
                 new_step_idx = state.get("current_execute_step", "N/A")
                 print(f"[HITL Gate]: Rerun requested, re-executing step {substep} (idx={new_step_idx})")
-                # print(f"   - current_state_executed: {state.get('current_state_executed', 'N/A')}")
-                # print(f"   - completed_substeps: {state.get('completed_substeps', [])}")
                 
             elif decision == "abort":
                 print(f"[HITL Gate]: Execution aborted by user")
-            
-            # Log HITL applied
-            if self.event_logger and step_id:
-                self.event_logger.log_hitl_applied(
-                    step_id=step_id,
-                    applied=True,
-                    metadata={"decision": decision}
-                )
         
         return state
     
@@ -1093,7 +1030,7 @@ class OrchestrationGraph:
 def create_orchestration_graph(
     planner_config: Optional[Dict[str, Any]] = None,
     executor_config: Optional[Dict[str, Any]] = None,
-    metrics_collector: Optional[MetricsCollector] = None,
+    metrics_collector: Optional[Any] = None,
     orchestration_config: Optional[Dict[str, Any]] = None,
     event_logger: Optional[Any] = None
 ) -> OrchestrationGraph:
@@ -1101,7 +1038,7 @@ def create_orchestration_graph(
     return OrchestrationGraph(
         planner_config=planner_config,
         executor_config=executor_config,
-        metrics_collector=metrics_collector,
+        metrics_collector=None,
         orchestration_config=orchestration_config,
-        event_logger=event_logger,
+        event_logger=None,
     )

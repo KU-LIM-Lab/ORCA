@@ -20,7 +20,6 @@ from datetime import datetime
 
 from core.base import SpecialistAgent, AgentType
 from core.state import AgentState
-from monitoring.metrics.collector import MetricsCollector
 from agents.causal_discovery.tools import get_edges, get_variables, get_graph_type, validate_graph_schema
 
 
@@ -146,8 +145,8 @@ class CausalDiscoveryAgent(SpecialistAgent):
     """Causal Discovery Agent using tool registry pattern"""
     
     def __init__(self, name: str = "causal_discovery", config: Optional[Dict[str, Any]] = None, 
-                 metrics_collector: Optional[MetricsCollector] = None):
-        super().__init__(name, AgentType.SPECIALIST, config, metrics_collector)
+                 metrics_collector: Optional[Any] = None):
+        super().__init__(name, AgentType.SPECIALIST, config, None)
         
         # Set domain expertise
         self.set_domain_expertise([
@@ -696,8 +695,14 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 {"alg": "PC", "ci_test": pc_ci_test},
                 {"alg": "GES", "score": "bic-g" if is_gaussian else "generalized_rkhs"},  # 정규성이면 bic-g, 아니면 rkhs
                 {"alg": "FCI", "ci_test": fci_ci_test},
-                {"alg": "NOTEARS-linear"}
             ])
+            
+            # NOTEARS-linear: Check availability before adding
+            from .tools import is_notears_linear_available
+            if is_notears_linear_available():
+                execution_plan.append({"alg": "NOTEARS-linear"})
+            else:
+                logger.warning("NOTEARS-linear is not available, skipping from execution plan")
             
             # LiNGAM: Linear + Non-Gaussianity
             non_gaussian_score = pairwise_scores.get("s_pairwise_non_gaussianity_score", 0.0)
@@ -712,8 +717,14 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 {"alg": "PC", "ci_test": "kernel_kcit"},
                 {"alg": "GES", "score": "generalized_rkhs"},
                 {"alg": "FCI", "ci_test": "kernel_kcit"},
-                {"alg": "NOTEARS-nonlinear"}
             ])
+            
+            # NOTEARS-nonlinear: Check availability before adding
+            from .tools import is_notears_nonlinear_available
+            if is_notears_nonlinear_available():
+                execution_plan.append({"alg": "NOTEARS-nonlinear"})
+            else:
+                logger.warning("NOTEARS-nonlinear is not available, skipping from execution plan")
             
             # ANM: 비선형 + ANM 적합성
             anm_score = pairwise_scores.get("s_pairwise_anm_score", 0.0)
@@ -1013,16 +1024,6 @@ class CausalDiscoveryAgent(SpecialistAgent):
         """Stage 3: Run algorithms from execution_plan in parallel"""
         logger.info("Running algorithm portfolio in parallel...")
         
-        # Get event logger if available
-        event_logger = None
-        try:
-            from monitoring.metrics.collector import get_metrics_collector
-            collector = get_metrics_collector()
-            if collector and hasattr(collector, 'event_logger'):
-                event_logger = collector.event_logger
-        except Exception:
-            pass
-        
         try:
             execution_plan = state.get("cd_execution_plan", [])
             df = self._load_dataframe_from_state(state)
@@ -1047,71 +1048,21 @@ class CausalDiscoveryAgent(SpecialistAgent):
                 algorithm_timeout = 300
                 for config in algorithm_configs:
                     alg_name = config["alg"]
-                    
-                    # Log algorithm start
-                    if event_logger:
-                        event_logger.log_tool_call_start(
-                            tool_name=f"algorithm_{alg_name}",
-                            step_id="2",
-                            metadata={"algorithm": alg_name, "config": config}
-                        )
-                    
                     future = executor.submit(self._dispatch_algorithm, config, df, data_profile, variable_schema)
                     futures[alg_name] = future
 
                 for alg_name, future in futures.items():
-                    import time
-                    alg_start = time.time()
                     try:
                         result = future.result(timeout=algorithm_timeout)
                         algorithm_results[alg_name] = result
                         logger.info(f"Algorithm {alg_name} completed successfully")
-                        
-                        # Log algorithm success
-                        if event_logger:
-                            duration = time.time() - alg_start
-                            event_logger.log_tool_call_end(
-                                tool_name=f"algorithm_{alg_name}",
-                                duration=duration,
-                                success=True,
-                                step_id="2",
-                                metadata={
-                                    "algorithm": alg_name,
-                                    "nodes": result.get("num_nodes", 0) if isinstance(result, dict) else 0,
-                                    "edges": result.get("num_edges", 0) if isinstance(result, dict) else 0
-                                }
-                            )
                     except TimeoutError:
                         cancelled = future.cancel()
                         logger.error(f"Algorithm {alg_name} timeout after {algorithm_timeout}s. cancel()={cancelled} (thread may still be running)")
                         algorithm_results[alg_name] = {"error": "timeout"}
-                        
-                        # Log algorithm timeout
-                        if event_logger:
-                            duration = time.time() - alg_start
-                            event_logger.log_tool_call_end(
-                                tool_name=f"algorithm_{alg_name}",
-                                duration=duration,
-                                success=False,
-                                error="timeout",
-                                step_id="2",
-                                metadata={"algorithm": alg_name}
-                            )
                     except Exception as e:
                         logger.error(f"Algorithm {alg_name} failed: {e}")
                         algorithm_results[alg_name] = {"error": str(e)}
-                        
-                        # Log algorithm failure
-                        if event_logger:
-                            duration = time.time() - alg_start
-                            event_logger.log_tool_call_end(
-                                tool_name=f"algorithm_{alg_name}",
-                                duration=duration,
-                                success=False,
-                                error=str(e),
-                                step_id="2",
-                                metadata={"algorithm": alg_name}
-                            )
             finally:
                 executor.shutdown(wait=False, cancel_futures=True)  
             
@@ -1727,41 +1678,6 @@ class CausalDiscoveryAgent(SpecialistAgent):
             )
             
             logger.info(f"Ensemble synthesis completed. Top algorithm: {top_algorithm}")
-            
-            # Save graph artifacts if artifact manager is available
-            try:
-                from monitoring.experiment.utils import get_artifact_manager
-                artifact_manager = get_artifact_manager()
-                
-                if artifact_manager and state.get("selected_graph"):
-                    selected_graph = state["selected_graph"]
-                    
-                    # Save final graph as JSON
-                    artifact_manager.save_artifact(
-                        artifact_type="graph",
-                        data=selected_graph,
-                        filename="graph_final.json",
-                        step_id="2",
-                        metadata={
-                            "algorithm": selected_graph.get("algorithm"),
-                            "graph_type": selected_graph.get("graph_type"),
-                            "num_nodes": selected_graph.get("num_nodes"),
-                            "num_edges": selected_graph.get("num_edges")
-                        }
-                    )
-                    
-                    # Save adjacency matrix as CSV
-                    if "adjacency_matrix" in selected_graph:
-                        artifact_manager.save_artifact(
-                            artifact_type="graph_adj",
-                            data=selected_graph["adjacency_matrix"],
-                            filename="graph_final_adj.csv",
-                            step_id="2",
-                            metadata={}
-                        )
-            except Exception as e:
-                import logging as log
-                log.getLogger(__name__).warning(f"Failed to save graph artifacts: {e}")
             
             # Request HITL for ensemble synthesis review if interactive mode
             if state.get("interactive", False):
