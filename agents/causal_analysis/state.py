@@ -17,7 +17,7 @@ class CausalAnalysisState(BaseModel):
     
     # Input from data_explorer (required)
     df_preprocessed: Optional[pd.DataFrame] = None
-    df_redis_key: Optional[str]
+    df_redis_key: Optional[str] = None
     
     # Causal variables (can be provided or parsed)
     treatment_variable: Optional[str] = None
@@ -50,6 +50,7 @@ class CausalAnalysisState(BaseModel):
     # Final output
     final_answer: Optional[str] = None
     error: Optional[str] = None 
+    executor_completed: Optional[bool] = None
     
     def __getitem__(self, key):
         return getattr(self, key)

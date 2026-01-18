@@ -217,28 +217,6 @@
     "sql_query": "SELECT\n  u.point_balance AS point_balance,\n  o.point_used    AS point_used\nFROM orders o\nJOIN users u ON o.user_id = u.user_id\n"
   },
   {
-    "question": "What is the causal effect of point_used on total_amount?",
-    "treatment": "point_used",
-    "outcome": "total_amount",
-    "confounders": [
-      "subtotal_amount",
-      "discount_amount"
-    ],
-    "mediators": [],
-    "instrumental_variables": [],
-    "ground_truth_ate": -1.0,
-    "confidence_interval": [
-      -0.9999999999999998,
-      -0.9999999999999998
-    ],
-    "p_value": null,
-    "estimation_method": "backdoor.linear_regression",
-    "treatment_type": "continuous",
-    "outcome_type": "continuous",
-    "n_samples": 10000,
-    "sql_query": "SELECT\n  o.point_used AS point_used,\n  o.subtotal_amount AS subtotal_amount,\n  o.discount_amount AS discount_amount,\n  o.total_amount AS total_amount\nFROM orders o\nWHERE o.point_used IS NOT NULL\n  AND o.total_amount IS NOT NULL\n  AND o.subtotal_amount IS NOT NULL\n  AND o.discount_amount IS NOT NULL\n"
-  },
-  {
     "question": "What is the causal effect of order_created_at on payment_delay_days?",
     "treatment": "order_created_at_epoch",
     "outcome": "payment_delay_days",

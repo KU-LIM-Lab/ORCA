@@ -640,6 +640,7 @@ class OrchestrationGraph:
         
         # Execute the graph
         config = {"configurable": {"thread_id": session_id or "default_session"}}
+        config["recursion_limit"] = 50
         
         if not self.interactive:
             result = self.compiled_graph.invoke(initial_state, config=config)
