@@ -1553,22 +1553,27 @@ class CausalDiscoveryAgent(SpecialistAgent):
     # === Helpers and dispatch ===
 
     def _load_dataframe_from_state(self, state: AgentState) -> Optional[pd.DataFrame]:
-        # First, try to get DataFrame directly from df_preprocessed
+        # 1) Direct DataFrame in state
         df = state.get("df_preprocessed")
         if isinstance(df, pd.DataFrame):
             return df
-        
-        # If no DataFrame, load from df_redis_key
-        redis_key = state.get("df_redis_key")
-        if redis_key:
-            try:
-                from utils.redis_df import load_df_parquet
-                df = load_df_parquet(redis_key)
-                if df is not None:
+
+        # 2) Redis key fallback (priority order)
+        redis_keys = [
+            state.get("df_redis_key_1000"),
+            state.get("df_redis_key"),
+        ]
+
+        try:
+            from utils.redis_df import load_df_parquet
+            for key in redis_keys:
+                if not key:
+                    continue
+                df = load_df_parquet(key)
+                if isinstance(df, pd.DataFrame):
                     return df
-            except Exception as e:
-                logger.warning(f"Failed to load DataFrame from Redis key {redis_key}: {e}")
-                return None
+        except Exception as e:
+            logger.warning(f"Failed to load DataFrame from Redis: {e}")
 
         return None
 
