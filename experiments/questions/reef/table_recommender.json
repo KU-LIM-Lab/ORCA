@@ -1,0 +1,97 @@
+[
+    {
+        "question": "I want to analyze the order quantity difference between the products with and without reviews." ,
+        "db_id": "reef_db",
+        "answer": ["order_items", "products", "review"]
+    },
+    {
+        "question": "How many users used a coupon in their orders",
+        "db_id": "reef_db",
+        "answer": ["coupon_usage", "users", "orders"]
+    },
+    {
+        "question": "Show the trend of shipping delays over time." ,
+        "db_id": "reef_db",
+        "answer": ["shipping", "orders"]
+    },
+    {
+        "question": "Which categories have the most returned orders?" ,
+        "db_id": "reef_db",
+        "answer": ["order_items", "categories", "orders"]
+    },
+    {
+        "question": "What is the average payment amount by payment method?" ,
+        "db_id": "reef_db",
+        "answer": ["payment"]
+    },
+    {
+        "question": "Analyze purchase patterns by product brand." ,
+        "db_id": "reef_db",
+        "answer": ["products", "brands", "order_items"]
+    },
+    {
+        "question": "Find users who never left a review." ,
+        "db_id": "reef_db",
+        "answer": ["users", "review"]
+    },
+    {
+        "question": "What is the stock level of products currently on promotion?" ,
+        "db_id": "reef_db",
+        "answer": ["inventory", "promotion", "products"]
+    },
+    {
+        "question": "Compare average cart size before and after applying a coupon." ,
+        "db_id": "reef_db",
+        "answer": ["cart", "coupon_usage", "order_items"]
+    },
+    {
+        "question": "Which users received the highest number of loyalty points?" ,
+        "db_id": "reef_db",
+        "answer": ["users", "point_transaction"]
+    },
+    {
+        "question": "Identify products that have experienced frequent price changes." ,
+        "db_id": "reef_db",
+        "answer": ["sku", "sku_price_history"]
+    },
+    {
+        "question": "How effective are coupons in driving purchases?" ,
+        "db_id": "reef_db",
+        "answer": ["coupon_usage", "orders", "user_coupons"]
+    },
+    {
+        "question": "Which product categories are most frequently reviewed?" ,
+        "db_id": "reef_db",
+        "answer": ["categories", "products", "review"]
+    },
+    {
+        "question": "Find users who added items to cart but never made a purchase." ,
+        "db_id": "reef_db",
+        "answer": ["users", "cart", "orders"]
+    },
+    {
+        "question": "Analyze order frequency of users segmented by age group." ,
+        "db_id": "reef_db",
+        "answer": ["users", "orders"]
+    },
+    {
+        "question": "Which products had inventory shortages last month?" ,
+        "db_id": "reef_db",
+        "answer": ["inventory", "products"]
+    },
+    {
+        "question": "What’s the reorder rate for products across different categories?" ,
+        "db_id": "reef_db",
+        "answer": ["order_items", "categories", "orders"]
+    },
+    {
+        "question": "Are discounted products more likely to receive reviews?" ,
+        "db_id": "reef_db",
+        "answer": ["products", "promotion", "review"]
+    },
+    {
+        "question": "Which users have used the same coupon more than once?" ,
+        "db_id": "reef_db",
+        "answer": ["coupon_usage", "users"]
+    }
+]

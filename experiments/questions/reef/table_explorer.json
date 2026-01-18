@@ -1,0 +1,74 @@
+[
+    {
+        "table_name": "brands",
+        "db_id": "reef_db"
+    },
+    {
+        "table_name": "cart",
+        "db_id": "reef_db"
+    },
+    {
+        "table_name":"categories",
+        "db_id": "reef_db"
+    },
+    {
+        "table_name":"coupon",
+        "db_id": "reef_db"
+    },
+    {
+        "table_name":"coupon_usage",
+        "db_id": "reef_db"
+    },
+    {
+        "table_name":"inventory",
+        "db_id": "reef_db"
+    },
+    {
+        "table_name":"order_items",
+        "db_id": "reef_db"
+    },
+    {
+        "table_name":"orders",
+        "db_id": "reef_db"
+    },
+    {
+        "table_name":"payment",
+        "db_id": "reef_db"
+    },
+    {
+        "table_name": "point_transaction",
+        "db_id": "reef_db"
+    },
+    {
+        "table_name": "products",
+        "db_id": "reef_db"
+    },
+    {
+        "table_name": "promotion",
+        "db_id": "reef_db"
+    },
+    {
+        "table_name": "review",
+        "db_id": "reef_db"
+    },
+    {
+        "table_name": "shipping",
+        "db_id": "reef_db"
+    },
+    {
+        "table_name": "sku",
+        "db_id": "reef_db"
+    },
+    {
+        "table_name": "sku_price_history",
+        "db_id": "reef_db"
+    },
+    {
+        "table_name": "user_coupons",
+        "db_id": "reef_db"
+    },
+    {
+        "table_name": "users",
+        "db_id": "reef_db"
+    }
+]

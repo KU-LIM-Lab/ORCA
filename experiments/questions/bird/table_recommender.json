@@ -1,0 +1,302 @@
+[
+    {
+      "question": "Which school has the highest average SAT score, and what is its percentage of students eligible for free or reduced-price meals?",
+      "db_id": "california_schools",
+      "answer": ["satscores", "frpm", "schools"]
+    },
+    {
+      "question": "In Los Angeles County, which school has the lowest free/reduced-price meal percentage and what is its average SAT score?",
+      "db_id": "california_schools",
+      "answer": ["frpm", "satscores", "schools"]
+    },
+    {
+      "question": "Do schools with higher free/reduced-price meal (FRPM) rates tend to have lower SAT scores?",
+      "db_id": "california_schools",
+      "answer": ["frpm", "satscores"]
+    },
+    {
+      "question": "Which school district has the highest average SAT score, and what is its average FRPM percentage?",
+      "db_id": "california_schools",
+      "answer": ["satscores", "frpm", "schools"]
+    },
+    {
+      "question": "Which school improved its average SAT score the most from 2015 to 2016?",
+      "db_id": "california_schools",
+      "answer": ["satscores", "schools"]
+    },
+    {
+      "question": "Which school has the highest free/reduced-price meal percentage, and what is its average SAT score?",
+      "db_id": "california_schools",
+      "answer": ["frpm", "satscores", "schools"]
+    },
+    {
+      "question": "Which cards are banned in any format, and what sets do they belong to?",
+      "db_id": "card_games",
+      "answer": ["cards", "legalities", "sets"]
+    },
+    {
+      "question": "Which card set contains the most cards, and how many cards are in that set?",
+      "db_id": "card_games",
+      "answer": ["cards", "sets"]
+    },
+    {
+      "question": "In how many foreign languages is the card 'Lightning Bolt' available?",
+      "db_id": "card_games",
+      "answer": ["cards", "foreign_data"]
+    },
+    {
+      "question": "What are the names of the card sets released in 2020, and their names in other languages?",
+      "db_id": "card_games",
+      "answer": ["sets", "set_translations"]
+    },
+    {
+      "question": "Which card has the most official rulings, and how many rulings does it have?",
+      "db_id": "card_games",
+      "answer": ["cards", "rulings"]
+    },
+    {
+      "question": "What are the legality statuses of the card 'Black Lotus' across different formats?",
+      "db_id": "card_games",
+      "answer": ["cards", "legalities"]
+    },
+    {
+      "question": "Who is the most active contributor, considering both posts and comments?",
+      "db_id": "codebase_community",
+      "answer": ["posts", "comments", "users"]
+    },
+    {
+      "question": "Which user has received the most total votes on their posts?",
+      "db_id": "codebase_community",
+      "answer": ["votes", "posts", "users"]
+    },
+    {
+      "question": "Which user has earned the most badges?",
+      "db_id": "codebase_community",
+      "answer": ["badges", "users"]
+    },
+    {
+      "question": "Which post has been edited the most times, and which users have edited it?",
+      "db_id": "codebase_community",
+      "answer": ["posthistory", "posts", "users"]
+    },
+    {
+      "question": "Which posts have been marked as duplicates, and what are the original posts they link to?",
+      "db_id": "codebase_community",
+      "answer": ["postlinks", "posts"]
+    },
+    {
+      "question": "Which tag is used by the most posts, and how many posts use it?",
+      "db_id": "codebase_community",
+      "answer": ["posts", "tags"]
+    },
+    {
+      "question": "Which gas station had the highest total sales amount in 2020?",
+      "db_id": "debit_card_specializing",
+      "answer": ["gasstations", "yearmonth", "transactions"]
+    },
+    {
+      "question": "Which customer spent the most money overall, and how much did they spend?",
+      "db_id": "debit_card_specializing",
+      "answer": ["customers", "transactions"]
+    },
+    {
+      "question": "Which product has the highest total sales (by revenue)?",
+      "db_id": "debit_card_specializing",
+      "answer": ["products", "transactions"]
+    },
+    {
+      "question": "Which month saw the highest total sales, and what was the total amount?",
+      "db_id": "debit_card_specializing",
+      "answer": ["yearmonth", "transactions"]
+    },
+    {
+      "question": "Which product was purchased by the most unique customers?",
+      "db_id": "debit_card_specializing",
+      "answer": ["products", "transactions"]
+    },
+    {
+      "question": "Which league had the highest average number of goals per match in the 2015/16 season?",
+      "db_id": "european_football_2",
+      "answer": ["league", "match", "seasons"]
+    },
+    {
+      "question": "Which team conceded the fewest goals in the 2013 season, and in which league do they play?",
+      "db_id": "european_football_2",
+      "answer": ["match", "team", "league", "seasons"]
+    },
+    {
+      "question": "Which team won the most matches in 2014, and which country is that team from?",
+      "db_id": "european_football_2",
+      "answer": ["match", "team", "league", "country", "seasons"]
+    },
+    {
+      "question": "Which player had the highest overall rating in 2015?",
+      "db_id": "european_football_2",
+      "answer": ["player_attributes", "player"]
+    },
+    {
+      "question": "Which player showed the greatest improvement in rating between 2013 and 2014?",
+      "db_id": "european_football_2",
+      "answer": ["player_attributes", "player"]
+    },
+    {
+      "question": "Which team has the highest 'defenceAggression' attribute value, and in which league do they compete?",
+      "db_id": "european_football_2",
+      "answer": ["team_attributes", "team", "league"]
+    },
+    {
+      "question": "Which district has the most accounts, and how many accounts does it have?",
+      "db_id": "financial",
+      "answer": ["account", "district"]
+    },
+    {
+      "question": "Which district has the highest average loan amount, and what is that average amount?",
+      "db_id": "financial",
+      "answer": ["loan", "account", "district"]
+    },
+    {
+      "question": "Which client owns the most accounts, and how many do they own?",
+      "db_id": "financial",
+      "answer": ["disp", "client"]
+    },
+    {
+      "question": "Which client has the highest total transaction amount across all their transactions, and what is that total amount?",
+      "db_id": "financial",
+      "answer": ["trans", "disp", "client"]
+    },
+    {
+      "question": "Which client has the most credit cards issued, and how many do they have?",
+      "db_id": "financial",
+      "answer": ["card", "disp", "client"]
+    },
+    {
+      "question": "Which account had the largest single transaction, what was the amount, and who is the owner of that account?",
+      "db_id": "financial",
+      "answer": ["trans", "disp", "client"]
+    },
+    {
+      "question": "Which district has the highest total amount in payment orders, and what is that total?",
+      "db_id": "financial",
+      "answer": ["order", "account", "district"]
+    },
+    {
+      "question": "Which driver has won the most races, and how many races have they won?",
+      "db_id": "formula_1",
+      "answer": ["results", "drivers"]
+    },
+    {
+      "question": "Which constructor has the most race wins, and how many wins do they have?",
+      "db_id": "formula_1",
+      "answer": ["results", "constructors"]
+    },
+    {
+      "question": "Which circuit has hosted the most races, and how many races were held there?",
+      "db_id": "formula_1",
+      "answer": ["races", "circuits"]
+    },
+    {
+      "question": "Which season had the most races scheduled, and how many races were in that season?",
+      "db_id": "formula_1",
+      "answer": ["races", "seasons"]
+    },
+    {
+      "question": "Which driver achieved the most podium finishes (top 3) during the 2010s decade (2010\u20132019), and how many podiums did they have?",
+      "db_id": "formula_1",
+      "answer": ["results", "races", "seasons", "drivers"]
+    },
+    {
+      "question": "What was the fastest pitstop time ever recorded, and which constructor performed it?",
+      "db_id": "formula_1",
+      "answer": ["pitstops", "results", "constructors"]
+    },
+    {
+      "question": "What is the fastest lap time ever recorded, and which driver and circuit was it set on?",
+      "db_id": "formula_1",
+      "answer": ["laptimes", "drivers", "races", "circuits"]
+    },
+    {
+      "question": "Which publisher has the most superheroes, and how many?",
+      "db_id": "superhero",
+      "answer": ["publisher", "superhero"]
+    },
+    {
+      "question": "What is the most common superpower among female superheroes?",
+      "db_id": "superhero",
+      "answer": ["superhero", "gender", "hero_power", "superpower"]
+    },
+    {
+      "question": "Which superhero has the highest strength attribute, and what is their strength score?",
+      "db_id": "superhero",
+      "answer": ["hero_attribute", "attribute", "superhero"]
+    },
+    {
+      "question": "Which superheroes have both the power of flight and the power of invisibility?",
+      "db_id": "superhero",
+      "answer": ["superhero", "hero_power", "superpower"]
+    },
+    {
+      "question": "Which race of heroes has the highest average intelligence attribute, and what is that average?",
+      "db_id": "superhero",
+      "answer": ["hero_attribute", "attribute", "superhero", "race"]
+    },
+    {
+      "question": "Which publisher has more female superheroes than male superheroes?",
+      "db_id": "superhero",
+      "answer": ["superhero", "publisher", "gender"]
+    },
+    {
+      "question": "What was the incidence of thrombosis in the treatment group versus the control group?",
+      "db_id": "thrombosis_prediction",
+      "answer": ["patients", "outcomes"]
+    },
+    {
+      "question": "Which risk factor is most strongly associated with experiencing a thrombosis event?",
+      "db_id": "thrombosis_prediction",
+      "answer": ["patients", "risk_factors", "outcomes"]
+    },
+    {
+      "question": "Is there a difference in thrombosis incidence between male and female patients?",
+      "db_id": "thrombosis_prediction",
+      "answer": ["patients", "outcomes"]
+    },
+    {
+      "question": "Which age group has the highest incidence of thrombosis events?",
+      "db_id": "thrombosis_prediction",
+      "answer": ["patients", "outcomes"]
+    },
+    {
+      "question": "What percentage of the study population experienced a thrombosis during the follow-up period?",
+      "db_id": "thrombosis_prediction",
+      "answer": ["patients", "outcomes"]
+    },
+    {
+      "question": "Which molecule has the highest number of atoms, and how many atoms does it have?",
+      "db_id": "toxicology",
+      "answer": ["atom", "molecule"]
+    },
+    {
+      "question": "Which molecule has the most bonds, and how many bonds does it have?",
+      "db_id": "toxicology",
+      "answer": ["bond", "molecule"]
+    },
+    {
+      "question": "Which molecule contains the most carbon atoms, and how many carbon atoms does it have?",
+      "db_id": "toxicology",
+      "answer": ["atom", "molecule"]
+    },
+    {
+      "question": "Do molecules with more atoms tend to have more bonds?",
+      "db_id": "toxicology",
+      "answer": ["atom", "bond", "molecule"]
+    },
+    {
+      "question": "What is the highest number of bonds any single atom has in these molecules, and which element is that atom?",
+      "db_id": "toxicology",
+      "answer": ["connected", "atom"]
+    },
+    {
+      "question": "Which two elements form the most common bond in the dataset?",
+      "db_id": "toxicology",
+      "answer": ["bond", "atom"]
+    }
+  ]

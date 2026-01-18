@@ -61,7 +61,7 @@
     "treatment": "avg_browsing_time",
     "outcome": "is_active",
     "confounders": [],
-    "mediators": [],
+    "mediators": ["is_active_score"],
     "instrumental_variables": [],
     "ground_truth_ate": 0.003170673018552228,
     "confidence_interval": [
@@ -73,7 +73,7 @@
     "treatment_type": "continuous",
     "outcome_type": "binary",
     "n_samples": 10000,
-    "sql_query": "SELECT\n  u.avg_browsing_time AS avg_browsing_time,\n  u.is_active         AS is_active\nFROM users u\nWHERE u.avg_browsing_time IS NOT NULL\n  AND u.is_active IS NOT NULL\n"
+    "sql_query": "SELECT\n  u.avg_browsing_time AS avg_browsing_time,\n  u.is_active         AS is_active,\n  u.is_active_score AS is_active_score\nFROM users u\n"
   },
   {
     "question": "What is the causal effect of signup_days_ago on is_active?",
@@ -93,25 +93,6 @@
     "outcome_type": "binary",
     "n_samples": 10000,
     "sql_query": "SELECT\n  EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - u.created_at)) / 86400.0 AS signup_days_ago,\n  u.is_active AS is_active\nFROM users u\nWHERE u.created_at IS NOT NULL\n  AND u.is_active IS NOT NULL\n"
-  },
-  {
-    "question": "What is the causal effect of sku_price on unit_price?",
-    "treatment": "sku_price",
-    "outcome": "unit_price",
-    "confounders": [],
-    "mediators": [],
-    "instrumental_variables": [],
-    "ground_truth_ate": 1.0000000000000049,
-    "confidence_interval": [
-      1.0000000000000044,
-      1.0000000000000044
-    ],
-    "p_value": null,
-    "estimation_method": "backdoor.linear_regression",
-    "treatment_type": "continuous",
-    "outcome_type": "continuous",
-    "n_samples": 29972,
-    "sql_query": "SELECT\n  s.price      AS sku_price,\n  oi.unit_price AS unit_price\nFROM order_items oi\nJOIN sku s ON oi.sku_id = s.sku_id\nWHERE s.price IS NOT NULL\n  AND oi.unit_price IS NOT NULL\n"
   },
   {
     "question": "What is the causal effect of quantity on total_price?",
@@ -275,27 +256,6 @@
     "sql_query": "SELECT\n  EXTRACT(EPOCH FROM o.created_at) AS order_created_at_epoch,\n  EXTRACT(EPOCH FROM (p.payment_date - o.created_at)) / 86400.0 AS payment_delay_days\nFROM orders o\nJOIN payment p ON p.order_id = o.order_id\nWHERE o.created_at IS NOT NULL\n  AND p.payment_date IS NOT NULL\n"
   },
   {
-    "question": "What is the causal effect of payment_delay_days on payment_completed?",
-    "treatment": "payment_delay_days",
-    "outcome": "payment_completed",
-    "confounders": [
-      "order_total_amount"
-    ],
-    "mediators": [],
-    "instrumental_variables": [],
-    "ground_truth_ate": 0.0,
-    "confidence_interval": [
-      0.0,
-      0.0
-    ],
-    "p_value": null,
-    "estimation_method": "backdoor.generalized_linear_model",
-    "treatment_type": "continuous",
-    "outcome_type": "count",
-    "n_samples": 9024,
-    "sql_query": "SELECT\n  EXTRACT(EPOCH FROM (p.payment_date - o.created_at)) / 86400.0 AS payment_delay_days,\n  CASE WHEN p.payment_status = 'COMPLETED' THEN 1 ELSE 0 END AS payment_completed,\n  o.total_amount AS order_total_amount\nFROM payment p\nJOIN orders o ON p.order_id = o.order_id\nWHERE p.payment_date IS NOT NULL\n  AND p.payment_status IS NOT NULL\n  AND o.created_at IS NOT NULL\n  AND o.total_amount IS NOT NULL\n"
-  },
-  {
     "question": "What is the causal effect of payment_date on shipped_delay_days?",
     "treatment": "payment_date_epoch",
     "outcome": "shipped_delay_days",
@@ -441,9 +401,7 @@
     "question": "What is the causal effect of discount_amount on payment_completed?",
     "treatment": "discount_amount",
     "outcome": "payment_completed",
-    "confounders": [
-      "order_total_amount"
-    ],
+    "confounders": [],
     "mediators": [],
     "instrumental_variables": [],
     "ground_truth_ate": 0.0021905033997312584,
@@ -462,9 +420,7 @@
     "question": "What is the causal effect of total_amount on payment_failed?",
     "treatment": "total_amount",
     "outcome": "payment_failed",
-    "confounders": [
-      "user_age"
-    ],
+    "confounders": [],
     "mediators": [],
     "instrumental_variables": [],
     "ground_truth_ate": 7.543968929393796e-05,
@@ -483,10 +439,7 @@
     "question": "What is the causal effect of point_used on payment_completed?",
     "treatment": "point_used",
     "outcome": "payment_completed",
-    "confounders": [
-      "subtotal_amount",
-      "discount_amount"
-    ],
+    "confounders": [],
     "mediators": [],
     "instrumental_variables": [],
     "ground_truth_ate": 7.965143458965596e-05,

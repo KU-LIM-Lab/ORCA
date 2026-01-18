@@ -1,0 +1,82 @@
+[
+    {
+        "table_name": "frpm",
+        "db_id":"california_schools"
+    },
+    {
+        "table_name": "cards",
+        "db_id":"card_games"
+    },
+    {
+        "table_name": "legalities",
+        "db_id":"card_games"
+    },
+    {
+        "table_name": "comments",
+        "db_id":"codebase_community"
+    },
+    {
+        "table_name": "users",
+        "db_id":"codebase_community"
+    },
+    {
+        "table_name": "customers",
+        "db_id":"debit_card_specializing"
+    },
+    {
+        "table_name": "team_attributes",
+        "db_id":"european_football_2"
+    },
+    {
+        "table_name": "player_attributes",
+        "db_id":"european_football_2"
+    },
+    {
+        "table_name": "client",
+        "db_id":"financial"
+    },
+    {
+        "table_name": "account",
+        "db_id":"financial"
+    },
+    {
+        "table_name": "order",
+        "db_id":"financial"
+    },
+    {
+        "table_name": "results",
+        "db_id":"formula_1"
+    },
+    {
+        "table_name": "drivers",
+        "db_id":"formula_1"
+    },
+    {
+        "table_name": "races",
+        "db_id":"formula_1"
+    },
+    {
+        "table_name": "hero_attribute",
+        "db_id":"superhero"
+    },
+    {
+        "table_name": "hero_power",
+        "db_id":"superhero"
+    },
+    {
+        "table_name": "laboratory",
+        "db_id":"thrombosis_prediction"
+    },
+    {
+        "table_name": "connected",
+        "db_id":"toxicology"
+    },
+    {
+        "table_name": "molecule",
+        "db_id":"toxicology"
+    },
+    {
+        "table_name": "bond",
+        "db_id":"toxicology"
+    }
+]

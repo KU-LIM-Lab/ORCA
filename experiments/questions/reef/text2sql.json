@@ -1,0 +1,242 @@
+[
+  {
+    "question_id": 1,
+    "db_id": "reef_db",
+    "question": "What is the total number of users?",
+    "evidence": "",
+    "SQL": "SELECT COUNT(*) FROM users",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 2,
+    "db_id": "reef_db",
+    "question": "List all active products.",
+    "evidence": "",
+    "SQL": "SELECT product_id, product_name FROM products WHERE is_active = TRUE",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 3,
+    "db_id": "reef_db",
+    "question": "How many items are currently in the inventory?",
+    "evidence": "",
+    "SQL": "SELECT SUM(quantity) FROM inventory",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 4,
+    "db_id": "reef_db",
+    "question": "Show all coupon codes that are currently active.",
+    "evidence": "",
+    "SQL": "SELECT code FROM coupon WHERE is_active = TRUE",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 5,
+    "db_id": "reef_db",
+    "question": "List all payment methods used.",
+    "evidence": "",
+    "SQL": "SELECT DISTINCT payment_method FROM payment",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 6,
+    "db_id": "reef_db",
+    "question": "How many reviews has each user written?",
+    "evidence": "",
+    "SQL": "SELECT user_id, COUNT(*) AS review_count FROM review GROUP BY user_id",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 7,
+    "db_id": "reef_db",
+    "question": "List all categories with their names.",
+    "evidence": "",
+    "SQL": "SELECT category_id, name FROM categories",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 8,
+    "db_id": "reef_db",
+    "question": "What is the average discount amount for all coupons?",
+    "evidence": "",
+    "SQL": "SELECT AVG(discount_amount) FROM coupon",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 9,
+    "db_id": "reef_db",
+    "question": "Show all SKUs that are currently active.",
+    "evidence": "",
+    "SQL": "SELECT sku_id, sku_code FROM sku WHERE is_active = TRUE",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 10,
+    "db_id": "reef_db",
+    "question": "Get the total number of point transactions.",
+    "evidence": "",
+    "SQL": "SELECT COUNT(*) FROM point_transaction",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 11,
+    "db_id": "reef_db",
+    "question": "Find the total amount spent in all orders.",
+    "evidence": "",
+    "SQL": "SELECT SUM(total_amount) FROM orders",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 12,
+    "db_id": "reef_db",
+    "question": "How many users have unused coupons?",
+    "evidence": "",
+    "SQL": "SELECT COUNT(DISTINCT user_id) FROM user_coupons WHERE is_used = FALSE",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 13,
+    "db_id": "reef_db",
+    "question": "What is the most recent promotion?",
+    "evidence": "",
+    "SQL": "SELECT promo_id, name FROM promotion ORDER BY start_at DESC LIMIT 1",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 14,
+    "db_id": "reef_db",
+    "question": "List the current stock quantity per SKU.",
+    "evidence": "",
+    "SQL": "SELECT sku_id, quantity FROM inventory",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 15,
+    "db_id": "reef_db",
+    "question": "Show all distinct shipping carriers used.",
+    "evidence": "",
+    "SQL": "SELECT DISTINCT carrier FROM shipping",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 16,
+    "db_id": "reef_db",
+    "question": "Which users have more than one item in their cart?",
+    "evidence": "",
+    "SQL": "SELECT user_id, COUNT(*) AS item_count FROM cart GROUP BY user_id HAVING COUNT(*) > 1",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 17,
+    "db_id": "reef_db",
+    "question": "What is the total quantity of products sold per product?",
+    "evidence": "",
+    "SQL": "SELECT s.product_id, SUM(oi.quantity) AS total_quantity FROM order_items oi JOIN sku s ON oi.sku_id = s.sku_id GROUP BY s.product_id",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 18,
+    "db_id": "reef_db",
+    "question": "Find total earned points per user.",
+    "evidence": "",
+    "SQL": "SELECT user_id, SUM(point_change) AS earned FROM point_transaction WHERE type = 'earn' GROUP BY user_id",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 19,
+    "db_id": "reef_db",
+    "question": "Which users have received coupons and also placed orders?",
+    "evidence": "",
+    "SQL": "SELECT DISTINCT uc.user_id FROM user_coupons uc JOIN orders o ON uc.user_id = o.user_id",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 20,
+    "db_id": "reef_db",
+    "question": "For each product, show the number of reviews and the average score.",
+    "evidence": "",
+    "SQL": "SELECT product_id, COUNT(*) AS review_count, AVG(score) AS avg_score FROM review GROUP BY product_id",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 21,
+    "db_id": "reef_db",
+    "question": "Show all orders that used points.",
+    "evidence": "",
+    "SQL": "SELECT order_id, point_used FROM orders WHERE point_used > 0",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 22,
+    "db_id": "reef_db",
+    "question": "Which orders had shipping delays (shipped after 3 days)?",
+    "evidence": "",
+    "SQL": "SELECT s.order_id FROM shipping s JOIN orders o ON s.order_id = o.order_id WHERE s.shipped_at > o.created_at + INTERVAL '3 days'",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 23,
+    "db_id": "reef_db",
+    "question": "Show total discount per user from coupon usage.",
+    "evidence": "",
+    "SQL": "SELECT cu.user_id, SUM(c.discount_amount) AS total_discount FROM coupon_usage cu JOIN coupon c ON cu.coupon_id = c.coupon_id GROUP BY cu.user_id",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 24,
+    "db_id": "reef_db",
+    "question": "Find the number of orders placed per day.",
+    "evidence": "",
+    "SQL": "SELECT DATE(created_at) AS order_date, COUNT(*) AS order_count FROM orders GROUP BY DATE(created_at)",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 25,
+    "db_id": "reef_db",
+    "question": "List all users who reviewed a product and also earned points.",
+    "evidence": "",
+    "SQL": "SELECT DISTINCT r.user_id FROM review r JOIN point_transaction pt ON r.user_id = pt.user_id WHERE pt.type = 'earn'",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 26,
+    "db_id": "reef_db",
+    "question": "Which product has the highest average review score (min. 3 reviews)?",
+    "evidence": "",
+    "SQL": "SELECT product_id, AVG(score) AS avg_score FROM review GROUP BY product_id HAVING COUNT(*) >= 3 ORDER BY avg_score DESC LIMIT 1",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 27,
+    "db_id": "reef_db",
+    "question": "For each category, what is the best-selling product by quantity?",
+    "evidence": "",
+    "SQL": "SELECT category_id, product_id, total_quantity FROM (SELECT p.category_id, p.product_id, SUM(oi.quantity) AS total_quantity, RANK() OVER (PARTITION BY p.category_id ORDER BY SUM(oi.quantity) DESC) AS rnk FROM order_items oi JOIN sku s ON oi.sku_id = s.sku_id JOIN products p ON s.product_id = p.product_id GROUP BY p.category_id, p.product_id) sub WHERE rnk = 1",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 28,
+    "db_id": "reef_db",
+    "question": "Which users have both purchased and reviewed the same product?",
+    "evidence": "",
+    "SQL": "SELECT DISTINCT r.user_id, r.product_id FROM review r JOIN sku s ON r.product_id = s.product_id JOIN order_items oi ON s.sku_id = oi.sku_id JOIN orders o ON oi.order_id = o.order_id WHERE r.user_id = o.user_id",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 29,
+    "db_id": "reef_db",
+    "question": "What is the total number of users who only received coupons but never used them or placed orders?",
+    "evidence": "",
+    "SQL": "SELECT COUNT(*) FROM (SELECT uc.user_id FROM user_coupons uc LEFT JOIN coupon_usage cu ON uc.user_id = cu.user_id LEFT JOIN orders o ON uc.user_id = o.user_id WHERE cu.user_id IS NULL AND o.user_id IS NULL GROUP BY uc.user_id) sub",
+    "difficulty": "challenging"
+  },
+  {
+    "question_id": 30,
+    "db_id": "reef_db",
+    "question": "For each user, show their latest order date and total number of reviews.",
+    "evidence": "",
+    "SQL": "SELECT u.user_id, MAX(o.created_at) AS latest_order, COUNT(r.review_id) AS review_count FROM users u LEFT JOIN orders o ON u.user_id = o.user_id LEFT JOIN review r ON u.user_id = r.user_id GROUP BY u.user_id",
+    "difficulty": "challenging"
+  }
+]
