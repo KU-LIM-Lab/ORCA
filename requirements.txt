@@ -111,9 +111,9 @@ pydantic_core==2.33.2
 pydot==1.2.4
 pygam==0.10.1
 Pygments==2.19.2
-pyobjc-core==12.1
-pyobjc-framework-Cocoa==12.1
-pyobjc-framework-Metal==12.1
+pyobjc-core==12.1; platform_system=="Darwin"
+pyobjc-framework-Cocoa==12.1; platform_system=="Darwin"
+pyobjc-framework-Metal==12.1; platform_system=="Darwin"
 pypdf==5.4.0
 pypickle==2.0.1
 pyro-api==0.1.2
