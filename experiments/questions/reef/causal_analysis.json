@@ -1,4 +1,7 @@
-[
+[ 
+  {
+  "_content": "This question set is intended for experimental reproducibility. Users may modify the questions or the data generation process as needed; in such cases, the dataset should be regenerated via REEF/generate_ate/generate_ate_data."
+  },
   {
     "question": "What is the causal effect of category_popularity_score on brand_strength_score?",
     "treatment": "category_popularity_score",
