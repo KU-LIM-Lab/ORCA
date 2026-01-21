@@ -53,7 +53,7 @@ queries:
     sql_query: |
       SELECT
         u.avg_browsing_time AS avg_browsing_time,
-        u.is_active         AS is_active,
+        u.is_active AS is_active,
         u.is_active_score AS is_active_score
       FROM users u
 
@@ -62,12 +62,13 @@ queries:
     treatment: "signup_days_ago"
     outcome: "is_active"
     confounders: []
-    mediators: []
+    mediators: ["is_active_score"]
     instrumental_variables: []
     sql_query: |
       SELECT
         EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - u.created_at)) / 86400.0 AS signup_days_ago,
-        u.is_active AS is_active
+        u.is_active AS is_active,
+        u.is_active_score AS is_active_score
       FROM users u
 
   # 6) order_items.quantity -> order_items.total_price (graph)
@@ -89,18 +90,16 @@ queries:
   - question: "What is the causal effect of unit_price on total_price?"
     treatment: "unit_price"
     outcome: "total_price"
-    confounders: ["quantity"]
+    confounders: []
     mediators: []
     instrumental_variables: []
     sql_query: |
       SELECT
         oi.unit_price  AS unit_price,
-        oi.quantity    AS quantity,
         oi.total_price AS total_price
       FROM order_items oi
       WHERE oi.unit_price IS NOT NULL
         AND oi.total_price IS NOT NULL
-        AND oi.quantity IS NOT NULL
 
   # 8) order_items.total_price -> orders.subtotal_amount (graph)
   - question: "What is the causal effect of order_item_total_price on subtotal_amount?"
