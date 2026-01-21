@@ -191,13 +191,28 @@ class CausalDiscoveryAgent(SpecialistAgent):
         self.anm_rf_estimators = self.config.get("anm_rf_estimators", 100)
         self.run_all_tier_algorithms = self.config.get("run_all_tier_algorithms", False)
         self.max_pa_size = self.config.get("max_pa_size", 3) 
-        
+
         # Composite weights 
         self.composite_weights = self.config.get("composite_weights", {
             "markov_consistency": 0.4,
             "sampling_stability": 0.3,
             "structural_stability": 0.3
         })
+
+        # Execution-plan thresholds (for scenario selection / algorithm gating)
+        ep_cfg = self.config.get("execution_plan_thresholds", {})
+        self.execution_plan_thresholds = {
+            # Linearity: pairwise score (Pure Continuous)
+            "linearity_score": ep_cfg.get("linearity_score", 0.5),
+            # Linearity: global p-value (Ramsey RESET)
+            "linearity_pvalue": ep_cfg.get("linearity_pvalue", 0.05),
+            # Gaussianity: global normality p-value
+            "normality_pvalue": ep_cfg.get("normality_pvalue", 0.05),
+            # Non‑Gaussianity score for LiNGAM
+            "non_gaussian_score": ep_cfg.get("non_gaussian_score", 0.5),
+            # ANM compatibility score
+            "anm_score": ep_cfg.get("anm_score", 0.5),
+        }
         
         # Scoring configuration
         scoring = self.config.get("scoring", {})
@@ -656,13 +671,19 @@ class CausalDiscoveryAgent(SpecialistAgent):
         pairwise_linearity_score = pairwise_scores.get("s_pairwise_linearity_score", np.nan)
         
         is_mostly_linear = None  # 기본 가정
+
+        lin_score_thr = self.execution_plan_thresholds.get("linearity_score", 0.5)
+        lin_p_thr = self.execution_plan_thresholds.get("linearity_pvalue", 0.05)
+        normality_p_thr = self.execution_plan_thresholds.get("normality_pvalue", 0.05)
+        nongauss_thr = self.execution_plan_thresholds.get("non_gaussian_score", 0.5)
+        anm_thr = self.execution_plan_thresholds.get("anm_score", 0.5)
         
         if data_type_profile == "Pure Continuous" and not np.isnan(pairwise_linearity_score):
             # 1st priority: Pure Continuous uses Pairwise score
-            is_mostly_linear = True if pairwise_linearity_score >= 0.5 else False
+            is_mostly_linear = True if pairwise_linearity_score >= lin_score_thr else False
         elif not np.isnan(global_linearity_pvalue):
             # 2nd priority: Mixed data or failed Pairwise uses Global (Ramsey RESET) score
-            is_mostly_linear = True if global_linearity_pvalue >= 0.05 else False   
+            is_mostly_linear = True if global_linearity_pvalue >= lin_p_thr else False   
         
         
         # Scenario 6: High Cardinality
@@ -687,7 +708,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
             logger.info("Scenario 1: Pure Continuous, Linear")
             
             # 정규성(Gaussianity) 확인 (GES, PC용)
-            is_gaussian = global_scores.get("s_global_normality_pvalue", 0.0) >= 0.05
+            is_gaussian = global_scores.get("s_global_normality_pvalue", 0.0) >= normality_p_thr
             
             pc_ci_test = "fisherz" if (is_gaussian and ci_reliability == "High") else "kernel_kcit"
             fci_ci_test = "fisherz" if ci_reliability == "High" else "kernel_kcit"
@@ -701,7 +722,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
             
             # LiNGAM: Linear + Non-Gaussianity
             non_gaussian_score = pairwise_scores.get("s_pairwise_non_gaussianity_score", 0.0)
-            if non_gaussian_score >= 0.5:  # 비정규성 점수가 0.5 이상일 때만
+            if non_gaussian_score >= nongauss_thr:  # 비정규성 점수가 threshold 이상일 때만
                 execution_plan.append({"alg": "LiNGAM"})
         
         # Scenario 2: Pure Continuous, Nonlinear
@@ -717,7 +738,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
             
             # ANM: 비선형 + ANM 적합성
             anm_score = pairwise_scores.get("s_pairwise_anm_score", 0.0)
-            if anm_score >= 0.5:  # ANM 적합성 점수가 0.5 이상일 때만
+            if anm_score >= anm_thr:  # ANM 적합성 점수가 threshold 이상일 때만
                 execution_plan.append({"alg": "ANM"})
         
         # Scenario 3: Mixed Data, Linear (High Cardinality가 아닐 때)

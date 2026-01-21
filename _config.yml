@@ -36,6 +36,12 @@ agents:
     profiling_max_pairs: 300
     profiling_parallelism:
     anm_rf_estimators: 100
+    execution_plan_thresholds:
+      linearity_score: 0.6         # threshold for s_pairwise_linearity_score
+      linearity_pvalue: 0.05       # threshold for s_global_linearity_pvalue
+      normality_pvalue: 0.05       # threshold for s_global_normality_pvalue
+      non_gaussian_score: 0.6      # threshold for s_pairwise_non_gaussianity_score (LiNGAM)
+      anm_score: 0.6               # threshold for s_pairwise_anm_score (ANM)
     composite_weights:
       markov_consistency: 0.4
       sampling_stability: 0.3

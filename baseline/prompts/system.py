@@ -116,7 +116,6 @@ adjacency_matrix = model.adjacency_matrix_
    - /help: Show available commands
    - /quit: End session
 
-
 ## REMEMBER
 
 Be thorough but efficient. Guide the user through each step systematically. 

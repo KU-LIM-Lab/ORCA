@@ -109,4 +109,7 @@ data/synthetic_cd/
 data/synthetic_ci/
 tests/results/
 experiments/results/
+experiments/graph_discovery/*.yaml
+experiments/graph_discovery/*.json
+experiments/graph_discovery/*.sh
 runs/

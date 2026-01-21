@@ -394,6 +394,23 @@ def orca_method(
 
     cd_config = (CONFIG.get("agents", {}) or {}).get("causal_discovery", {}) or {}
     cd_config = cd_config.copy()
+
+    # Optional: experiment-level overrides for causal_discovery config.
+    # We expect nested structure mirroring CONFIG['agents']['causal_discovery'].
+    overrides = ctx.get("causal_discovery_config") or {}
+
+    def _deep_update(base: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
+        """Recursively update nested dicts (shallow merge for leaves)."""
+        for k, v in (update or {}).items():
+            if isinstance(v, dict) and isinstance(base.get(k), dict):
+                base[k] = _deep_update(base[k], v)
+            else:
+                base[k] = v
+        return base
+
+    if isinstance(overrides, dict):
+        cd_config = _deep_update(cd_config, overrides)
+
     if "bootstrap_iterations" not in cd_config:
         cd_config["bootstrap_iterations"] = ctx.get("bootstrap_iterations", 10)
 

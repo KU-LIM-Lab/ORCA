@@ -7,6 +7,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Iterator, Tuple, Optional
+import itertools
 
 import numpy as np
 import pandas as pd
@@ -231,6 +232,7 @@ def run_experiments(
     bnlearn_datasets: Optional[List[str]] = None,
     seed: int = 0,
     save_interval: int = 50,
+    method_context: Optional[Dict[str, Any]] = None,
 ) -> Optional[pd.DataFrame]:
     """
     Run graph discovery experiments for a given dataset type.
@@ -276,12 +278,17 @@ def run_experiments(
 
                 method_fn = get_method(method_name)
 
-                context: Dict[str, Any] = {
+                base_context: Dict[str, Any] = {
                     "df": df,
                     "seed": seed + run_id,
                 }
+                if method_context:
+                    shared_ctx = method_context.get("_shared", {})
+                    per_method = method_context.get(method_name, {})
+                    ctx = {**shared_ctx, **per_method}
+                    base_context.update(ctx)
 
-                result = method_fn(df.values, context=context)
+                result = method_fn(df.values, context=base_context)
 
                 # Check for error in result (some methods return {"error": "..."} dict)
                 if isinstance(result, dict) and "error" in result:
@@ -344,6 +351,21 @@ def run_experiments(
                     "run_id": run_id,
                     **metrics,
                 }
+                # Attach ablation config / name (if any) to flat record for analysis
+                if method_context:
+                    flat_config = {}
+                    shared_meta = method_context.get("_shared", {})
+                    shared_cfg = shared_meta.get("causal_discovery_config", {})
+                    method_cfg = method_context.get(method_name, {}).get("causal_discovery_config", {})
+                    ablation_name = shared_meta.get("ablation_name")
+                    if shared_cfg:
+                        flat_config["causal_discovery_config_shared"] = shared_cfg
+                    if method_cfg:
+                        flat_config["causal_discovery_config_method"] = method_cfg
+                    if flat_config:
+                        flat["config"] = flat_config
+                    if ablation_name is not None:
+                        flat["ablation_name"] = ablation_name
                 all_records.append(flat)
 
                 # Node-level metrics
@@ -383,7 +405,11 @@ def run_experiments(
                     "df": df,
                     "seed": seed,
                 }
-
+                if method_context:
+                    shared_ctx = method_context.get("_shared", {})
+                    per_method = method_context.get(method_name, {})
+                    ctx = {**shared_ctx, **per_method}
+                    context.update(ctx)
                 result = method_fn(df.values, context=context)
 
                 if isinstance(result, dict) and "error" in result:
@@ -444,6 +470,20 @@ def run_experiments(
                     "method": method_name,
                     **metrics,
                 }
+                if method_context:
+                    flat_config = {}
+                    shared_meta = method_context.get("_shared", {})
+                    shared_cfg = shared_meta.get("causal_discovery_config", {})
+                    method_cfg = method_context.get(method_name, {}).get("causal_discovery_config", {})
+                    ablation_name = shared_meta.get("ablation_name")
+                    if shared_cfg:
+                        flat_config["causal_discovery_config_shared"] = shared_cfg
+                    if method_cfg:
+                        flat_config["causal_discovery_config_method"] = method_cfg
+                    if flat_config:
+                        flat["config"] = flat_config
+                    if ablation_name is not None:
+                        flat["ablation_name"] = ablation_name
                 all_records.append(flat)
 
                 base_node = {
@@ -464,7 +504,50 @@ def run_experiments(
     # Final summary (scenario / dataset level)
     if all_records:
         df_all = pd.DataFrame(all_records)
+        # Base grouping columns (scenario is included for multi-scenario experiments)
         group_cols = [c for c in ["dataset", "scenario", "d", "method", "bnlearn_dataset"] if c in df_all.columns]
+        
+        # If config variations are present, extract key config values for grouping
+        # Config is stored as nested dict in "config" column, so we flatten it for grouping
+        if "config" in df_all.columns:
+            # Extract composite_weights and execution_plan_thresholds for grouping
+            def _extract_config_key(row, key_path: List[str]) -> Any:
+                """Extract nested config value by path."""
+                config = row.get("config", {})
+                if not isinstance(config, dict):
+                    return None
+                shared_cfg = config.get("causal_discovery_config_shared", {})
+                method_cfg = config.get("causal_discovery_config_method", {})
+                cfg = {**shared_cfg, **method_cfg} if method_cfg else shared_cfg
+                cursor = cfg
+                for k in key_path:
+                    if isinstance(cursor, dict):
+                        cursor = cursor.get(k)
+                    else:
+                        return None
+                return cursor
+            
+            # Add flattened config columns for grouping
+            if any("composite_weights" in str(cfg) for cfg in df_all["config"] if isinstance(cfg, dict)):
+                for weight_key in ["markov_consistency", "sampling_stability", "structural_stability"]:
+                    col_name = f"config_composite_weights_{weight_key}"
+                    df_all[col_name] = df_all.apply(
+                        lambda row: _extract_config_key(row, ["composite_weights", weight_key]),
+                        axis=1
+                    )
+                    if df_all[col_name].notna().any():
+                        group_cols.append(col_name)
+            
+            if any("execution_plan_thresholds" in str(cfg) for cfg in df_all["config"] if isinstance(cfg, dict)):
+                for threshold_key in ["linearity_score", "non_gaussian_score", "anm_score"]:
+                    col_name = f"config_execution_plan_thresholds_{threshold_key}"
+                    df_all[col_name] = df_all.apply(
+                        lambda row: _extract_config_key(row, ["execution_plan_thresholds", threshold_key]),
+                        axis=1
+                    )
+                    if df_all[col_name].notna().any():
+                        group_cols.append(col_name)
+        
         agg_dict = {
             "shd": ["mean", "std"],
             "sid": ["mean", "std"],
@@ -583,33 +666,82 @@ def main():
         results_dir = Path(exp.get("results_dir", global_results_dir))
         seed = exp.get("seed", global_seed)
 
+        # Optional: external config list for ablation
+        config_list_path = exp.get("config_list_path")
+
+        def _iter_method_contexts() -> List[Optional[Dict[str, Any]]]:
+            """
+            If config_list_path is provided, load a list of predefined
+            causal_discovery_config entries and iterate over them.
+            Otherwise, yield a single None (no overrides).
+            """
+            if not config_list_path:
+                return [None]
+
+            cfg_path = Path(config_list_path)
+            if not cfg_path.is_absolute():
+                cfg_path = ROOT_DIR / cfg_path
+
+            if not cfg_path.exists():
+                raise FileNotFoundError(f"Config list file not found: {cfg_path}")
+
+            with open(cfg_path, "r") as f:
+                cfg_list = json.load(f)
+
+            if not isinstance(cfg_list, list):
+                raise ValueError(f"Config list at {cfg_path} must be a list of objects.")
+
+            contexts: List[Dict[str, Any]] = []
+            for item in cfg_list:
+                if not isinstance(item, dict):
+                    continue
+                cd_cfg = item.get("causal_discovery_config", {})
+                if not isinstance(cd_cfg, dict):
+                    continue
+                ablation_name = item.get("name")
+                ctx: Dict[str, Any] = {
+                    "_shared": {
+                        "causal_discovery_config": cd_cfg,
+                    }
+                }
+                if ablation_name is not None:
+                    ctx["_shared"]["ablation_name"] = ablation_name
+                contexts.append(ctx)
+
+            return contexts or [None]
+
         if dataset.lower() == "synthetic_cd":
             scenarios = exp.get("scenarios")
             d_list = exp.get("d_list")
             runs = exp.get("runs")
             run_indices = exp.get("run_indices")
 
-            run_experiments(
-                dataset="synthetic_cd",
-                methods=methods,
-                results_dir=results_dir,
-                scenarios=scenarios,
-                d_list=d_list,
-                runs=runs,
-                run_indices=run_indices,
-                seed=seed,
-                save_interval=args.save_interval,
-            )
+            # Iterate over ablation grid (or single default context)
+            for mc in _iter_method_contexts():
+                run_experiments(
+                    dataset="synthetic_cd",
+                    methods=methods,
+                    results_dir=results_dir,
+                    scenarios=scenarios,
+                    d_list=d_list,
+                    runs=runs,
+                    run_indices=run_indices,
+                    seed=seed,
+                    save_interval=args.save_interval,
+                    method_context=mc,
+                )
         elif dataset.lower() == "bnlearn":
             bn_datasets = exp.get("datasets")
-            run_experiments(
-                dataset="bnlearn",
-                methods=methods,
-                results_dir=results_dir,
-                bnlearn_datasets=bn_datasets,
-                seed=seed,
-                save_interval=args.save_interval,
-            )
+            for mc in _iter_method_contexts():
+                run_experiments(
+                    dataset="bnlearn",
+                    methods=methods,
+                    results_dir=results_dir,
+                    bnlearn_datasets=bn_datasets,
+                    seed=seed,
+                    save_interval=args.save_interval,
+                    method_context=mc,
+                )
         else:
             print(f"Skipping experiment '{name}': unknown dataset '{dataset}'")
             continue
