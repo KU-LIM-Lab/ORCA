@@ -99,3 +99,10 @@ coverage.xml
 dmypy.json
 
 
+data/synthetic_cd/
+data/synthetic_ci/
+experiments/results/
+outputs/
+experiments/graph_discovery/*.yaml
+experiments/graph_discovery/*.json
+experiments/graph_discovery/*.sh
