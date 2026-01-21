@@ -106,3 +106,4 @@ outputs/
 experiments/graph_discovery/*.yaml
 experiments/graph_discovery/*.json
 experiments/graph_discovery/*.sh
+runs/
