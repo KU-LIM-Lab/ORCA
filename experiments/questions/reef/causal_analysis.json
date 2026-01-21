@@ -357,18 +357,15 @@
     "question": "What is the causal effect of coupon_used on total_amount?",
     "treatment": "used_coupon",
     "outcome": "total_amount",
-    "confounders": [
-      "subtotal_amount",
-      "point_used"
-    ],
+    "confounders": [],
     "mediators": [
       "discount_amount"
     ],
     "instrumental_variables": [],
-    "ground_truth_ate": -24.74055851215588,
+    "ground_truth_ate": 3.4472815429283514,
     "confidence_interval": [
-      -25.01933498707646,
-      -24.46178203723529
+      -32.9432771474382,
+      39.837840233294905
     ],
     "p_value": null,
     "estimation_method": "backdoor.linear_regression",
