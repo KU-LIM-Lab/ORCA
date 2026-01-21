@@ -4,7 +4,7 @@ createdb reef_db
 
 # Execute DDL
 echo "Executing DDL..."
-psql -d reef_db -f REEF_ddl.sql
+psql -d reef_db -f REEF/REEF_ddl.sql
 
 if [ $? -eq 0 ]; then
     echo "✅ Database schema creation complete"
@@ -19,7 +19,7 @@ echo "Generating sample data..."
 
 # Execute seed data
 echo "Generating seed data..."
-node seed/run_all_seeds.js
+node REEF/seed/run_all_seeds.js
 
 if [ $? -eq 0 ]; then
     echo "✅ Seed data generation complete"
