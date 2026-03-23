@@ -3,6 +3,7 @@ import asyncio
 from typing import Union, Any, overload
 from langchain_openai import ChatOpenAI
 from langchain_ollama import OllamaLLM
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import BasePromptTemplate
 from langchain_core.output_parsers import BaseOutputParser
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -110,6 +111,10 @@ def get_llm(model: str = "gpt-4o-mini", temperature: float = 0.3, provider: str 
             model=model, 
             temperature=temperature,
             base_url=os.getenv("OLLAMA_HOST", "http://localhost:11434")
-)
+            )  
+            
+    elif provider == "google":
+        return ChatGoogleGenerativeAI(model=model, temperature=temperature)
+
     else:
         raise ValueError(f"Unsupported provider: {provider}. Use 'openai' or 'ollama'.")

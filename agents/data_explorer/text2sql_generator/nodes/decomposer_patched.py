@@ -221,9 +221,10 @@ def decomposer_node(state, llm: BaseChatModel):
     mode = state.get('analysis_mode','full_pipeline')
 
     if mode == 'data_exploration':
+        schema_info = state.get('desc_str', '')
 
         prompt = decompose_template.format(
-            fk_str=fk_info, query=query, evidence=evidence
+            desc_str=schema_info, fk_str=fk_info, query=query, evidence=evidence
         )
 
         llm_reply = call_llm(prompt, llm=llm)

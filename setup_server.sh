@@ -10,7 +10,7 @@ echo "============================================================"
 
 # ---- Conda ----
 source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate userstudy
+conda activate orca311
 
 echo "Using python: $(which python)"
 echo "Using pip:    $(which pip)"

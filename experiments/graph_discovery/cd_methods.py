@@ -615,8 +615,8 @@ def _orient_by_order(
     return [{"from": e["from"], "to": e["to"]} for e in uniq]
 
 
-@register_method("gpt4o_mini")
-def gpt4o_mini_method(X: np.ndarray, context: dict | None = None) -> dict:
+@register_method("llm")
+def llm_method(X: np.ndarray, context: dict | None = None) -> dict:
     """
     LLM-direct baseline:
       - compute top correlation pairs (compact evidence)
@@ -636,6 +636,7 @@ def gpt4o_mini_method(X: np.ndarray, context: dict | None = None) -> dict:
     max_edges = int(ctx.get("max_edges", 2 * d))
     n_retries = int(ctx.get("n_retries", 1))
     model = ctx.get("model", "gpt-4o-mini")
+    provider = ctx.get("provider", "openai")
     temperature = float(ctx.get("temperature", 0.2))
     llm_client = ctx.get("llm_client", None)
 
@@ -665,7 +666,7 @@ def gpt4o_mini_method(X: np.ndarray, context: dict | None = None) -> dict:
             if llm_client is not None:
                 last_text = call_llm(prompt, llm=llm_client)
             else:
-                last_text = call_llm(prompt, model=model, temperature=temperature)
+                last_text = call_llm(prompt, model=model, temperature=temperature, provider=provider)
             obj = _parse_json(last_text)
             if obj is not None:
                 break
@@ -696,7 +697,8 @@ def gpt4o_mini_method(X: np.ndarray, context: dict | None = None) -> dict:
 
     runtime = time.time() - t0
     params = {
-        "backend": "gpt-4o-mini",
+        "backend": model,
+        "provider": provider,
         "model": model,
         "temperature": temperature,
         "top_k_pairs": top_k_pairs,

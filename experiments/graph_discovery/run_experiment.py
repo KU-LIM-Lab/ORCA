@@ -669,14 +669,18 @@ def main():
         # Optional: external config list for ablation
         config_list_path = exp.get("config_list_path")
 
+        # Direct per-method context from YAML (e.g. model/provider for LLM methods)
+        yaml_method_context: Dict[str, Any] = exp.get("method_context", {})
+
         def _iter_method_contexts() -> List[Optional[Dict[str, Any]]]:
             """
             If config_list_path is provided, load a list of predefined
             causal_discovery_config entries and iterate over them.
             Otherwise, yield a single None (no overrides).
+            In both cases, yaml_method_context is merged in as a base layer.
             """
             if not config_list_path:
-                return [None]
+                return [yaml_method_context if yaml_method_context else None]
 
             cfg_path = Path(config_list_path)
             if not cfg_path.is_absolute():
@@ -708,7 +712,23 @@ def main():
                     ctx["_shared"]["ablation_name"] = ablation_name
                 contexts.append(ctx)
 
-            return contexts or [None]
+            if not contexts:
+                return [yaml_method_context if yaml_method_context else None]
+
+            # Merge yaml_method_context as a base layer under each config-list context
+            if yaml_method_context:
+                merged = []
+                for ctx in contexts:
+                    merged_ctx = {**yaml_method_context}
+                    for k, v in ctx.items():
+                        if k in merged_ctx and isinstance(merged_ctx[k], dict) and isinstance(v, dict):
+                            merged_ctx[k] = {**merged_ctx[k], **v}
+                        else:
+                            merged_ctx[k] = v
+                    merged.append(merged_ctx)
+                return merged
+
+            return contexts
 
         if dataset.lower() == "synthetic_cd":
             scenarios = exp.get("scenarios")
