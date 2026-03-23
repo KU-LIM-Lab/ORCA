@@ -210,7 +210,7 @@ module.exports = async function () {
 
     if (paymentStatus === 'COMPLETED') {
       const shippingId = uuidv4();
-      const carrier = faker.helpers.arrayElement(['CJ대한통운', '한진택배', '롯데택배', '우체국택배']);
+      const carrier = faker.helpers.arrayElement(['CJ', 'Hanjin', 'Lotte', 'Post']);
 
       // shipped_at = payment_date + U(1,7 days)
       const shipOffset = faker.number.int({ min: 1, max: 7 });
