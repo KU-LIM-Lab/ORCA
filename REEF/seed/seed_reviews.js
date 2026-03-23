@@ -2,65 +2,153 @@ const { faker } = require('@faker-js/faker');
 const getClient = require('./db');
 const { v4: uuidv4 } = require('uuid');
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function sigmoid(x) {
+  return 1 / (1 + Math.exp(-x));
+}
+
+// ordinal cutpoints: {1.5, 2.5, 3.5, 4.5}
+function continuousToOrdinal(x) {
+  if (x <= 1.5) return 1;
+  if (x <= 2.5) return 2;
+  if (x <= 3.5) return 3;
+  if (x <= 4.5) return 4;
+  return 5;
+}
+
 module.exports = async function () {
-  const client = getClient();  
+  const client = getClient();
   await client.connect();
-  console.log("Connected. Seeding reviews...");
+  console.log('Connected. Seeding reviews...');
 
-  // 1. 유저 활동성 맵 조회
-  const userRes = await client.query('SELECT user_id, is_active FROM users');
-  const userMap = {};
-  for (const row of userRes.rows) userMap[row.user_id] = row.is_active;
-
-  // 2. 주문 + 상품 정보 기반 리뷰 생성
-  const orderItemRes = await client.query(`
-    SELECT o.user_id, oi.sku_id, oi.unit_price, oi.quantity, s.product_id
-    FROM order_items oi
-    JOIN orders o ON o.order_id = oi.order_id
-    JOIN sku s ON oi.sku_id = s.sku_id
-  `);
-
-  const usedPairs = new Set();
-  let count = 0;
-
-  function sigmoid(x) {
-    return 1 / (1 + Math.exp(-x));
+  // 1) User activity info
+  const userRes = await client.query(
+    'SELECT user_id, is_active, is_active_score FROM users'
+  );
+  const userIsActive = {};
+  const userScore = {};
+  for (const row of userRes.rows) {
+    userIsActive[row.user_id] = row.is_active;
+    userScore[row.user_id] = row.is_active_score;
   }
 
+  // 2) Order + payment + shipping + product info
+  //  - Order total: orders.total_amount
+  //  - Payment date: payment.payment_date
+  //  - Delivery completion date: shipping.delivered_at
+  const orderItemRes = await client.query(`
+    SELECT
+      o.order_id,
+      o.user_id,
+      o.total_amount,
+      oi.unit_price,
+      oi.quantity,
+      s.product_id,
+      p.payment_date,
+      sh.delivered_at
+    FROM order_items oi
+    JOIN orders o   ON o.order_id   = oi.order_id
+    JOIN sku s      ON s.sku_id     = oi.sku_id
+    JOIN payment p  ON p.order_id   = o.order_id
+    LEFT JOIN shipping sh ON sh.order_id = o.order_id
+    WHERE p.payment_status = 'COMPLETED'
+  `);
+
+  const usedPairs = new Set(); // Review once per user-product
+  let count = 0;
+
   for (const row of orderItemRes.rows) {
-    const { user_id, unit_price, quantity, product_id } = row;
+    const {
+      user_id,
+      order_id,
+      product_id,
+      total_amount,
+      payment_date,
+      delivered_at
+    } = row;
+
+    // Do not create reviews for orders not yet delivered
+    if (!delivered_at || !payment_date) continue;
+
     const key = `${user_id}-${product_id}`;
     if (usedPairs.has(key)) continue;
     usedPairs.add(key);
 
-    const is_active = userMap[user_id];
-    const order_total = unit_price * quantity;
-    const log_total = Math.log(order_total + 1); // scale
+    const is_active_score = userScore[user_id] ?? 0;
+    const is_active = userIsActive[user_id] ?? false;
 
-    // 리뷰 생성 확률 = sigmoid(0.5 * is_active + 0.1 * log(order_total))
-    const reviewProb = sigmoid((is_active ? 0.5 : -0.5) + 0.1 * log_total);
+    const order_total = Number(total_amount || 0);
+    const log_total = Math.log(order_total + 1);
+
+    const payDate = new Date(payment_date);
+    const delivDate = new Date(delivered_at);
+    let delay_days = (delivDate.getTime() - payDate.getTime()) / DAY_MS;
+    if (!Number.isFinite(delay_days) || delay_days < 0) delay_days = 0;
+
+    // ───────── 2-1. Whether to leave review (intent) ─────────
+    // Reflect activity + order size + delivery delay (delay reduces motivation)
+    const epsIntent = faker.number.float({ mean: 0, stddev: 1 });
+    const review_intent_score =
+      0.5 * (is_active ? 1 : 0) +
+      0.2 * is_active_score +
+      0.1 * log_total -
+      0.02 * delay_days +
+      epsIntent;
+
+    const reviewProb = sigmoid(review_intent_score);
     if (Math.random() > reviewProb) continue;
 
-    // 점수 생성 (활성 유저 + 고액 구매일수록 점수 높음)
-    let score = Math.round(sigmoid((is_active ? 1 : 0) + 0.05 * log_total + faker.number.float({ min: -1, max: 1 })) * 5);
-    score = Math.max(1, Math.min(5, score));
+    // ───────── 2-2. Continuous rating score_cont ─────────
+    const epsS = faker.number.float({ mean: 0, stddev: 0.7 });
+    let score_cont =
+      3.0 +
+      0.2 * is_active_score +
+      0.4 * log_total -
+      0.05 * delay_days +
+      epsS;
 
-    await client.query(`
-      INSERT INTO review (review_id, product_id, user_id, title, content, score)
-      VALUES ($1, $2, $3, $4, $5, $6)
-    `, [
-      uuidv4(),
-      product_id,
-      user_id,
-      faker.lorem.sentence(5),
-      faker.lorem.paragraph(),
-      score
-    ]);
+    // Clamp to 1~5
+    score_cont = Math.max(1, Math.min(5, score_cont));
+
+    // Apply ordinal cutpoints
+    const score = continuousToOrdinal(score_cont);
+
+    // ───────── 2-3. Review creation time: 0~14 days after delivery ─────────
+    const offsetDays = faker.number.int({ min: 0, max: 14 });
+    const createdAt = new Date(delivDate.getTime() + offsetDays * DAY_MS);
+
+    await client.query(
+      `
+      INSERT INTO review (
+        review_id,
+        order_id,
+        product_id,
+        user_id,
+        title,
+        content,
+        score,
+        score_cont,
+        created_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+    `,
+      [
+        uuidv4(),
+        order_id,
+        product_id,
+        user_id,
+        faker.lorem.sentence(5),
+        faker.lorem.paragraph(),
+        score,
+        score_cont,
+        createdAt
+      ]
+    );
 
     count++;
     if (count >= 3000) break;
   }
 
-  console.log(`✅ ${count} reviews inserted based on activity and order amount.`);
+  console.log(`✅ ${count} reviews inserted based on SCM (activity, amount, delay).`);
   await client.end();
 };

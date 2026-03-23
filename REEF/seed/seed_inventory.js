@@ -2,36 +2,38 @@ const { faker } = require('@faker-js/faker');
 const getClient = require('./db');
 
 module.exports = async function () {
-  const client = getClient();  
+  const client = getClient();
   await client.connect();
   console.log("Connected. Seeding inventory...");
 
-  // sku_id와 available_from을 같이 가져옴
+  // Get sku and corresponding product's stock_quantity, sku.created_at together
   const result = await client.query(`
-    SELECT sku_id, available_from
-    FROM sku
+    SELECT
+      s.sku_id,
+      s.created_at AS sku_created_at,
+      p.stock_quantity
+    FROM sku s
+    JOIN products p ON s.product_id = p.product_id
   `);
-  const skus = result.rows;
 
-  for (const s of skus) {
-    // available_from 이후 1~5일 이내 날짜 생성
-    let lastUpdated = s.available_from;
-    if (new Date(s.available_from) < new Date('2024-12-31')) {
-      lastUpdated = faker.date.between({
-        from: s.available_from,
-        to: new Date('2024-12-31')
-      });
-}
+  const rows = result.rows;
 
-    await client.query(`
+  for (const row of rows) {
+    const inventory_id = faker.string.uuid();
+
+    // SCM 1) quantity = products.stock_quantity
+    const quantity = row.stock_quantity ?? 0;
+
+    // SCM 2) last_updated = sku.created_at  (can add some noise here if needed)
+    const lastUpdated = row.sku_created_at;
+
+    await client.query(
+      `
       INSERT INTO inventory (inventory_id, sku_id, quantity, last_updated)
       VALUES ($1, $2, $3, $4)
-    `, [
-      faker.string.uuid(),
-      s.sku_id,
-      faker.number.int({ min: 0, max: 1000 }),
-      lastUpdated
-    ]);
+    `,
+      [inventory_id, row.sku_id, quantity, lastUpdated]
+    );
   }
 
   console.log("✅ Inventory seeded successfully.");

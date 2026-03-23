@@ -1,54 +1,80 @@
-const { faker } = require('@faker-js/faker');
 const getClient = require('./db');
+const { v4: uuidv4 } = require('uuid');
 
 module.exports = async function () {
-  const client = getClient();  
+  const client = getClient();
   await client.connect();
-  console.log("Connected. Seeding coupon_usage...");
+  console.log('Connected. Seeding coupon_usage...');
 
-  const resUserCoupons = await client.query(`
-    SELECT uc.id AS user_coupon_id, uc.user_id, uc.coupon_id
-    FROM user_coupons uc
-    WHERE is_used = false
+  // Join orders × coupon × user_coupons
+  const res = await client.query(`
+    SELECT
+      o.order_id,
+      o.user_id,
+      o.created_at      AS order_created_at,
+      o.coupon_used     AS coupon_id,
+      c.start_date,
+      c.expiration_date
+    FROM orders o
+    JOIN coupon c
+      ON o.coupon_used = c.coupon_id
+    JOIN user_coupons uc
+      ON uc.user_id   = o.user_id
+     AND uc.coupon_id = o.coupon_used
+     AND uc.is_used   = true
+    WHERE o.coupon_used IS NOT NULL
   `);
 
-  const resOrders = await client.query('SELECT order_id FROM orders');
-  const orders = resOrders.rows.map(row => row.order_id);
+  const rows = res.rows;
 
-  const usageData = [];
+  if (rows.length === 0) {
+    console.warn('⚠️ No orders with coupons found. Nothing to insert into coupon_usage.');
+    await client.end();
+    return;
+  }
 
-  for (let i = 0; i < 300; i++) {
-    const uc = faker.helpers.arrayElement(resUserCoupons.rows);
-    const order_id = faker.helpers.arrayElement(orders);
+  let inserted = 0;
 
-    usageData.push({
-      usage_id: faker.string.uuid(),
-      coupon_id: uc.coupon_id,
-      user_id: uc.user_id,
+  for (const row of rows) {
+    const {
       order_id,
-      used_at: faker.date.recent({ days: 20 })
-    });
+      user_id,
+      coupon_id,
+      order_created_at,
+      start_date,
+      expiration_date,
+    } = row;
 
-    // user_coupons 테이블에서 is_used true로 설정도 함께 진행
-    await client.query(`
-      UPDATE user_coupons SET is_used = true WHERE user_id = $1 AND coupon_id = $2
-    `, [uc.user_id, uc.coupon_id]);
-  }
+    const usedAt = new Date(order_created_at);
+    const start = new Date(start_date);
+    const end = new Date(expiration_date);
 
-  for (const usage of usageData) {
-    await client.query(`
+    // Create usage record only within coupon validity period
+    if (usedAt < start || usedAt > end) {
+      console.warn(
+        `⏭️ Skip: order ${order_id} uses coupon ${coupon_id} outside validity window`
+      );
+      continue;
+    }
+
+    const usageId = uuidv4();
+
+    await client.query(
+      `
       INSERT INTO coupon_usage (
-        usage_id, coupon_id, user_id, order_id, used_at
-      ) VALUES ($1, $2, $3, $4, $5)
-    `, [
-      usage.usage_id,
-      usage.coupon_id,
-      usage.user_id,
-      usage.order_id,
-      usage.used_at
-    ]);
+        usage_id,
+        coupon_id,
+        user_id,
+        order_id,
+        used_at
+      ) VALUES ($1,$2,$3,$4,$5)
+    `,
+      [usageId, coupon_id, user_id, order_id, usedAt]
+    );
+
+    inserted += 1;
   }
 
-  console.log("All coupon_usage inserted!");
+  console.log(`✅ ${inserted} coupon_usage rows inserted!`);
   await client.end();
 };
