@@ -1,14 +1,11 @@
-"""
-REEF 데이터 로더
-PostgreSQL에서 REEF 데이터를 로드합니다.
-"""
+"""REEF data loader. Loads REEF data from PostgreSQL."""
 
 import pandas as pd
 import sys
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-# 프로젝트 루트를 path에 추가
+# add project root to path
 project_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(project_root))
 
@@ -17,13 +14,13 @@ from utils.settings import POSTGRES_CONFIG
 
 
 class REEFDataLoader:
-    """REEF 데이터베이스에서 데이터를 로드하는 클래스"""
+    """Loads data from the REEF PostgreSQL database."""
     
     def __init__(self, db_name: str = "reef_db", config: Optional[Dict[str, Any]] = None):
         """
         Args:
-            db_name: 데이터베이스 이름
-            config: 데이터베이스 설정 (None이면 utils.settings에서 가져옴)
+            db_name: database name
+            config: DB config dict (reads from utils.settings if None)
         """
         self.db_name = db_name
         if config is None:
@@ -35,14 +32,14 @@ class REEFDataLoader:
     
     def load_table(self, table_name: str, limit: Optional[int] = None) -> pd.DataFrame:
         """
-        테이블 전체를 로드합니다.
-        
+        Load a full table.
+
         Args:
-            table_name: 테이블 이름
-            limit: 최대 행 수 (None이면 전체)
-        
+            table_name: table name
+            limit: max rows (all rows if None)
+
         Returns:
-            데이터프레임
+            DataFrame
         """
         query = f"SELECT * FROM {table_name}"
         if limit:
@@ -60,17 +57,17 @@ class REEFDataLoader:
         limit: Optional[int] = None
     ) -> pd.DataFrame:
         """
-        여러 테이블을 조인하여 데이터를 로드합니다.
-        
+        Load data by joining multiple tables.
+
         Args:
-            tables: 테이블 이름 리스트 (첫 번째가 메인 테이블)
-            join_conditions: 조인 조건 리스트 (예: ["orders.user_id = users.user_id"])
-            select_columns: 선택할 컬럼 리스트 (None이면 모든 컬럼)
-            where_clause: WHERE 절 (예: "orders.total_amount > 100")
-            limit: 최대 행 수
-        
+            tables: list of table names (first is the main table)
+            join_conditions: join condition strings
+            select_columns: columns to select (all if None)
+            where_clause: optional WHERE clause
+            limit: max rows
+
         Returns:
-            데이터프레임
+            DataFrame
         """
         if select_columns is None:
             select_columns = ["*"]
@@ -92,26 +89,26 @@ class REEFDataLoader:
     
     def load_custom_query(self, query: str) -> pd.DataFrame:
         """
-        커스텀 SQL 쿼리를 실행합니다.
-        
+        Execute a custom SQL query.
+
         Args:
-            query: SQL 쿼리 문자열
-        
+            query: SQL query string
+
         Returns:
-            데이터프레임
+            DataFrame
         """
         rows, columns = self.db.run_query(query, db_id=self.db_name)
         return pd.DataFrame(rows, columns=columns)
     
     def get_table_columns(self, table_name: str) -> list:
         """
-        테이블의 컬럼 목록을 가져옵니다.
-        
+        Get the list of columns in a table.
+
         Args:
-            table_name: 테이블 이름
-        
+            table_name: table name
+
         Returns:
-            컬럼 이름 리스트
+            list of column names
         """
         query = f"""
         SELECT column_name 
@@ -124,10 +121,10 @@ class REEFDataLoader:
     
     def get_all_tables(self) -> list:
         """
-        데이터베이스의 모든 테이블 목록을 가져옵니다.
-        
+        Get all table names in the database.
+
         Returns:
-            테이블 이름 리스트
+            list of table names
         """
         query = """
         SELECT table_name 

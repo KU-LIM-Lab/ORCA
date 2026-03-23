@@ -64,7 +64,7 @@ def load_ihdp_dataset(
     
     tau_true_cate = ite
     tau_true_ate = float(ite.mean())
-    Y = yf  # 여기서는 factual outcome으로 학습 (실험 설계에 따라 조정 가능)
+    Y = yf  # train on factual outcome (adjust per experiment design)
 
     meta = {
         "dataset": "IHDP",
@@ -152,12 +152,12 @@ def load_synthetic_ci_dataset(
     return X, T, Y, tau_true_cate, tau_true_ate, meta
 
 
-# === 2. ORCA용 causal_graph 생성 (Oracle vs Agent) ===
+# === 2. Build causal_graph for ORCA (Oracle vs Agent) ===
 
 def create_oracle_causal_graph(df: pd.DataFrame, treatment: str, outcome: str) -> Dict[str, Any]:
     """
     Synthetic CI oracle graph example:
-    구조: W -> T, W -> Y, T -> Y
+    Structure: W -> T, W -> Y, T -> Y
     """
     confounders = [c for c in df.columns if c.startswith("W")]
 
@@ -262,7 +262,7 @@ def compute_metrics(
             }
         )
 
-    # TODO: AUUC, refutation 등은 여기 추가
+    # TODO: add AUUC, refutation, etc. here
     metrics["auuc"] = None
 
     return metrics
@@ -838,14 +838,14 @@ def run_experiments(
 
     elif dataset.lower() == "reef":
         
-        ##### Reef DB에 연결 #####
+        ##### connect to Reef DB #####
         from REEF_v2.src.reef_data_loader import REEFDataLoader
         from REEF_v2.src.ate_calculator import coerce_df_to_numeric
         
         loader = REEFDataLoader(db_name="reef_db")
         
         ##### Load Scenarios #####
-        # Scenarios는 experiments/questions/reef/causal_analysis.json에 들어 있음 
+        # Scenarios are defined in experiments/questions/reef/causal_analysis.json 
         scenarios_path = Path("experiments/questions/reef/for_user_study.json")
         if not scenarios_path.exists():
             raise FileNotFoundError(f"Scenarios file not found: {scenarios_path}")
@@ -1011,7 +1011,7 @@ def run_experiments(
             collector.stop_monitoring()
 
         else:
-            # method 별 실행 
+            # run per method
             for method_name in methods:
                 if method_name not in METHOD_REGISTRY:
                     tqdm.write(f"Skipping unknown method: {method_name}")
@@ -1019,7 +1019,7 @@ def run_experiments(
 
                 method_fn = get_method(method_name)
 
-                # 질문 하나씩 (scenario 하나를 의미)
+                # one question per scenario
                 scenario_pbar = tqdm(
                     enumerate(scenarios),
                     desc=f"Scenarios ({method_name})",
@@ -1032,7 +1032,7 @@ def run_experiments(
                 for scenario_idx, scenario in scenario_pbar:
                     scenario_pbar.set_description(f"Scenario {scenario_idx+1}/{len(scenarios)} ({method_name})")
 
-                    # Scenario 정보 추출
+                    # extract scenario info
                     treatment = scenario.get("treatment")
                     outcome = scenario.get("outcome")
                     confounders = scenario.get("confounders", [])
@@ -1046,14 +1046,14 @@ def run_experiments(
                         tqdm.write(f"  [ERROR] Scenario {scenario_idx+1} missing sql_query. Skipping.")
                         continue
 
-                    # 데이터 로드
+                    # load data
                     try:
                         df = loader.load_custom_query(sql_query)
                         if len(df) == 0:
                             tqdm.write(f"  [ERROR] Scenario {scenario_idx+1}: Empty dataframe. Skipping.")
                             continue
 
-                        # 데이터 타입 변환 (numeric으로)
+                        # convert data types to numeric
                         df = coerce_df_to_numeric(df, dropna=True, verbose=False)
 
                         if len(df) < 10:
@@ -1066,22 +1066,22 @@ def run_experiments(
                         traceback.print_exc()
                         continue
 
-                    # 변수명 해석 (테이블 prefix 제거)
+                    # resolve variable names (strip table prefix)
                     def resolve_var_name(var_name: str, df: pd.DataFrame) -> str:
-                        """변수명을 데이터프레임의 실제 컬럼명으로 해석"""
+                        """Resolve variable name to actual dataframe column name."""
                         if var_name in df.columns:
                             return var_name
-                        # 부분 매칭 시도
+                        # try partial match
                         for col in df.columns:
                             if col.endswith(f".{var_name}") or col.split(".")[-1] == var_name:
                                 return col
-                        return var_name  # 못 찾으면 원래 이름 반환
+                        return var_name  # return original name if not found
 
                     treatment_resolved = resolve_var_name(treatment, df)
                     outcome_resolved = resolve_var_name(outcome, df)
                     confounders_resolved = [resolve_var_name(c, df) for c in confounders if resolve_var_name(c, df) in df.columns]
 
-                    # X, T, Y 추출
+                    # extract X, T, Y
                     if treatment_resolved not in df.columns:
                         tqdm.write(f"  [ERROR] Scenario {scenario_idx+1}: Treatment '{treatment_resolved}' not found. Skipping.")
                         continue
@@ -1089,11 +1089,11 @@ def run_experiments(
                         tqdm.write(f"  [ERROR] Scenario {scenario_idx+1}: Outcome '{outcome_resolved}' not found. Skipping.")
                         continue
 
-                    # Confounders를 X로 사용
+                    # use confounders as X
                     X_cols = confounders_resolved if confounders_resolved else []
-                    # X가 비어있으면 더미 변수 하나 추가 (일부 method가 X를 요구할 수 있음)
+                    # add dummy variable if X is empty (some methods require X)
                     if len(X_cols) == 0:
-                        # 더미 변수 생성 (상수 1)
+                        # create dummy variable (constant 1)
                         df["_dummy"] = 1.0
                         X_cols = ["_dummy"]
 
@@ -1103,11 +1103,11 @@ def run_experiments(
 
                     # Ground truth ATE
                     tau_true_ate = float(ground_truth_ate) if ground_truth_ate is not None else None
-                    tau_true_cate = None  # REEF 데이터에는 CATE ground truth가 없음
+                    tau_true_cate = None  # no CATE ground truth for REEF data
 
-                    # Causal graph 생성 (ORCA용)
+                    # build causal graph for ORCA
                     if setting == "oracle_graph":
-                        # Confounders -> T, Y / T -> Y 구조
+                        # structure: confounders->T,Y and T->Y
                         edges = []
                         for conf in confounders_resolved:
                             edges.append({"from": conf, "to": treatment_resolved})
@@ -1142,7 +1142,7 @@ def run_experiments(
                     else:
                         raise ValueError(f"Unknown setting: {setting}")
 
-                    # Method 실행
+                    # run method
                     context: Dict[str, Any] = {
                         "seed": 0,
                     }
@@ -1169,8 +1169,8 @@ def run_experiments(
                         traceback.print_exc()
                         continue
 
-                    # Metrics 계산
-                    # tau_true_ate가 None이면 metrics 계산을 건너뛰거나 경고만 표시
+                    # compute metrics
+                    # skip metrics or warn if tau_true_ate is None
                     if tau_true_ate is None:
                         tqdm.write(f"  [WARNING] Scenario {scenario_idx+1}: No ground_truth_ate. Skipping metrics calculation.")
                         metrics = {
@@ -1193,10 +1193,10 @@ def run_experiments(
                             ate_ci=result.get("ate_ci"),
                         )
 
-                    # Run record 생성
+                    # build run record
                     run_record = {
                         "dataset": "REEF",
-                        "scenario": question,  # scenario 식별자로 question 사용
+                        "scenario": question,  # use question as scenario identifier
                         "setting": setting,
                         "method": method_name,
                         "run_id(replication_idx)": scenario_idx,
@@ -1210,28 +1210,28 @@ def run_experiments(
                         "sql_query": sql_query,
                     }
 
-                    # 결과 저장
-                    # REEF의 경우: 한 파일에 모든 scenario 결과를 리스트로 저장
+                    # save results
+                    # REEF: save all scenario results as a list in one file
                     # Organize by dataset / setting / method_name.json
                     out_dir = results_dir / "REEF" / setting
                     out_dir.mkdir(parents=True, exist_ok=True)
                     out_path = out_dir / f"{method_name}.json"
 
                     try:
-                        # 기존 파일이 있으면 읽어서 리스트에 추가, 없으면 새 리스트 생성
+                        # read existing file and append, or start a new list
                         if out_path.exists():
                             with open(out_path, "r") as f:
                                 all_results = json.load(f)
                             if not isinstance(all_results, list):
-                                # 기존 파일이 리스트가 아니면 리스트로 변환
+                                # convert to list if existing file is not a list
                                 all_results = [all_results]
                         else:
                             all_results = []
 
-                        # 새 결과 추가
+                        # append new result
                         all_results.append(run_record)
 
-                        # 파일에 저장
+                        # write to file
                         with open(out_path, "w") as f:
                             json.dump(all_results, f, indent=2)
                     except Exception as e:

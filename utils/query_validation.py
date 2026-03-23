@@ -11,11 +11,11 @@ def extract_table_metadata(table_markdowns):
         current_table = None
 
         for line in lines:
-            # 테이블 이름 추출
+            # extract table names
             if line.startswith("# Table: "):
                 current_table = line.replace("# Table: ", "").strip()
 
-            # PK 추출
+            # extract PKs
             elif "PK" in line:
                 match = re.match(r"- (\w+) \([^)]+\), PK", line)
                 if match and current_table:
@@ -23,7 +23,7 @@ def extract_table_metadata(table_markdowns):
                     primary_keys.add(f"{current_table}.{col}")
                     table_metadata[current_table].add(col)
 
-            # 일반 컬럼 추출
+            # extract regular columns
             elif line.startswith("- ") and current_table:
                 col = line.split()[1]
                 col = col.strip("()")
@@ -38,7 +38,7 @@ def validate_parsed_query(parsed_query, table_metadata, primary_keys):
 
     for field in check_fields:
         if isinstance(field, str):
-            # SQL expression은 건너뜀
+            # skip SQL expressions
             if '.' not in field:
                 continue
 
@@ -47,11 +47,11 @@ def validate_parsed_query(parsed_query, table_metadata, primary_keys):
 
             full_col = f"{table}.{col}"
 
-            # 존재하지 않는 컬럼
+            # non-existent column
             if col not in col_set:
                 issues.append(f"{field} is not a valid column in {table} table.")
 
-            # 식별자-like 변수
+            # identifier-like variable
             if (
                 col.endswith("_id") or 
                 full_col in primary_keys
@@ -66,7 +66,7 @@ def _is_identifier_like(var: str, table_metadata: Dict[str, set], primary_keys: 
     table, col = var.split('.')
     full_col = f"{table}.{col}"
 
-    # 존재하지 않는 컬럼
+    # non-existent column
     if col not in table_metadata.get(table, set()):
         return True
 
@@ -78,8 +78,8 @@ def _is_identifier_like(var: str, table_metadata: Dict[str, set], primary_keys: 
 
 def sanitize_parsed_query(parsed_query: Dict, table_metadata=None, primary_keys=None) -> Dict:
     """
-    Confounders에서 treatment 또는 outcome과 겹치는 항목 제거
-    + identifier-like 변수나 존재하지 않는 변수 제거 (옵션)
+    Remove confounders that overlap with treatment or outcome;
+    optionally remove identifier-like or non-existent variables.
     """
     treatment = parsed_query.get("treatment")
     outcome = parsed_query.get("outcome")
@@ -87,10 +87,10 @@ def sanitize_parsed_query(parsed_query: Dict, table_metadata=None, primary_keys=
     for key in ["confounders", "mediators", "instrumental_variables"]:
         vars_list = parsed_query.get(key, [])
         if isinstance(vars_list, list):
-            # 기본적으로 treatment/outcome 겹치는 변수 제거
+            # remove variables overlapping with treatment/outcome
             cleaned_vars = [v for v in vars_list if v not in {treatment, outcome}]
 
-            # identifier-like / 존재하지 않는 컬럼 제거
+            # remove identifier-like / non-existent columns
             if table_metadata and primary_keys:
                 cleaned_vars = [
                     v for v in cleaned_vars

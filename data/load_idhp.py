@@ -9,21 +9,21 @@ def download_ihdp(save_dir: str,
                   url: str = "http://www.fredjo.com/files/ihdp_npci_1-1000.train.npz.zip",
                   force_download: bool = False) -> str:
     """
-    IHDP 데이터셋을 다운로드하고 압축을 해제한 파일 경로를 반환합니다.
+    Download the IHDP dataset and return the path to the extracted file.
 
     Parameters
     ----------
     save_dir : str
-        데이터를 저장할 디렉토리 경로.
+        Directory where data will be saved.
     url : str
-        다운로드할 ZIP 파일의 URL.
+        URL of the ZIP file to download.
     force_download : bool
-        이미 파일이 존재해도 강제로 다시 다운로드할지 여부.
+        Re-download even if the file already exists.
 
     Returns
     -------
     npz_path : str
-        압축 해제된 .npz 파일의 경로.
+        Path to the extracted .npz file.
     """
     os.makedirs(save_dir, exist_ok=True)
 
@@ -32,76 +32,76 @@ def download_ihdp(save_dir: str,
     npz_filename = zip_filename.replace(".zip", "")
     npz_path = os.path.join(save_dir, npz_filename)
 
-    # 다운로드
+    # download
     if force_download or not os.path.exists(npz_path):
-        print(f"'{url}' 에서 다운로드 시도 …")
+        print(f"Downloading from '{url}' …")
         response = requests.get(url, stream=True)
         response.raise_for_status()
 
-        # 파일 저장
+        # save file
         with open(zip_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
                     f.write(chunk)
-        print(f"다운로드 완료: {zip_path}")
+        print(f"Download complete: {zip_path}")
 
-        # 압축 해제
-        print(f"압축 해제 중: {zip_path}")
+        # extract archive
+        print(f"Extracting: {zip_path}")
         with zipfile.ZipFile(zip_path, 'r') as z:
             z.extractall(save_dir)
-        print(f"압축 해제 완료. {npz_path} 확인하세요.")
+        print(f"Extraction complete. See {npz_path}")
 
     else:
-        print(f"이미 존재함: {npz_path}")
+        print(f"Already exists: {npz_path}")
 
     if not os.path.exists(npz_path):
-        raise FileNotFoundError(f".npz 파일을 찾을 수 없습니다: {npz_path}")
+        raise FileNotFoundError(f".npz file not found: {npz_path}")
 
     return npz_path
 
 def load_ihdp(npz_path: str) -> dict:
     """
-    .npz 파일을 읽어 들여 데이터 딕셔너리 형태로 반환합니다.
+    Load an .npz file and return it as a data dictionary.
 
     Parameters
     ----------
     npz_path : str
-        .npz 파일 경로.
+        Path to the .npz file.
 
     Returns
     -------
     data_dict : dict
-        키: ['x', 't', 'yf', 'ycf', 'ite', 'mu0', 'mu1'] 예상
+        Expected keys: ['x', 't', 'yf', 'ycf', 'ite', 'mu0', 'mu1']
     """
-    print(f"파일 읽는 중: {npz_path}")
+    print(f"Reading file: {npz_path}")
     data = np.load(npz_path, allow_pickle=True)
-    # 예상되는 키 보여주기
-    print("데이터 키:", data.files)
+    # show expected keys
+    print("Data keys:", data.files)
     return {key: data[key] for key in data.files}
 
 def main():
-    # 사용 예시
+    # usage example
     save_dir = "data/raw/ihdp"
     url = "http://www.fredjo.com/files/ihdp_npci_1-1000.train.npz.zip"
 
     npz_path = download_ihdp(save_dir=save_dir, url=url, force_download=False)
     data = load_ihdp(npz_path)
 
-    # 간단히 shape 확인
+    # quick shape check
     print("x shape:", data.get("x", None).shape)
-    # 예: 첫 번째 반복의 ATE 계산
+    # e.g. compute ATE for first iteration
     if "ite" in data:
         print("ite shape:", data["ite"].shape)
         ate0 = data["ite"][:, 0].mean()
-        print(f"첫 번째 시뮬레이션의 평균 treatment effect (ATE): {ate0:.4f}")
+        print(f"Mean treatment effect (ATE) for first simulation: {ate0:.4f}")
     else:
-        print("Note: 'ite' 키가 없습니다. available keys:", data.keys())
-        # 예: ymul 키가 있다면 사용
+        print("Note: 'ite' key not found. Available keys:", data.keys())
+        # e.g. use ymul key if available
         if "ymul" in data:
             print("ymul shape:", data["ymul"].shape)
-            # ymul의 구조 파악 후 ATE 계산 가능성 고려
+            # inspect ymul structure before computing ATE
         else:
-            print("적절한 treatment effect 키를 찾아야 합니다.")
+            print("No suitable treatment effect key found.")
 
 if __name__ == "__main__":
     main()

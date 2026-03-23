@@ -61,10 +61,6 @@ logs/
 # Redis dumps
 dump.rdb
 
-# Monitoring data
-monitoring_data/
-metrics/
-traces/
 
 # Temporary files
 tmp/
@@ -102,19 +98,20 @@ coverage.xml
 .dmypy.json
 dmypy.json
 
-# files
-outputs/
-data/raw/
+
 data/synthetic_cd/
 data/synthetic_ci/
-tests/results/
 experiments/results/
+outputs/
 experiments/graph_discovery/*.yaml
 experiments/graph_discovery/*.json
 experiments/graph_discovery/*.sh
 runs/
-experiments_v0/results/
-
+CLAUDE.md
+algorithms/
+post_estimation.py
+tests/
+baseline/
 run_all.sh
 run_baseline.sh
 run_experiments.sh

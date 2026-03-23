@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from utils.database import Database
 from utils.redis_client import redis_client
 
-# 타입 분류
+# type classification
 NUMERIC_TYPES = ['integer', 'numeric', 'real', 'double precision', 'smallint', 'bigint']
 DATE_TYPES = ['date', 'timestamp', 'timestamp without time zone', 'timestamp with time zone']
 TEXT_TYPES = ['character varying', 'varchar', 'text']
@@ -12,7 +12,7 @@ TEXT_TYPES = ['character varying', 'varchar', 'text']
 def schema_to_comparable_json(schema: dict) -> str:
     return json.dumps(schema, default=str, sort_keys=True)
 
-# 컬럼 통계 수집 함수
+# column statistics collection
 def get_column_stats(cursor, table: str, col: str, dtype: str) -> dict:
     stats = {}
     try:

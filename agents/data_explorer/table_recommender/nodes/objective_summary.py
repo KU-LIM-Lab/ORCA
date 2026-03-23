@@ -31,7 +31,7 @@ def extract_objective_summary(state, llm: BaseChatModel):
             prompt=prompt,
             parser=parser,
             variables={
-                "analysis_text": selected,  # 분석 텍스트
+                "analysis_text": selected,
                 "format_instructions": parser.get_format_instructions()
             },
             llm=llm

@@ -252,7 +252,7 @@ class OrchestrationGraph:
     
     def _route_after_execution(self, state: AgentState) -> str:
         """Route after execution - DEPRECATED, kept for compatibility"""
-        """ llm으로 결과 작성하는 specialist agent로 구성 예정 """
+        # planned: specialist agent that writes results using LLM
         if state.get("error"):
             return "error"
         if state.get("executor_completed"):
@@ -551,7 +551,7 @@ class OrchestrationGraph:
     
     def _generate_final_report(self, state: AgentState) -> Dict[str, Any]:
         """Generate final analysis report"""
-        """ llm으로 결과 작성하는 specialist agent로 구성 예정 """
+        # planned: specialist agent that writes results using LLM
         execution_log = state.get("execution_log", [])
         results = state.get("results", {})
         
@@ -1053,7 +1053,7 @@ class OrchestrationGraph:
 
                     break
                 else:
-                    # 일반 노드 실행 완료
+                    # standard node execution complete
                     node_state = step[step_name]
                     
                     if isinstance(node_state, dict):

@@ -95,12 +95,12 @@ def run_orca_condition(
             session_id=session_id,
             event_logger=event_logger_instance,
             artifact_manager=artifact_manager_instance,
-            max_metrics=10000,  # 기본값 유지
-            max_snapshots=720   # 5초 간격으로 1시간 분량
+            max_metrics=10000,  # keep default
+            max_snapshots=720   # 1 hour at 5s interval
         )
         set_metrics_collector(metrics_collector)
         run_context.set_metrics_collector(metrics_collector)
-        metrics_collector.start_monitoring(interval=5.0)  # 1초 → 5초로 변경
+        metrics_collector.start_monitoring(interval=5.0)  # reduced from 1s to 5s
         logger.info("✅ Metrics collection started for experiment mode (interval=5.0s)")
     else:
         logger.warning(f"❌ Metrics collector NOT initialized: experiment_mode={experiment_mode}, run_context={run_context is not None}")

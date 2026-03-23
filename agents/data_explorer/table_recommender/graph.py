@@ -26,7 +26,7 @@ def parse_document(state):
         docs = loader.load()
         state['parsed_text'] = "\n\n".join(doc.page_content for doc in docs)
     elif ext == '.docx':
-        loader = Docx2txtLoader(state['input'])  # 추가
+        loader = Docx2txtLoader(state['input'])
     else:
         raise ValueError(f"Error: unsupported file extension: {ext}")
     docs = loader.load()

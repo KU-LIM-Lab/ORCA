@@ -151,7 +151,7 @@ def collect_all_records(results_dir: Path, dataset: str | None = None, setting: 
                             }
                             all_records.append(flat)
         
-        # For REEF: results_dir/REEF/setting/method.json (한 파일에 모든 scenario 결과가 리스트로 저장됨)
+        # For REEF: one file per method with all scenario results stored as a list
         elif dataset_name == "REEF":
             # Determine which settings to process
             if setting:
@@ -173,9 +173,9 @@ def collect_all_records(results_dir: Path, dataset: str | None = None, setting: 
                     if result_data is None:
                         continue
                     
-                    # REEF의 경우 한 파일에 리스트로 저장되어 있음
+                    # REEF: results stored as a list in a single file
                     if isinstance(result_data, list):
-                        # 리스트인 경우: 각 항목을 개별 record로 처리
+                        # list: process each item as individual record
                         for result in result_data:
                             metrics = result.get("metrics", {})
                             flat = {
@@ -192,7 +192,7 @@ def collect_all_records(results_dir: Path, dataset: str | None = None, setting: 
                             }
                             all_records.append(flat)
                     else:
-                        # 단일 객체인 경우 (하위 호환성)
+                        # single object (backward compatibility)
                         metrics = result_data.get("metrics", {})
                         flat = {
                             "dataset": result_data.get("dataset", "REEF"),

@@ -66,7 +66,7 @@ class AgentState(TypedDict, total=False):
     db_id: str  # Database identifier
     database_connection: Optional[Dict[str, Any]]
     
-    # === Metadata Creation Phase Outputs (utils.data_prep 기반) ===
+    # === Metadata Creation Phase Outputs (utils.data_prep) ===
     schema_info: Dict[str, Any]  # extract_schema() result
     table_metadata: Dict[str, Any]  # generate_metadata() result
     table_relations: Dict[str, Any]  # update_table_relations() result
@@ -379,7 +379,7 @@ def validate_state(state: AgentState) -> bool:
 def get_agent_specific_state(state: AgentState, agent_type: str) -> Dict[str, Any]:
     """
     Extract agent-specific state from global state
-    agent 내부 수정에 맞추어 변경 필요
+    Update as agent internals evolve
     """
     agent_states = {
         "data_explorer": ["db_id", "schema_info", "table_metadata", "candidate_tables", 

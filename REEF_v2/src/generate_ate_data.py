@@ -1,6 +1,4 @@
-"""
-REEF 데이터를 이용한 ATE 측정 데이터 생성 스크립트
-"""
+"""Script to generate ATE measurement data using the REEF database."""
 
 import json
 import sys
@@ -14,7 +12,7 @@ try:
     from .ate_calculator import calculate_ate
     from .reef_data_loader import REEFDataLoader
 except ImportError:
-    # 직접 실행 시 또는 모듈로 import 시
+    # when run directly or imported as module
     import sys
     from pathlib import Path
     current_dir = Path(__file__).parent
@@ -24,7 +22,7 @@ except ImportError:
         from ate_calculator import calculate_ate
         from reef_data_loader import REEFDataLoader
     except ImportError:
-        # 프로젝트 루트에서 실행하는 경우
+        # when run from project root
         project_root = current_dir.parent.parent
         if str(project_root) not in sys.path:
             sys.path.insert(0, str(project_root))
@@ -34,13 +32,7 @@ except ImportError:
 
 def load_queries_from_yaml(yaml_path: str) -> List[Dict[str, Any]]:
     """
-    YAML 파일에서 쿼리 목록을 로드합니다.
-    
-    Args:
-        yaml_path: YAML 파일 경로
-    
-    Returns:
-        쿼리 딕셔너리 리스트
+    Load query list from a YAML file.
     """
     with open(yaml_path, 'r') as f:
         data = yaml.safe_load(f)
@@ -49,16 +41,9 @@ def load_queries_from_yaml(yaml_path: str) -> List[Dict[str, Any]]:
 
 def generate_question(treatment: str, outcome: str) -> str:
     """
-    treatment와 outcome으로부터 질문을 생성합니다.
-    
-    Args:
-        treatment: treatment 변수명
-        outcome: outcome 변수명
-    
-    Returns:
-        질문 문자열
+    Generate a causal question from treatment and outcome variable names.
     """
-    # 변수명에서 테이블 prefix 제거
+    # strip table prefix from variable name
     treatment_clean = treatment.split('.')[-1] if '.' in treatment else treatment
     outcome_clean = outcome.split('.')[-1] if '.' in outcome else outcome
     
@@ -71,39 +56,36 @@ def resolve_variable_name(
     table_prefix: Optional[str] = None
 ) -> str:
     """
-    변수명을 데이터프레임의 실제 컬럼명으로 해석합니다.
-    
+    Resolve variable name to actual dataframe column name.
+
     Args:
-        var_name: 변수명 (예: "unit_price" 또는 "order_items.unit_price")
-        df: 데이터프레임
-        table_prefix: 테이블 prefix (예: "order_items")
-    
-    Returns:
-        실제 컬럼명
+        var_name: variable name (e.g. 'unit_price' or 'order_items.unit_price')
+        df: dataframe
+        table_prefix: optional table prefix (e.g. 'order_items')
     """
-    # 이미 테이블 prefix가 있으면 그대로 사용
+    # already has table prefix, use as-is
     if '.' in var_name:
-        # 테이블 prefix와 컬럼명 분리
+        # split table prefix and column name
         parts = var_name.split('.')
         if len(parts) == 2:
             table, col = parts
-            # 데이터프레임에서 찾기
+            # look up in dataframe
             if f"{table}.{col}" in df.columns:
                 return f"{table}.{col}"
             elif col in df.columns:
                 return col
     
-    # 테이블 prefix가 주어진 경우
+    # try with given table prefix
     if table_prefix:
         full_name = f"{table_prefix}.{var_name}"
         if full_name in df.columns:
             return full_name
     
-    # 직접 매칭
+    # exact match
     if var_name in df.columns:
         return var_name
     
-    # 부분 매칭 시도
+    # try partial match
     for col in df.columns:
         if col.endswith(f".{var_name}") or col == var_name:
             return col
@@ -118,16 +100,7 @@ def process_single_query(
     verbose: bool = True
 ) -> Dict[str, Any]:
     """
-    단일 쿼리를 처리하여 ATE를 계산합니다.
-    
-    Args:
-        query_config: 쿼리 설정 딕셔너리
-        loader: REEF 데이터 로더
-        output_dir: 출력 디렉토리 (None이면 출력 안 함)
-        verbose: 상세 출력 여부
-    
-    Returns:
-        결과 딕셔너리
+    Process a single query and calculate ATE.
     """
     treatment = query_config.get('treatment')
     outcome = query_config.get('outcome')
@@ -138,12 +111,12 @@ def process_single_query(
     table_name = query_config.get('table_name')
     limit = query_config.get('limit')
     question = query_config.get('question')
-    estimator = query_config.get('estimator')  # None이면 자동 선택
+    estimator = query_config.get('estimator')  # auto-selected if None
     
     if verbose:
         print(f"\nProcessing: {treatment} -> {outcome}")
     
-    # 데이터 로드
+    # load data
     try:
         if sql_query:
             df = loader.load_custom_query(sql_query)
@@ -172,7 +145,7 @@ def process_single_query(
             "error": error_msg
         }
     
-    # 변수명 해석
+    # resolve variable names
     try:
         treatment_resolved = resolve_variable_name(treatment, df)
         outcome_resolved = resolve_variable_name(outcome, df)
@@ -200,7 +173,7 @@ def process_single_query(
             "error": error_msg
         }
     
-    # ATE 계산
+    # calculate ATE
     try:
         result = calculate_ate(
             df=df,
@@ -212,7 +185,7 @@ def process_single_query(
             estimator=estimator
         )
         
-        # 결과 정리
+        # build result dict
         output = {
             "question": question or generate_question(treatment, outcome),
             "treatment": treatment,
@@ -260,16 +233,7 @@ def generate_ate_data(
     verbose: bool = True
 ) -> List[Dict[str, Any]]:
     """
-    여러 쿼리에 대해 ATE 데이터를 생성합니다.
-    
-    Args:
-        queries: 쿼리 설정 리스트
-        db_name: 데이터베이스 이름
-        output_path: 출력 파일 경로 (None이면 출력 안 함)
-        verbose: 상세 출력 여부
-    
-    Returns:
-        결과 딕셔너리 리스트
+    Generate ATE data for multiple queries.
     """
     loader = REEFDataLoader(db_name=db_name)
     results = []
@@ -284,7 +248,7 @@ def generate_ate_data(
         result = process_single_query(query_config, loader, verbose=verbose)
         results.append(result)
     
-    # 결과 저장
+    # save results
     if output_path:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -295,7 +259,7 @@ def generate_ate_data(
         if verbose:
             print(f"\nResults saved to {output_path}")
     
-    # 통계 출력
+    # print summary
     if verbose:
         successful = sum(1 for r in results if "error" not in r)
         failed = len(results) - successful
@@ -305,7 +269,7 @@ def generate_ate_data(
 
 
 def main():
-    """CLI 진입점"""
+    """CLI entrypoint."""
     parser = argparse.ArgumentParser(description="Generate ATE data from REEF database")
     # parser.add_argument(
     #     "--quiet",
@@ -315,15 +279,15 @@ def main():
     
     args = parser.parse_args()
     
-    # # 출력 경로 설정
+    # # set output path
     # if args.output is None:
     #     queries_path = Path(args.queries)
     #     args.output = str(queries_path.with_suffix('.json'))
     
-    # 쿼리 로드
+    # load queries
     queries = load_queries_from_yaml("REEF_v2/configs/ate_queries.yaml")
     
-    # 데이터 생성
+    # generate data
     results = generate_ate_data(
         queries=queries,
         db_name="reef_db",

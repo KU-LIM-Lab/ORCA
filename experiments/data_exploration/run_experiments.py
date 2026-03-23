@@ -259,7 +259,7 @@ def main():
     model_tag = f"{args.provider}_{args.model.replace('/', '-')}"
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    data_dir = Path(f"experiments_v0/questions/{data}")
+    data_dir = Path(f"experiments/questions/{data}")
     result_dir = Path(f"experiments/results/{data}/{model_tag}")
     os.makedirs(result_dir, exist_ok=True)
 

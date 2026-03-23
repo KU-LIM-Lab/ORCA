@@ -1,7 +1,4 @@
-"""
-ATE 계산 모듈
-DoWhy를 사용하여 변수 타입에 따라 적절한 estimator를 선택하여 ATE를 계산합니다.
-"""
+"""ATE calculation module. Uses DoWhy with automatic estimator selection based on variable types."""
 
 import pandas as pd
 import numpy as np
@@ -15,64 +12,57 @@ warnings.filterwarnings('ignore')
 
 def detect_variable_type(series: pd.Series) -> str:
     """
-    변수의 타입을 감지합니다.
-    
+    Detect variable type.
+
     Returns:
-        'binary': 0/1 또는 True/False만 포함
-        'continuous': 연속형 숫자
-        'count': 정수형 카운트 변수
-        'categorical': 범주형
+        'binary', 'continuous', 'count', or 'categorical'
     """
-    # 결측값 제거
+    # drop missing values
     series_clean = series.dropna()
     
     if len(series_clean) == 0:
-        return 'continuous'  # 기본값
+        return 'continuous'  # default
     
-    # Binary 체크
+    # binary check
     unique_vals = series_clean.unique()
     if len(unique_vals) == 2:
         if set(unique_vals).issubset({0, 1, True, False, 0.0, 1.0}):
             return 'binary'
     
-    # 정수형이고 범위가 작으면 count로 간주
+    # treat as count if integer with small range
     if pd.api.types.is_integer_dtype(series_clean):
         if series_clean.min() >= 0 and series_clean.max() < 1000:
             return 'count'
     
-    # 범주형 체크 (문자열이거나 unique 값이 적은 경우)
+    # categorical check (string type or few unique values)
     if pd.api.types.is_object_dtype(series_clean) or pd.api.types.is_categorical_dtype(series_clean):
-        if len(unique_vals) <= 20:  # 범주가 20개 이하면 범주형으로 간주
+        if len(unique_vals) <= 20:  # treat as categorical if ≤20 unique values
             return 'categorical'
     
-    # 기본적으로 연속형
+    # default to continuous
     return 'continuous'
 
 
 def select_estimator(treatment_type: str, outcome_type: str) -> str:
     """
-    변수 타입에 따라 적절한 estimator를 선택합니다.
-    
-    Args:
-        treatment_type: treatment 변수의 타입
-        outcome_type: outcome 변수의 타입
-    
+    Select appropriate estimator based on variable types.
+
     Returns:
-        estimator 이름 (예: 'backdoor.linear_regression')
+        estimator name (e.g. 'backdoor.linear_regression')
     """
-    # Binary outcome인 경우
+    # binary outcome
     if outcome_type == 'binary':
         return 'backdoor.generalized_linear_model'
     
-    # Count outcome인 경우 (정수형)
+    # count outcome (integer)
     if outcome_type == 'count':
         return 'backdoor.generalized_linear_model'
     
-    # Continuous outcome인 경우
+    # continuous outcome
     if outcome_type == 'continuous':
         return 'backdoor.linear_regression'
     
-    # 기본값
+    # default
     return 'backdoor.linear_regression'
 
 
@@ -172,10 +162,8 @@ def create_causal_graph_from_data(
     instrumental_variables: List[str] = None
 ) -> str:
     """
-    데이터에서 간단한 causal graph를 생성합니다.
-    confounders -> treatment, outcome
-    treatment -> outcome
-    mediators가 있으면: treatment -> mediators -> outcome
+    Build a simple causal graph: confounders->treatment,outcome; treatment->outcome;
+    optional mediators and IVs.
     """
     if mediators is None:
         mediators = []
@@ -199,7 +187,7 @@ def create_causal_graph_from_data(
             edges.append(f'"{treatment}" -> "{med}"')
             edges.append(f'"{med}" -> "{outcome}"')
     
-    # Instrumental variables: IV -> treatment (outcome과 직접 연결 없음)
+    # instrumental variables: IV -> treatment (no direct link to outcome)
     for iv in instrumental_variables:
         if iv in df.columns:
             edges.append(f'"{iv}" -> "{treatment}"')
@@ -219,20 +207,20 @@ def calculate_ate(
     causal_graph: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    DoWhy를 사용하여 ATE를 계산합니다.
-    
+    Calculate ATE using DoWhy.
+
     Args:
-        df: 데이터프레임
-        treatment: treatment 변수명
-        outcome: outcome 변수명
-        confounders: 교란 변수 리스트
-        mediators: 매개 변수 리스트
-        instrumental_variables: 도구 변수 리스트
-        estimator: 사용할 estimator (None이면 자동 선택)
-        causal_graph: DAG 그래프 (DOT 형식, None이면 자동 생성)
-    
+        df: input dataframe
+        treatment: treatment variable name
+        outcome: outcome variable name
+        confounders: list of confounding variables
+        mediators: list of mediator variables
+        instrumental_variables: list of instrumental variables
+        estimator: estimator name (auto-selected if None)
+        causal_graph: DAG in DOT format (auto-generated if None)
+
     Returns:
-        ATE 계산 결과 딕셔너리
+        dict with ATE result
     """
     if confounders is None:
         confounders = []
@@ -241,13 +229,13 @@ def calculate_ate(
     if instrumental_variables is None:
         instrumental_variables = []
     
-    # 변수 존재 확인
+    # verify variable exists
     if treatment not in df.columns:
         raise ValueError(f"Treatment variable '{treatment}' not found in dataframe")
     if outcome not in df.columns:
         raise ValueError(f"Outcome variable '{outcome}' not found in dataframe")
     
-    # 결측값이 있는 행 제거
+    # drop rows with missing values
     required_cols = [treatment, outcome] + confounders + mediators + instrumental_variables
     required_cols = [col for col in required_cols if col in df.columns]
     df_clean = df[required_cols].dropna()
@@ -256,21 +244,21 @@ def calculate_ate(
     if len(df_clean) < 10:
         raise ValueError(f"Insufficient data: {len(df_clean)} rows after cleaning, need at least 10")
     
-    # 변수 타입 감지
+    # detect variable types
     treatment_type = detect_variable_type(df_clean[treatment])
     outcome_type = detect_variable_type(df_clean[outcome])
     
-    # Estimator 선택
+    # select estimator
     if estimator is None:
         estimator = select_estimator(treatment_type, outcome_type)
     
-    # Causal graph 생성
+    # build causal graph
     if causal_graph is None:
         causal_graph = create_causal_graph_from_data(
             df_clean, treatment, outcome, confounders, mediators, instrumental_variables
         )
     
-    # CausalModel 생성
+    # instantiate CausalModel
     try:
         model = CausalModel(
             data=df_clean,
@@ -293,7 +281,7 @@ def calculate_ate(
     # Estimation method parameters
     method_params = {}
     
-    # GLM 설정
+    # configure GLM
     if estimator == "backdoor.generalized_linear_model":
         y = df_clean[outcome].dropna()
         is_binary = (
@@ -304,13 +292,13 @@ def calculate_ate(
         if is_binary:
             method_params["glm_family"] = sm.families.Binomial()
         else:
-            # Count 데이터인 경우 Poisson 또는 Negative Binomial
+            # count data: use Poisson
             if outcome_type == 'count':
                 method_params["glm_family"] = sm.families.Poisson()
             else:
                 method_params["glm_family"] = sm.families.Gaussian()
     
-    # Propensity score matching 등에서 사용할 분류 모델
+    # classifier for propensity score methods
     classification_estimators = [
         "backdoor.propensity_score_matching",
         "backdoor.propensity_score_stratification",
@@ -323,11 +311,11 @@ def calculate_ate(
             from tabpfn import TabPFNClassifier
             method_params["propensity_score_model"] = TabPFNClassifier()
         except ImportError:
-            # TabPFN이 없으면 기본 분류기 사용
+            # fall back to logistic regression if TabPFN not available
             from sklearn.linear_model import LogisticRegression
             method_params["propensity_score_model"] = LogisticRegression(max_iter=1000)
         
-        # 범주형 변수 인코딩
+        # encode categorical columns
         cat_cols = df_clean.select_dtypes(include=["category", "object"]).columns
         if len(cat_cols) > 0:
             for col in cat_cols:
@@ -344,7 +332,7 @@ def calculate_ate(
     except Exception as e:
         raise RuntimeError(f"Failed to estimate causal effect: {e}")
     
-    # 결과 추출
+    # extract result
     try:
         ate_value = float(getattr(estimate, "value", None)) if getattr(estimate, "value", None) is not None else None
     except (ValueError, TypeError):

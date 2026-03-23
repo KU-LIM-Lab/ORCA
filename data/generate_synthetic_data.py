@@ -6,7 +6,7 @@ import networkx as nx
 from scipy.special import expit  # Logistic/Sigmoid function
 import json 
 
-# --- 1. Causal Discovery (CD) 벤치마크 생성기 ---
+# --- 1. Causal Discovery (CD) benchmark generator ---
 
 def _topological_sort(adj: np.ndarray) -> list[int]:
     """Return a topological order for a DAG adjacency matrix using networkx."""
@@ -24,7 +24,7 @@ def _generate_graph_adj(
     rng: np.random.Generator,
     graph_type: str = "er",
     p: float | None = None, 
-    avg_degree: float = 2.0, # 평균 차수 기본값
+    avg_degree: float = 2.0,  # default average degree
     m: int = 2,
 ) -> np.ndarray:
     """
@@ -42,12 +42,12 @@ def _generate_graph_adj(
 
     perm = rng.permutation(n_nodes)
     inv = np.empty(n_nodes, dtype=int)
-    inv[perm] = np.arange(n_nodes) # inv[i] = 노드 i의 순열상 위치
+    inv[perm] = np.arange(n_nodes)  # inv[i] = position of node i in permutation
 
     G = nx.DiGraph()
     G.add_nodes_from(range(n_nodes))
     for u, v in Gu.edges():
-        if inv[u] < inv[v]: # 위치를 O(1)로 조회
+        if inv[u] < inv[v]:  # O(1) position lookup
             G.add_edge(u, v)
         else:
             G.add_edge(v, u)

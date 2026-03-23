@@ -100,7 +100,7 @@ def build_config_selection_node(llm: BaseChatModel) -> RunnableLambda:
             "outcome_type": outcome_type
         }
 
-        # LLM 호출 전에 메모리 정리
+        # free memory before LLM call
         import gc
         
         print("🔍 Calling LLM for strategy selection...")
@@ -121,7 +121,7 @@ def build_config_selection_node(llm: BaseChatModel) -> RunnableLambda:
             estimator=result.estimation_method,
             refuter=result.refutation_methods[0] if result.refutation_methods else None
         )
-        # 메모리 정리
+        # free memory
         state.pop("df_preprocessed", None)
         gc.collect()
         return state

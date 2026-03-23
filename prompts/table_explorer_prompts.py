@@ -9,7 +9,7 @@ class ColumnDescription(BaseModel):
     column_name: str
     data_type: str
     nullable: str  # YES or NO
-    nulls: Union[int, str]  # 대부분 int인데 가끔 unknown이 있을 수도 있음
+    nulls: Union[int, str]  # usually int, occasionally 'unknown'
     notes: List[str]
 
 class TableAnalysis(BaseModel):
@@ -93,7 +93,7 @@ class Usecase(BaseModel):
 class RecommendedUsecases(BaseModel):
     usecases: list[Usecase] = Field(..., alias="Usecases")
     class Config:
-        populate_by_name = True  # alias로도 값을 받을 수 있게 허용
+        populate_by_name = True  # allow values via field alias
 
 usecase_parser = PydanticOutputParser(pydantic_object=RecommendedUsecases)
 

@@ -268,7 +268,7 @@ class StatsTool:
 
             delta = max(0.0, rss_lin - rss_smooth)
 
-            # edof(=effective DoF) 차이로 자유도 근사
+            # approximate degrees of freedom via edof (effective DoF) difference
             edof_lin = float(getattr(gam_lin, "statistics_", {}).get("edof", 2.0))   # intercept+linear ≈ 2
             edof_smooth = float(getattr(gam_smooth, "statistics_", {}).get("edof", 4.0))
 
@@ -422,14 +422,14 @@ class StatsTool:
                 logger.warning("Global linearity test produced no valid p-values.")
                 return np.nan
 
-            # --- Holm step-down 기반 global p-value 집계 ---
+            # --- Holm step-down global p-value aggregation ---
             pvals = np.asarray(pvalues, dtype=float)
             m = pvals.size
 
             order = np.argsort(pvals)
             sorted_p = pvals[order]
 
-            # Holm 조정 p-value 계산: p_(i) * (m - i + 1)
+            # compute Holm-adjusted p-values: p_(i) * (m - i + 1)
             holm_adj = np.empty_like(sorted_p)
             for i, p in enumerate(sorted_p):
                 k = m - i  # remaining hypotheses
@@ -1478,7 +1478,7 @@ class LiMTool:
         try:
             import lingam
             
-            # 1. 입력 데이터 정리 (NaN 제거)
+            # 1. clean input data (remove NaN)
             df_li = df.dropna()
             if df_li.empty:
                 raise ValueError("DataFrame is empty after dropping NaN values")
@@ -1486,10 +1486,10 @@ class LiMTool:
             variables = list(df_li.columns)
             X = df_li.values.astype(float)
             
-            # 2. dis_con 벡터 생성
+            # 2. build dis_con vector
             dis_con = LiMTool._build_dis_con(variables, variable_schema)
             
-            # 3. LiM 모델 생성 및 학습
+            # 3. create and train LiM model
             lim_params = {}
             if algo_config and "LiM" in algo_config:
                 lim_params = algo_config["LiM"]
@@ -1499,7 +1499,7 @@ class LiMTool:
             model = lingam.LiM(**lim_params)
             model.fit(X, dis_con)
             
-            # 4. Adjacency matrix에서 edge list 변환
+            # 4. convert adjacency matrix to edge list
             edges = []
             A = getattr(model, 'adjacency_matrix_', None)
             if A is None:

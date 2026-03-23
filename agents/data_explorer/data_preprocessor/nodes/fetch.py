@@ -19,7 +19,7 @@ def fetch_node(state: Dict) -> Dict:
 
     session_id = state.get("session_id", "default_session")
     redis_key = f"{db_id}:raw_df:{session_id}"
-    force_refresh = bool(state.get("force_refresh")) # Redis에 저장이 되어있는지와는 별개로 sql로 다시 load하고 싶다면 True로 설정
+    force_refresh = bool(state.get("force_refresh"))  # set True to reload via SQL regardless of Redis cache
 
     df = None
     loaded_from_cache = False

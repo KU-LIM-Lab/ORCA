@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Callable, Dict, Any
 import numpy as np
 
-# --- 공통 registry ---
+# --- shared registry ---
 
 METHOD_REGISTRY: Dict[str, Callable[[np.ndarray, np.ndarray, np.ndarray, dict | None], dict]] = {}
 
@@ -33,11 +33,11 @@ def orca_agent_effect(
     context: dict | None = None,
 ) -> dict:
     """
-    ORCA causal analysis agent를 통한 효과 추정.
+    Effect estimation via ORCA causal analysis agent.
     context:
-        - "df": 전체 DataFrame (W, T, Y 포함)
-        - "causal_graph": ORCA에서 사용하는 causal_graph dict
-        - "app": generate_causal_analysis_graph로 만든 LangGraph app
+        - "df": full DataFrame (includes W, T, Y)
+        - "causal_graph": causal_graph dict used by ORCA
+        - "app": LangGraph app from generate_causal_analysis_graph
         - "treatment_name": str
         - "outcome_name": str
     """
@@ -64,7 +64,7 @@ def orca_agent_effect(
 
     tau_hat_ate = result.get("causal_effect_ate")
     ate_ci = result.get("causal_effect_ci")
-    tau_hat_cate = result.get("cate_effects")  # 있으면 사용, 없으면 None
+    tau_hat_cate = result.get("cate_effects")  # use if available, else None
 
     return {
         "tau_hat_ate": float(tau_hat_ate) if tau_hat_ate is not None else None,
@@ -84,17 +84,17 @@ def causal_agent_effect(
     context: dict | None = None,
 ) -> dict:
     """
-    Causal Agent를 통한 효과 추정.
+    Effect estimation via Causal Agent.
     context:
-        - "openai_api_key": OpenAI API key (optional, 환경변수에서도 읽을 수 있음)
-        - "model_name": 모델 이름 (default: "gpt-3.5-turbo")
+        - "openai_api_key": OpenAI API key (optional; also read from env)
+        - "model_name": model name (default: "gpt-3.5-turbo")
         - "base_url": API base URL (optional)
-        - "feature_names": feature 이름 리스트 (optional)
-        - "treatment_name": treatment 변수명 (default: "T")
-        - "outcome_name": outcome 변수명 (default: "Y")
-        - "T0": treatment 값 0 (default: 0.0)
-        - "T1": treatment 값 1 (default: 1.0)
-        - "agent_executor": AgentExecutor 객체 (optional, 재사용 가능)
+        - "feature_names": list of feature names (optional)
+        - "treatment_name": treatment variable name (default: "T")
+        - "outcome_name": outcome variable name (default: "Y")
+        - "T0": treatment value 0 (default: 0.0)
+        - "T1": treatment value 1 (default: 1.0)
+        - "agent_executor": AgentExecutor instance (optional, reusable)
     """
     if context is None:
         context = {}
@@ -152,7 +152,7 @@ def doubleml_effect(
     context: dict | None = None,
 ) -> dict:
     """
-    Double Machine Learning 기반 ATE 추정 (ATE only).
+    ATE estimation via Double Machine Learning (ATE only).
     """
     from doubleml import DoubleMLData, DoubleMLPLR
     from sklearn.ensemble import RandomForestRegressor
@@ -176,7 +176,7 @@ def doubleml_effect(
 
     return {
         "tau_hat_ate": ate,
-        "tau_hat_cate": None,  # 기본 DoubleMLPLR는 CATE는 직접 제공 X
+        "tau_hat_cate": None,  # DoubleMLPLR does not directly provide CATE
         "ate_ci": (ci_lower, ci_upper),
         "raw": dml_plr,
     }
@@ -192,7 +192,7 @@ def causal_forest_effect(
     context: dict | None = None,
 ) -> dict:
     """
-    CausalForestDML 기반 ATE/CATE 추정.
+    ATE/CATE estimation via CausalForestDML.
     """
     from econml.dml import CausalForestDML
     from sklearn.ensemble import RandomForestRegressor
@@ -209,7 +209,7 @@ def causal_forest_effect(
     tau_hat_cate = est.effect(X)
     tau_hat_ate = float(np.mean(tau_hat_cate))
 
-    # CI (per-unit) → 평균으로 ATE CI 근사
+    # CI (per-unit) → approximate ATE CI by averaging
     ci_lower, ci_upper = est.effect_interval(X)
     ate_ci = (float(ci_lower.mean()), float(ci_upper.mean()))
 
@@ -231,7 +231,7 @@ def t_learner_effect(
     context: dict | None = None,
 ) -> dict:
     """
-    RandomForest 기반 T-Learner.
+    T-Learner using RandomForest.
     """
     from sklearn.ensemble import RandomForestRegressor
 
@@ -253,7 +253,7 @@ def t_learner_effect(
     tau_hat_cate = mu1_hat - mu0_hat
     tau_hat_ate = float(tau_hat_cate.mean())
 
-    # CI는 간단히 None, 필요하면 bootstrap으로 추가
+    # CI set to None; add bootstrap if needed
     return {
         "tau_hat_ate": tau_hat_ate,
         "tau_hat_cate": tau_hat_cate,
