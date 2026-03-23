@@ -471,6 +471,8 @@ def run_full_pipeline(
             if previous_state.get("data_preprocessing_completed"):
                 skip_steps.append("data_preprocessing")
                 # Use preprocessed data
+                if previous_state.get("df_redis_key_1000") :
+                    context["df_redis_key_1000"] = previous_state["df_redis_key_1000"]
                 if previous_state.get("df_redis_key"):
                     context["df_redis_key"] = previous_state["df_redis_key"]
                 logger.info("Reusing preprocessed data from previous query")

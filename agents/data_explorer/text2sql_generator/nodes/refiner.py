@@ -107,7 +107,7 @@ def refiner_node(state, llm: BaseChatModel):
                 exception_class=error_info.get('exception_class', '')
             )
 
-        llm_reply = call_llm(prompt)
+        llm_reply = call_llm(prompt, llm=llm)
         all_sqls = []
         for match in re.finditer(r'```sql(.*?)```', llm_reply, re.DOTALL):
             all_sqls.append(match.group(1).strip())

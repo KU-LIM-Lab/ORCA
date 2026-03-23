@@ -191,13 +191,28 @@ class CausalDiscoveryAgent(SpecialistAgent):
         self.anm_rf_estimators = self.config.get("anm_rf_estimators", 100)
         self.run_all_tier_algorithms = self.config.get("run_all_tier_algorithms", False)
         self.max_pa_size = self.config.get("max_pa_size", 3) 
-        
+
         # Composite weights 
         self.composite_weights = self.config.get("composite_weights", {
             "markov_consistency": 0.4,
             "sampling_stability": 0.3,
             "structural_stability": 0.3
         })
+
+        # Execution-plan thresholds (for scenario selection / algorithm gating)
+        ep_cfg = self.config.get("execution_plan_thresholds", {})
+        self.execution_plan_thresholds = {
+            # Linearity: pairwise score (Pure Continuous)
+            "linearity_score": ep_cfg.get("linearity_score", 0.5),
+            # Linearity: global p-value (Ramsey RESET)
+            "linearity_pvalue": ep_cfg.get("linearity_pvalue", 0.05),
+            # Gaussianity: global normality p-value
+            "normality_pvalue": ep_cfg.get("normality_pvalue", 0.05),
+            # Non‑Gaussianity score for LiNGAM
+            "non_gaussian_score": ep_cfg.get("non_gaussian_score", 0.5),
+            # ANM compatibility score
+            "anm_score": ep_cfg.get("anm_score", 0.5),
+        }
         
         # Scoring configuration
         scoring = self.config.get("scoring", {})
@@ -656,13 +671,19 @@ class CausalDiscoveryAgent(SpecialistAgent):
         pairwise_linearity_score = pairwise_scores.get("s_pairwise_linearity_score", np.nan)
         
         is_mostly_linear = None  # 기본 가정
+
+        lin_score_thr = self.execution_plan_thresholds.get("linearity_score", 0.5)
+        lin_p_thr = self.execution_plan_thresholds.get("linearity_pvalue", 0.05)
+        normality_p_thr = self.execution_plan_thresholds.get("normality_pvalue", 0.05)
+        nongauss_thr = self.execution_plan_thresholds.get("non_gaussian_score", 0.5)
+        anm_thr = self.execution_plan_thresholds.get("anm_score", 0.5)
         
         if data_type_profile == "Pure Continuous" and not np.isnan(pairwise_linearity_score):
             # 1st priority: Pure Continuous uses Pairwise score
-            is_mostly_linear = True if pairwise_linearity_score >= 0.5 else False
+            is_mostly_linear = True if pairwise_linearity_score >= lin_score_thr else False
         elif not np.isnan(global_linearity_pvalue):
             # 2nd priority: Mixed data or failed Pairwise uses Global (Ramsey RESET) score
-            is_mostly_linear = True if global_linearity_pvalue >= 0.05 else False   
+            is_mostly_linear = True if global_linearity_pvalue >= lin_p_thr else False   
         
         
         # Scenario 6: High Cardinality
@@ -687,7 +708,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
             logger.info("Scenario 1: Pure Continuous, Linear")
             
             # 정규성(Gaussianity) 확인 (GES, PC용)
-            is_gaussian = global_scores.get("s_global_normality_pvalue", 0.0) >= 0.05
+            is_gaussian = global_scores.get("s_global_normality_pvalue", 0.0) >= normality_p_thr
             
             pc_ci_test = "fisherz" if (is_gaussian and ci_reliability == "High") else "kernel_kcit"
             fci_ci_test = "fisherz" if ci_reliability == "High" else "kernel_kcit"
@@ -701,7 +722,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
             
             # LiNGAM: Linear + Non-Gaussianity
             non_gaussian_score = pairwise_scores.get("s_pairwise_non_gaussianity_score", 0.0)
-            if non_gaussian_score >= 0.5:  # 비정규성 점수가 0.5 이상일 때만
+            if non_gaussian_score >= nongauss_thr:  # 비정규성 점수가 threshold 이상일 때만
                 execution_plan.append({"alg": "LiNGAM"})
         
         # Scenario 2: Pure Continuous, Nonlinear
@@ -717,7 +738,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
             
             # ANM: 비선형 + ANM 적합성
             anm_score = pairwise_scores.get("s_pairwise_anm_score", 0.0)
-            if anm_score >= 0.5:  # ANM 적합성 점수가 0.5 이상일 때만
+            if anm_score >= anm_thr:  # ANM 적합성 점수가 threshold 이상일 때만
                 execution_plan.append({"alg": "ANM"})
         
         # Scenario 3: Mixed Data, Linear (High Cardinality가 아닐 때)
@@ -1044,7 +1065,7 @@ class CausalDiscoveryAgent(SpecialistAgent):
             executor = ThreadPoolExecutor(max_workers=len(algorithm_configs))
             try:
                 futures = {}
-                algorithm_timeout = 300
+                algorithm_timeout = 600
                 for config in algorithm_configs:
                     alg_name = config["alg"]
                     
@@ -1553,22 +1574,27 @@ class CausalDiscoveryAgent(SpecialistAgent):
     # === Helpers and dispatch ===
 
     def _load_dataframe_from_state(self, state: AgentState) -> Optional[pd.DataFrame]:
-        # First, try to get DataFrame directly from df_preprocessed
+        # 1) Direct DataFrame in state
         df = state.get("df_preprocessed")
         if isinstance(df, pd.DataFrame):
             return df
-        
-        # If no DataFrame, load from df_redis_key
-        redis_key = state.get("df_redis_key")
-        if redis_key:
-            try:
-                from utils.redis_df import load_df_parquet
-                df = load_df_parquet(redis_key)
-                if df is not None:
+
+        # 2) Redis key fallback (priority order)
+        redis_keys = [
+            state.get("df_redis_key_1000"),
+            state.get("df_redis_key"),
+        ]
+
+        try:
+            from utils.redis_df import load_df_parquet
+            for key in redis_keys:
+                if not key:
+                    continue
+                df = load_df_parquet(key)
+                if isinstance(df, pd.DataFrame):
                     return df
-            except Exception as e:
-                logger.warning(f"Failed to load DataFrame from Redis key {redis_key}: {e}")
-                return None
+        except Exception as e:
+            logger.warning(f"Failed to load DataFrame from Redis: {e}")
 
         return None
 
@@ -1694,6 +1720,22 @@ class CausalDiscoveryAgent(SpecialistAgent):
                     logger.warning(f"DAG visualization failed: {visualization_result.get('error', 'Unknown error')}")
             except Exception as e:
                 logger.warning(f"Failed to visualize DAG: {e}")
+            
+            # Visualize and save consensus PAG (with edge types and confidence)
+            try:
+                from .tools import GraphVisualizer
+                pag_visualization_result = GraphVisualizer.save_graph(
+                    pag_result,
+                    output_dir="outputs/images/causal_graphs",
+                    formats=["png", "svg"]
+                )
+                if "error" not in pag_visualization_result:
+                    state["pag_visualization_path"] = pag_visualization_result.get("saved_paths", {})
+                    logger.info(f"Consensus PAG visualization saved: {pag_visualization_result.get('saved_paths', {})}")
+                else:
+                    logger.warning(f"Consensus PAG visualization failed: {pag_visualization_result.get('error', 'Unknown error')}")
+            except Exception as e:
+                logger.warning(f"Failed to visualize consensus PAG: {e}")
             
             # Log final selected graph with details and reasoning
             n_edges = len(get_edges(dag_result))

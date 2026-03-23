@@ -1,99 +1,56 @@
-# ORCA: ORchestrating Causal Agent 🐳
+# ORCA: ORchestrating Causal Agent
 
-ORCA is a multi-agent system for automated causal analysis of data. It provides a comprehensive pipeline for data exploration, causal discovery, and causal inference using a team of specialized AI agents.
+This repository contains the **official implementation** of the paper  
+**“ORCA: Orchestrating Causal Agent”**, which proposes an interactive multi-agent framework for end-to-end causal analysis on relational databases.
 
-## 🚀 Quick Setup
+---
 
-### Option 1: New Server Setup (First Time)
+## Setup
 
-```bash
-# Clone repository
-git clone <repository-url>
-cd ORCA
-
-# Set up environment variables
- .env
-# Edit .env file with your configuration
-
-# Initialize server (creates database, seed data, starts services)
-./setup_server.sh
-```
-
-### Option 2: Connect to Existing Server
+### 1. Create conda environment
 
 ```bash
-# Clone repository
-git clone <repository-url>
-cd ORCA
-# Connect to existing server
-./connect_server.sh
+conda create -n ORCA python=3.11 -y
+conda activate ORCA
 ```
 
-## 🏗️ Architecture
+### 2. Install dependencies and initialize
 
-ORCA consists of several specialized agents working together:
-
-- **Planner Agent**: Creates execution plans based on user queries
-- **Executor Agent**: Executes the planned workflow
-- **Data Explorer**: Analyzes and explores datasets
-- **Causal Discovery**: Identifies causal relationships
-- **Causal Inference**: Estimates causal effects
-- **Report Generator**: Creates comprehensive reports
-
-## 📊 Usage
-
-```python
-from main import ORCAMainAgent
-
-# Initialize ORCA
-agent = ORCAMainAgent(
-    db_id="reef_db",
-    db_type="postgresql",
-    db_config={
-        "host": "localhost",
-        "port": 5432,
-        "user": "postgres",
-        "password": "postgres123",
-        "database": "reef_db"
-    }
-)
-
-# Initialize system
-await agent.initialize_system()
-
-# Execute query
-result = await agent.execute_query("Analyze the causal relationships in this dataset")
+```bash
+zsh setup_server.sh
 ```
 
-## 🔧 Configuration
+### 3. Environment variables
 
-Edit `.env` file to configure:
+Create a `.env` file in the project root with PostgreSQL, Redis, and API key settings.
 
-- Database connection settings
-- Redis configuration
-- OpenAI API key
-- Other system parameters
-
-## 📁 Project Structure
-
-```
-ORCA/
-├── agents/                 # Specialized agent implementations
-├── core/                   # Core agent base classes and state
-├── orchestration/          # Workflow orchestration
-├── monitoring/             # Metrics and tracing
-├── utils/                  # Utility functions and tools
-├── REEF/                   # Sample database and seed data
-├── setup_server.sh         # Server initialization script
-├── connect_server.sh       # Server connection script
-└── main.py                 # Main entry point
+```bash
+cp env.example .env
 ```
 
-## 🛠️ Scripts
+---
 
-- **`setup_server.sh`**: Initialize new server (database, seed data, services)
-- **`connect_server.sh`**: Connect to existing server and test ORCA system
+## Running ORCA
 
-## 📝 License
+### Run once (non-interactive)
 
-This project is licensed under the MIT License.
+```bash
+python main.py \
+  --query "Estimate the causal effect of coupon usage on total order amount" \
+  --db-id reef_db \
+```
+
+Optional flags:
+- `--interactive` : enable human-in-the-loop checkpoints
+
+---
+
+### Interactive session
+
+```bash
+python main.py --db-id reef_db --interactive
+```
+
+## License
+
+MIT License

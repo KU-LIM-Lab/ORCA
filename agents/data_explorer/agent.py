@@ -295,6 +295,7 @@ class DataExplorerAgent(SpecialistAgent):
                 "final_sql": final_sql,
                 "df_raw": None,  # Don't pass DataFrame to avoid serialization
                 "df_redis_key": state.get("df_redis_key"),  # Reuse if available
+                "df_redis_key_1000": state.get("df_redis_key_1000"), 
                 "session_id": state.get("session_id", "default_session"),
                 "persist_to_redis": state.get("persist_to_redis", True),
                 "clean_nulls_ratio": state.get("clean_nulls_ratio", 0.95),
@@ -311,6 +312,7 @@ class DataExplorerAgent(SpecialistAgent):
             response: Dict[str, Any] = {
                 "warnings": updated_state.get("warnings", []),
                 "df_redis_key": updated_state.get("df_redis_key"),
+                "df_redis_key_1000": updated_state.get("df_redis_key_1000"),
                 "df_shape": updated_state.get("df_shape"),
                 "columns": updated_state.get("columns"),
                 "variable_schema": updated_state.get("variable_schema"),
@@ -473,6 +475,8 @@ class DataExplorerAgent(SpecialistAgent):
             # New Redis-based fields
             if result.get("df_redis_key"):
                 state["df_redis_key"] = result.get("df_redis_key")
+            if result.get("df_redis_key_1000"):
+                state["df_redis_key_1000"] = result.get("df_redis_key_1000")
             if result.get("df_shape"):
                 state["df_shape"] = result.get("df_shape")
             if result.get("columns"):
@@ -575,4 +579,3 @@ class DataExplorerAgent(SpecialistAgent):
         state.pop("gt_df", None)
         
         gc.collect()
-
